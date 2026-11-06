@@ -22,7 +22,7 @@
 
 <br/>
 
-<img src="../media/wechat-send-side.gif" alt="한마디에 Mika가 백그라운드 화면에서 WeChat을 열고, 상대를 찾아 메시지를 보내는 모습" width="640" />
+<img src="../media/hana_showcase.png" alt="Hana Autonomous Agent Showcase" width="680" />
 
 <sub>"파일 전송 도우미에게 메시지 보내 줘" 한마디: 왼쪽은 Mika와의 대화, 오른쪽은 백그라운드 화면에서 진행한 모든 단계(4배속, 채팅 목록은 모자이크 처리)</sub>
 
@@ -30,31 +30,9 @@
 
 ## 한마디로 일 하나를 끝내기
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/wechat-group.gif" width="230" alt="WeChat 단톡방을 끝까지 읽고 오늘 나온 이야기를 요약" /><br/><b>"단톡방에서 오늘 무슨 얘기 했는지 정리해 줘"</b><br/><sub>백그라운드에서 대화 기록을 다 읽고 요약</sub></td>
-<td align="center" width="33%"><img src="../media/amazon-cart.gif" width="230" alt="쇼핑 사이트에서 충전기를 골라 장바구니에 담기" /><br/><b>"30달러 이하, 별점 4.5 이상인 충전기"</b><br/><sub>골라서 장바구니에 담고 결제 직전에 멈춤</sub></td>
-<td align="center" width="33%"><img src="../media/xhs-summary.gif" width="230" alt="한 크리에이터의 최근 게시물을 요약" /><br/><b>"이 크리에이터가 요즘 뭘 올렸는지 정리해 줘"</b><br/><sub>앱을 열어 하나씩 본 뒤 정리</sub></td>
-</tr>
-</table>
 
-<details>
-<summary>데모 더 보기</summary>
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/boss-greet.gif" width="230" alt="채용 사이트에서 공고 3개에 인사 보내기" /><br/>채용 사이트에서 공고 3개에 인사 보내기</td>
-<td align="center" width="33%"><img src="../media/google-flights.gif" width="230" alt="가장 싼 직항편 찾기" /><br/>샌프란시스코발 뉴욕행 최저가 직항 찾기</td>
-<td align="center" width="33%"><img src="../media/hacker-news.gif" width="230" alt="상위 5개 기사와 점수를 읽어 주기" /><br/>뉴스 사이트 첫 페이지 상위 5개 읽어 주기</td>
-</tr>
-<tr>
-<td align="center"><img src="../media/job-greet.jpg" width="230" alt="채용 공고를 찾아 인사 보내기" /><br/>채용 공고를 찾아 인사 보내기</td>
-<td align="center"><img src="../media/music-vip.jpg" width="230" alt="광고를 보고 음악 앱 혜택 받기" /><br/>광고를 보고 음악 앱 혜택 받기</td>
-<td align="center"><img src="../media/food-order.jpg" width="230" alt="할인 조건을 맞춰 배달 주문, 결제 전에 확인" /><br/>할인 조건을 맞춰 배달 주문, 결제 전에 확인</td>
-</tr>
-</table>
 
-</details>
 
 <sub>데모에 나오는 WeChat은 메신저 앱이고, 샤오훙수(RED)는 라이프스타일 SNS입니다. Mika는 특정 앱 전용이 아니라 휴대폰에 있는 어떤 앱이나 사이트에서도 동작합니다.</sub>
 
@@ -97,21 +75,9 @@
 
 각 기능의 사용법과 세부 사항은 [기능 자세히 보기](../features.en.md)에 있습니다.
 
-<details>
-<summary>사용 지식이 준비된 앱과 사이트(목록에 없어도 그냥 쓸 수 있습니다)</summary>
 
-전체 목록은 영어판 README의 [What it can do](../../README.md#what-it-can-do)에 있으며, 내장 지식에 맞춰 자동으로 갱신됩니다.
 
-</details>
 
-<details>
-<summary>지원하는 모델 제공업체</summary>
-
-내장된 제공업체 프리셋과 "Custom"으로 연결할 수 있는 API 종류는 영어판 README의 [What it can do](../../README.md#what-it-can-do)에 목록이 있으며, 코드에 맞춰 자동으로 갱신됩니다.
-
-API 키 없이 ChatGPT(Plus / Pro), xAI / Grok, OpenRouter 계정으로 로그인할 수도 있습니다. 모델을 추가하는 방법과 서비스별 로그인 시 주의할 점은 [모델과 로그인](../models.en.md)에 정리해 두었습니다.
-
-</details>
 
 ## 지원하는 휴대폰
 
@@ -129,24 +95,7 @@ API 키 없이 ChatGPT(Plus / Pro), xAI / Grok, OpenRouter 계정으로 로그�
 - API 키와 기억은 암호화되어 휴대폰에 저장되고, 대화와 실행 기록은 기기에만 남습니다. 업데이트 확인은 GitHub에만 접속합니다.
 - 다른 회사의 앱이나 사이트를 자동으로 조작하면 이용 약관에 어긋날 수 있으니 스스로 판단하세요. 중요한 일은 확인 모드로 하고 결과를 확인하세요. 자세한 내용은 [면책 조항](../disclaimer.en.md)을 보세요.
 
-<details>
-<summary><b>자주 묻는 질문</b></summary>
 
-**무선 디버깅이 저절로 꺼져요?** Android는 Wi-Fi를 바꾸거나 재부팅하면 무선 디버깅을 끕니다. 허용해 두면 Mika가 알아서 다시 켭니다. 그래도 연결되지 않으면 "Set up phone control"로 돌아가 다시 페어링하세요.
-
-**무선 디버깅 메뉴가 안 보여요?** 이 항목이 아예 없는 휴대폰도 있습니다. 그럴 땐 컴퓨터에서 USB로 휴대폰 도우미를 실행할 수 있습니다. [설정 가이드](../setup-guide.en.md)를 보세요.
-
-**읽지 못하거나 캡처되지 않는 화면이 있어요?** 결제나 비밀번호 입력 같은 화면은 스크린샷이 막혀 있어서, Mika가 직접 처리해 달라고 요청합니다.
-
-**내 컴퓨터에서 돌리는 모델도 쓸 수 있나요?** 네. 제공업체로 "Custom"을 고르고 로컬 네트워크 주소를 입력하면 됩니다.
-
-**앱이 한국어를 지원하나요?** 네. 앱 화면은 한국어와 영어, 중국어 간체, 중국어 번체, 일본어, 스페인어, 포르투갈어, 러시아어, 인도네시아어로 제공되며 시스템 언어를 따라갑니다(설정 › 언어에서도 바꿀 수 있습니다). Mika에게는 한국어로 말하면 됩니다. 내장된 앱·사이트 지식은 중국어로 쓰여 있지만 모델이 문제없이 읽습니다.
-
-**업데이트는 어디서 받나요?** 이 저장소의 [Releases](https://github.com/mengqingshi922-ctrl/hana/releases)에서만 배포합니다. 앱의 Hana 정보 › 업데이트 확인에서도 바로 업데이트할 수 있습니다.
-
-더 많은 질문과 답은 [FAQ](../faq.en.md)에 있습니다.
-
-</details>
 
 ## 커뮤니티와 기여
 

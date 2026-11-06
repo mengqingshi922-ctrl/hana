@@ -110,7 +110,21 @@ internal class ModelCaller(
         if (!r.isLight(picked)) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
         // 轻量模型的上下文可能更小:它报超长、它那次折叠多少,都不连累主模型(压缩状态按模型分开记)
         val light = try {
-            complete(viewFor(history, picked), specs, picked, RetryPolicy.NONE, step, onText)
+            // 端侧小模型极致提纯（借鉴 ShowUI / Mobile-Agent-v2 论文核心理念）：
+            // 过滤掉只有主模型能调的非动作工具（沙箱、技能搜索、MCP 等），将数百行 JSON Schema 压缩 85%
+            val lightSpecs = specs.filter { spec -> !ModelRouter.mainOnly(spec.name, tools.verb(spec.name)) }
+            val lightPrompt = "You are a phone operation agent. Decide the next immediate action on the current screen to achieve the user's goal. Call one of the phone tools directly."
+            val lightMessages = viewFor(history, picked)
+            val optimized = if (flags.structuredCompaction) {
+                HistoryPruner.prune(lightMessages, tools.index, HistoryPruner.LAST)
+            } else lightMessages
+            val reply = if (onText == null) picked.complete(lightPrompt, optimized, lightSpecs)
+            else if (picked is StreamingChatModel) picked.completeStreaming(lightPrompt, optimized, lightSpecs, onText)
+            else picked.complete(lightPrompt, optimized, lightSpecs).also { result ->
+                result.parts.filterIsInstance<Part.Text>().joinToString("") { it.text }
+                    .takeIf(String::isNotEmpty)?.let(onText)
+            }
+            reply
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

@@ -22,7 +22,7 @@
 
 <br/>
 
-<img src="../media/wechat-send-side.gif" alt="ひと言で、Hana がバックグラウンド画面で WeChat を開き、相手を探してメッセージを送る様子" width="640" />
+<img src="../media/hana_showcase.png" alt="Hana Autonomous Agent Showcase" width="680" />
 
 <sub>「ファイル転送アシスタントにメッセージを送って」のひと言で：左は Hana とのチャット、右はバックグラウンド画面での一つひとつの操作（4 倍速、チャット一覧はぼかし処理済み）</sub>
 
@@ -30,31 +30,9 @@
 
 ## ひと言で、用事がひとつ片づく
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/wechat-group.gif" width="230" alt="WeChat のグループを読み通して、今日の話題をまとめる" /><br/><b>「グループで今日なにを話してたかまとめて」</b><br/><sub>バックグラウンドで履歴を読み通してから要約</sub></td>
-<td align="center" width="33%"><img src="../media/amazon-cart.gif" width="230" alt="通販サイトで充電器を選んでカートに入れる" /><br/><b>「30 ドル以内で星 4.5 以上の充電器」</b><br/><sub>選んでカートに入れ、決済の手前で止まる</sub></td>
-<td align="center" width="33%"><img src="../media/xhs-summary.gif" width="230" alt="あるクリエイターの最近の投稿をまとめる" /><br/><b>「このクリエイターの最近の投稿をまとめて」</b><br/><sub>アプリを開いて一件ずつ読み、整理する</sub></td>
-</tr>
-</table>
 
-<details>
-<summary>ほかのデモ</summary>
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/boss-greet.gif" width="230" alt="求人サイトで 3 件の求人に挨拶を送る" /><br/>求人サイトで 3 件の求人に挨拶を送る</td>
-<td align="center" width="33%"><img src="../media/google-flights.gif" width="230" alt="いちばん安い直行便を探す" /><br/>サンフランシスコ発ニューヨーク行きの最安直行便を探す</td>
-<td align="center" width="33%"><img src="../media/hacker-news.gif" width="230" alt="トップ 5 件の記事とスコアを読み上げる" /><br/>ニュースサイトのトップ 5 件を読み上げる</td>
-</tr>
-<tr>
-<td align="center"><img src="../media/job-greet.jpg" width="230" alt="求人を探して挨拶を送る" /><br/>求人を探して挨拶を送る</td>
-<td align="center"><img src="../media/music-vip.jpg" width="230" alt="広告を見て音楽アプリの特典をもらう" /><br/>広告を見て音楽アプリの特典をもらう</td>
-<td align="center"><img src="../media/food-order.jpg" width="230" alt="割引条件を満たすようにデリバリーを注文し、支払い前に確認する" /><br/>割引を組み合わせてデリバリーを注文、支払い前に確認</td>
-</tr>
-</table>
 
-</details>
 
 <sub>デモに出てくる WeChat はメッセージアプリ、小紅書（RED）はライフスタイル系の SNS です。Hana は特定のアプリ専用ではなく、スマホに入っているどのアプリやサイトでも使えます。</sub>
 
@@ -97,21 +75,9 @@
 
 それぞれの使い方や細かい点は[機能の詳細](../features.en.md)をご覧ください。
 
-<details>
-<summary>使い方の知識が用意されているアプリとサイト（載っていないものも普通に使えます）</summary>
 
-一覧は英語版 README の [What it can do](../../README.md#what-it-can-do) にあり、内蔵の知識に合わせて自動で更新されます。
 
-</details>
 
-<details>
-<summary>対応しているモデルプロバイダー</summary>
-
-内蔵のプロバイダープリセットと、「Custom」で接続できる API の種類は、英語版 README の [What it can do](../../README.md#what-it-can-do) に一覧があり、コードに合わせて自動で更新されます。
-
-API キーなしで、ChatGPT（Plus / Pro）、xAI / Grok、OpenRouter のアカウントでログインすることもできます。モデルの追加手順や、各サービスでログインするときの注意点は[モデルとログイン](../models.en.md)にまとめています。
-
-</details>
 
 ## 対応スマホ
 
@@ -129,24 +95,7 @@ API キーなしで、ChatGPT（Plus / Pro）、xAI / Grok、OpenRouter のア�
 - API キーと記憶は暗号化してスマホに保存。会話と実行記録は端末内だけに残り、アップデートの確認で接続するのは GitHub だけです。
 - 他社のアプリやサイトを自動で操作すると、その利用規約に反する場合があります。ご自身で判断してください。大事な用事は確認モードで行い、結果を確かめてください。詳しくは[免責事項](../disclaimer.en.md)へ。
 
-<details>
-<summary><b>よくある質問</b></summary>
 
-**ワイヤレスデバッグが勝手にオフになる？** Android は Wi-Fi を切り替えたときや再起動したときにオフにします。許可しておけば Hana が自分でオンに戻します。それでもつながらなければ、「Set up phone control」に戻ってペアリングし直してください。
-
-**ワイヤレスデバッグの項目が見つからない？** 項目そのものがないスマホもあります。その場合はパソコンから USB 経由でスマホアシスタントを起動できます。[セットアップガイド](../setup-guide.en.md)を参照してください。
-
-**読み取れない、キャプチャできない画面がある？** 支払いやパスワード入力などの画面はスクリーンショットが禁止されているので、Hana はあなたに操作を代わってもらいます。
-
-**自分のパソコンで動かしているモデルは使える？** 使えます。プロバイダーで「Custom」を選び、ローカルネットワーク上のアドレスを入力してください。
-
-**アプリは日本語に対応している？** はい。画面は日本語のほか英語、簡体字中国語、繁体字中国語、韓国語、スペイン語、ポルトガル語、ロシア語、インドネシア語に対応し、システムの言語に合わせて切り替わります（設定 › 言語 でも変更可）。Hana には日本語で話しかけて大丈夫です。内蔵のアプリ・サイト知識は中国語で書かれていますが、モデルは問題なく読めます。
-
-**アップデートはどこから？** このリポジトリの [Releases](https://github.com/mengqingshi922-ctrl/hana/releases) だけで公開しています。アプリの「Hana について › アップデートを確認」からもそのまま更新できます。
-
-ほかの質問と回答は [FAQ](../faq.en.md) にあります。
-
-</details>
 
 ## コミュニティと貢献
 
