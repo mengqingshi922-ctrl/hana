@@ -1,0 +1,1 @@
+Perform an end-to-end search in one step: taps the search entry/bar, enters the search query keyword, and submits the search (presses Enter). This eliminates the slow multi-step sequence of tap -> wait -> type -> enter. Use whenever searching inside an app.
