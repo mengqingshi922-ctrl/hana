@@ -259,6 +259,7 @@ private fun TagChip(t: Tag) {
         TagTone.Ok -> c.okSoft to c.ok
         TagTone.Warn -> c.warnSoft to c.warn
         TagTone.Bad -> c.badSoft to c.bad
+        TagTone.Info -> c.accentSoft to c.accent
     }
     Text(
         t.text, Modifier.background(bg, RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 2.dp),
