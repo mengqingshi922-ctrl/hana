@@ -14,7 +14,7 @@ import kotlinx.serialization.json.contentOrNull
 import java.io.File
 import com.wangzan101.mika.core.assembly.knownTools
 
-enum class TagTone { Ok, Warn, Bad }
+enum class TagTone { Ok, Warn, Bad, Info }
 
 /** 时间线上的标签:守卫、核查、确认、接管、障碍的结论。 */
 data class Tag(val text: String, val tone: TagTone)
@@ -34,6 +34,7 @@ data class StepTiming(
     val modelMs: Long? = null,
     val toolMs: Long? = null,
     val retryMs: Long = 0,
+    val modelRole: String? = null,
 ) {
     val totalMs: Long? get() = if (modelMs != null && toolMs != null) modelMs + toolMs else null
 }
@@ -52,6 +53,7 @@ data class TimelineStep(
     val screenshotId: Int?,
     val activities: List<TimelineActivity> = emptyList(),
     val timing: StepTiming = StepTiming(),
+    val modelRole: String? = null,
 )
 
 data class TimelineHeader(
@@ -137,13 +139,32 @@ class RunTimelineViewModel(
                     val elapsed = e.latencyMs.coerceAtLeast(0) + e.retryWaitMs.coerceAtLeast(0)
                     if (elapsed > 0) modelTimes[e.step] = modelTimes.getOrDefault(e.step, 0) + elapsed
                     if (e.retryWaitMs > 0) retryTimes[e.step] = retryTimes.getOrDefault(e.step, 0) + e.retryWaitMs
+                    val modelName = e.model
+                    val isLight = e.role == "light" || modelName?.contains("端侧") == true || modelName?.contains("qwen2.5") == true
+                    val modelTag = when {
+                        isLight -> Tag("⚡ 端侧小脑 (Qwen2.5)", TagTone.Ok)
+                        e.role == "main" -> Tag("☁️ 云端主脑", TagTone.Info)
+                        modelName != null -> Tag("☁️ ${modelName.substringBefore('(').trim()}", TagTone.Info)
+                        else -> null
+                    }
                     if (e.acted) {
                         val row = at(e.step)
                         val said = listOf(row.said, e.text.trim()).filter { it.isNotEmpty() }.joinToString(" ")
+                        val newTags = if (modelTag != null && row.tags.none { it.text == modelTag.text }) row.tags + modelTag else row.tags
                         rows[e.step] = row.copy(
                             said = said,
                             tool = e.tool?.let(toolLabel) ?: row.tool,
                             detail = e.argsJson?.let(::detailOf) ?: row.detail,
+                            tags = newTags,
+                            modelRole = if (isLight) "light" else "main",
+                        )
+                    } else if (e.text.isNotBlank()) {
+                        val row = at(e.step)
+                        val newTags = if (modelTag != null && row.tags.none { it.text == modelTag.text }) row.tags + modelTag else row.tags
+                        rows[e.step] = row.copy(
+                            said = e.text.trim(),
+                            tags = newTags,
+                            modelRole = if (isLight) "light" else "main",
                         )
                     }
                 }
@@ -185,19 +206,25 @@ class RunTimelineViewModel(
                 val measured = (outer.ifEmpty { results.filter { it.durationMs > 0 } }).sumOf { it.durationMs }
                 row.copy(
                     said = clipSaid(row.said),
-                    timing = StepTiming(modelTimes[row.step], measured.takeIf { it > 0 }, retryTimes[row.step] ?: 0),
+                    timing = StepTiming(modelTimes[row.step], measured.takeIf { it > 0 }, retryTimes[row.step] ?: 0, row.modelRole),
                 )
             }
         }
 
         internal fun timingLabel(t: StepTiming): String {
-            if (t.modelMs == null && t.toolMs == null) return tr(R.string.timing_unrecorded)
-            return buildList {
+            val prefix = when (t.modelRole) {
+                "light" -> "【⚡端侧驱动】"
+                "main" -> "【☁️云端决策】"
+                else -> ""
+            }
+            if (t.modelMs == null && t.toolMs == null) return if (prefix.isEmpty()) tr(R.string.timing_unrecorded) else prefix
+            val details = buildList {
                 t.totalMs?.let { add(tr(R.string.timing_total, shortDuration(it))) }
                 t.modelMs?.let { add(tr(R.string.timing_model, shortDuration(it))) }
                 t.toolMs?.let { add(tr(R.string.timing_tool, shortDuration(it))) }
                 if (t.retryMs > 0) add(tr(R.string.timing_retry, shortDuration(t.retryMs)))
             }.joinToString(" · ")
+            return if (prefix.isNotEmpty()) "$prefix $details" else details
         }
 
         private fun shortDuration(ms: Long): String = when {

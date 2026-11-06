@@ -173,6 +173,12 @@ object LocalModelManager {
                 } else {
                     flow.value = LocalModelStatus.Ready(tempFile, tempFile.length())
                 }
+
+                // 核心保障：模型下载完成后，自动解压/安装推理引擎并自动激活常驻监听！
+                ensureEngineInstalled(context)
+                val providerStore = ProviderStore.get(context)
+                val featureFlags = FeatureFlags.get(context)
+                activateAsLightModel(context, spec.id, providerStore, featureFlags)
             } catch (e: CancellationException) {
                 flow.value = LocalModelStatus.NotDownloaded
             } catch (e: Exception) {
@@ -202,6 +208,50 @@ object LocalModelManager {
         statusFlows[modelId]?.value = LocalModelStatus.NotDownloaded
     }
 
+    /**
+     * 自动安装端侧 llama-server 推理引擎（优先从 assets 内置解压，不存在则从官方 release 下载）。
+     */
+    fun ensureEngineInstalled(context: Context): Boolean {
+        val binDir = File(context.filesDir, "bin")
+        val exe = File(binDir, "llama-server")
+        if (exe.exists() && exe.canExecute()) return true
+        binDir.mkdirs()
+
+        // 1. 优先尝试从 assets/engine/llama-engine.tar.gz 解压安装
+        val hasAsset = try {
+            context.assets.list("engine")?.contains("llama-engine.tar.gz") == true
+        } catch (_: Exception) { false }
+
+        if (hasAsset) {
+            try {
+                context.assets.open("engine/llama-engine.tar.gz").use { stream ->
+                    com.wangzan101.mika.core.cap.sandbox.RootfsExtractor.extract(stream, binDir)
+                }
+                exe.setExecutable(true, false)
+                if (exe.exists()) return true
+            } catch (_: Exception) {
+                // 解压异常退回网络下载
+            }
+        }
+
+        // 2. 从官方 release 镜像下载引擎包
+        return try {
+            val engineUrl = "https://github.com/ggml-org/llama.cpp/releases/download/b12167/llama-b12167-bin-android-arm64.tar.gz"
+            val req = Request.Builder().url(engineUrl).build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return false
+                val body = resp.body ?: return false
+                body.byteStream().use { stream ->
+                    com.wangzan101.mika.core.cap.sandbox.RootfsExtractor.extract(stream, binDir)
+                }
+            }
+            exe.setExecutable(true, false)
+            exe.exists()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     /** 检测端侧 8080 推理服务端口是否存活。 */
     fun isServerRunning(): Boolean {
         return try {
@@ -221,6 +271,7 @@ object LocalModelManager {
      */
     fun ensureServerRunning(context: Context): Boolean {
         if (isServerRunning()) return true
+        ensureEngineInstalled(context)
         val binDir = listOf(
             File(context.filesDir, "bin"),
             File("/data/local/tmp/llama")
