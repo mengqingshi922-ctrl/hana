@@ -21,39 +21,20 @@
 
 <br/>
 
-<img src="../media/wechat-send-side.gif" alt="一句话，Hana 在后台屏上打开微信、找到联系人、发出消息" width="640" />
+<img src="../media/hana_showcase.png" alt="Hana 陪伴型全自主手机操作智能体真机界面与灵动小精灵" width="680" />
 
-<sub>一句话「给文件传输助手发一条消息」：左边是 Hana 的对话，右边是它在后台屏上的每一步（加速 4 倍，聊天列表已打码）</sub>
+<sub>Hana 沉浸式真机界面：置顶常驻灵动小精灵（Mascot）、多工作状态胶囊与意图极速分流直通引擎</sub>
 
 </div>
 
-## 一句话，办成一件事
+## 一句话，全自动搞定复杂任务
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/wechat-group.gif" width="230" alt="翻完微信群，总结今天聊了啥" /><br/><b>「总结一下群里今天聊了啥」</b><br/><sub>后台翻完聊天记录再总结</sub></td>
-<td align="center" width="33%"><img src="../media/amazon-cart.gif" width="230" alt="在购物网站挑充电器加进购物车" /><br/><b>「30 美元以内、4.5 星以上的充电器」</b><br/><sub>挑好加进购物车，停在结账前</sub></td>
-<td align="center" width="33%"><img src="../media/xhs-summary.gif" width="230" alt="总结一位博主最近发的内容" /><br/><b>「总结这个博主最近发了什么」</b><br/><sub>打开 App 逐条看完再整理</sub></td>
-</tr>
-</table>
+用户只需下达自然语言指令，Hana 即可通过端侧感知、意图快速判断与无障碍/虚拟屏注入完成跨应用操作：
 
-<details>
-<summary>更多演示</summary>
-
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/boss-greet.gif" width="230" alt="在招聘网站上给 3 个岗位打招呼" /><br/>在招聘网站上给 3 个岗位打招呼</td>
-<td align="center" width="33%"><img src="../media/google-flights.gif" width="230" alt="找最便宜的直飞航班" /><br/>找旧金山到纽约最便宜的直飞</td>
-<td align="center" width="33%"><img src="../media/hacker-news.gif" width="230" alt="读出首页前 5 条和分数" /><br/>读出新闻站首页前 5 条</td>
-</tr>
-<tr>
-<td align="center"><img src="../media/job-greet.jpg" width="230" alt="找岗位、打招呼" /><br/>找岗位、打招呼</td>
-<td align="center"><img src="../media/music-vip.jpg" width="230" alt="看广告领听歌权益" /><br/>看广告领听歌权益</td>
-<td align="center"><img src="../media/food-order.jpg" width="230" alt="凑满减点外卖，付款前问你" /><br/>凑满减点外卖，付款前问你</td>
-</tr>
-</table>
-
-</details>
+- 📱 **社交生活自动化**：「打开微信，给文件传输助手发一条今天的工作备忘」「在小红书搜一下最新的露营攻略，点赞最热门的前三篇笔记」
+- 🛒 **电商比价与加购**：「在电商平台搜 30 元以内的快充充电器，按销量排序加购物车，停在付款前」
+- 🔍 **信息速览与提炼**：「翻一下群里今天聊了什么，提炼出关键待办事项发给我」
+- ⏰ **系统与日程调度**：「帮我订明天早上 8:30 和 9:00 的闹钟，并查看明天是否下雨」
 
 ## 为什么选择 Hana
 

@@ -73,7 +73,7 @@ object ProviderPresets {
         // 自己机器上跑的:地址是本机的默认端口,跑在电脑上时改成电脑的局域网地址;不要 Key
         ProviderPreset("Ollama", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:11434/v1", caps(), selfHosted = true),
         ProviderPreset("LM Studio", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:1234/v1", caps(), selfHosted = true),
-        ProviderPreset("本地端侧模型 (Local SLM)", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:8080/v1", caps(context = 4096), selfHosted = true, familyTokens = listOf("qwen", "ui-tars")),
+        ProviderPreset("本地端侧模型 (Local SLM)", ProviderConfig.Kind.OpenAiCompat, "http://127.0.0.1:8080/v1", caps(context = 32768), selfHosted = true, familyTokens = listOf("qwen", "ui-tars")),
         ProviderPreset("自定义", ProviderConfig.Kind.OpenAiCompat, "", caps()),
     )
 

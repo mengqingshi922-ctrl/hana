@@ -20,41 +20,20 @@ English · [简体中文](docs/readme/README.zh-CN.md) · [繁體中文](docs/re
 
 <br/>
 
-<img src="docs/media/wechat-send-side.gif" alt="From one sentence, Hana opens WeChat on its background screen, finds the contact and sends the message" width="640" />
+<img src="docs/media/hana_showcase.png" alt="Hana Autonomous Phone-Operating Agent Interface with Mascot Presence" width="680" />
 
-<sub>"Send a message to File Transfer": Hana's chat on the left, each step on its background screen on the right (4× speed; chat list blurred)</sub>
+<sub>Hana's refined Jetpack Compose UI featuring the persistent top mascot avatar, dynamic state pill, and zero-latency autonomous action engine</sub>
 
 </div>
 
-## Get things done with one sentence
+## Complex tasks completed in one sentence
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="docs/media/wechat-group.gif" width="230" alt="Reads through a WeChat group and summarizes today's chat" /><br/><b>"What did the group talk about today?"</b><br/><sub>Scrolls through the chat in the background, then sums it up</sub></td>
-<td align="center" width="33%"><img src="docs/media/amazon-cart.gif" width="230" alt="Picks a charger on a shopping site and adds it to the cart" /><br/><b>"A charger under $30, rated 4.5 stars or more"</b><br/><sub>Adds the pick to the cart and stops before checkout</sub></td>
-<td align="center" width="33%"><img src="docs/media/xhs-summary.gif" width="230" alt="Summarizes a creator's recent posts" /><br/><b>"What has this creator posted lately?"</b><br/><sub>Opens the app, reads post by post, then sums it up</sub></td>
-</tr>
-</table>
+Simply speak your request in natural language. Hana orchestrates end-to-end perception, intent-gating, and background phone actions across applications:
 
-<details>
-<summary>More demos</summary>
-
-<table>
-<tr>
-<td align="center" width="33%"><img src="docs/media/boss-greet.gif" width="230" alt="Greets recruiters for 3 jobs on a job site" /><br/>Greets recruiters for 3 jobs on a job site</td>
-<td align="center" width="33%"><img src="docs/media/google-flights.gif" width="230" alt="Finds the cheapest nonstop flight" /><br/>Finds the cheapest nonstop from San Francisco to New York</td>
-<td align="center" width="33%"><img src="docs/media/hacker-news.gif" width="230" alt="Reads out the top 5 stories and their points" /><br/>Reads out the top 5 stories on a news site</td>
-</tr>
-<tr>
-<td align="center"><img src="docs/media/job-greet.jpg" width="230" alt="Finds jobs and greets recruiters" /><br/>Finds jobs and greets recruiters</td>
-<td align="center"><img src="docs/media/music-vip.jpg" width="230" alt="Watches ads to unlock music perks" /><br/>Watches ads to unlock music perks</td>
-<td align="center"><img src="docs/media/food-order.jpg" width="230" alt="Orders takeout with stacked discounts and asks you before paying" /><br/>Orders takeout with stacked discounts, asks before paying</td>
-</tr>
-</table>
-
-</details>
-
-<sub>Several demos use apps popular in China: WeChat is the main messaging app there, and Xiaohongshu (RED) is a lifestyle and social platform. Hana isn't tied to them; it works with any app or website on your phone.</sub>
+- 📱 **Social & Daily Automation**: "Open WeChat, send today's memo to File Transfer" · "Search RED for latest camping guides and like the top 3 posts"
+- 🛒 **E-Commerce Price Comparison**: "Search shopping apps for fast chargers under $30 with 4.5+ stars, add the top pick to cart, stop before checkout"
+- 🔍 **Chat & Content Synthesis**: "Read through today's chat history in my study group and summarize key takeaways"
+- ⏰ **System & Routine Schedules**: "Set alarms for 8:30 and 9:00 tomorrow morning, and check if it will rain"
 
 ## Why Hana
 

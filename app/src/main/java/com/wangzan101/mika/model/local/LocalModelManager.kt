@@ -202,6 +202,64 @@ object LocalModelManager {
         statusFlows[modelId]?.value = LocalModelStatus.NotDownloaded
     }
 
+    /** 检测端侧 8080 推理服务端口是否存活。 */
+    fun isServerRunning(): Boolean {
+        return try {
+            java.net.Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress("127.0.0.1", 8080), 300)
+                true
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @Volatile private var serverProcess: Process? = null
+
+    /**
+     * 确保端侧 llama-server 守护进程已拉起并处于监听状态。
+     */
+    fun ensureServerRunning(context: Context): Boolean {
+        if (isServerRunning()) return true
+        val binDir = listOf(
+            File(context.filesDir, "bin"),
+            File("/data/local/tmp/llama")
+        ).firstOrNull { File(it, "llama-server").exists() } ?: return false
+
+        val exe = File(binDir, "llama-server")
+        val readyModel = AVAILABLE_MODELS.firstNotNullOfOrNull { spec ->
+            val f = getFile(context, spec)
+            if (f.exists() && f.length() > 10 * 1024 * 1024L) f else null
+        } ?: return false
+
+        return try {
+            val pb = ProcessBuilder(
+                exe.absolutePath,
+                "-m", readyModel.absolutePath,
+                "--host", "127.0.0.1",
+                "--port", "8080",
+                "-c", "8192",
+                "-np", "1",
+                "-t", "6",
+                "--alias", readyModel.name.removeSuffix(".gguf")
+            )
+            pb.environment()["LD_LIBRARY_PATH"] = binDir.absolutePath
+            val logFile = File(context.filesDir, "llama_server.log")
+            pb.redirectOutput(ProcessBuilder.Redirect.appendTo(logFile))
+            pb.redirectError(ProcessBuilder.Redirect.appendTo(logFile))
+            serverProcess = pb.start()
+
+            val start = System.currentTimeMillis()
+            while (System.currentTimeMillis() - start < 8000) {
+                if (isServerRunning()) return true
+                Thread.sleep(300)
+            }
+            isServerRunning()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     /**
      * 一键将下载好的端侧模型配置为 Hana 的轻量模型（ModelRole.Light），并打开 lightSteps 提速开关。
      */
@@ -234,7 +292,7 @@ object LocalModelManager {
                 kind = ProviderConfig.Kind.OpenAiCompat,
                 baseUrl = localBaseUrl,
                 model = spec.fileName.removeSuffix(".gguf"),
-                capabilities = Capabilities(toolCalls = true, vision = false, contextTokens = 4096, reasoning = false),
+                capabilities = Capabilities(toolCalls = true, vision = false, contextTokens = 32768, reasoning = false),
             )
             providerStore.save(newConfig, "local-embedded")
             newId
@@ -247,6 +305,9 @@ object LocalModelManager {
         featureFlags?.let { ff ->
             ff.setSpeed(ff.speedFlags().copy(lightSteps = true))
         }
+
+        // 确保端侧 llama-server 守护引擎处于监听状态
+        ensureServerRunning(context)
         true
     }
 }

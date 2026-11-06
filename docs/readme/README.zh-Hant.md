@@ -22,7 +22,7 @@
 
 <br/>
 
-<img src="../media/wechat-send-side.gif" alt="一句話，Hana 在背景螢幕上打開微信、找到聯絡人、送出訊息" width="640" />
+<img src="../media/hana_showcase.png" alt="Hana Autonomous Agent Showcase" width="680" />
 
 <sub>一句話「給文件傳輸助手發一則訊息」：左邊是 Hana 的對話，右邊是它在背景螢幕上的每一步（4 倍速播放，聊天列表已打碼）</sub>
 
@@ -30,31 +30,9 @@
 
 ## 一句話，辦好一件事
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/wechat-group.gif" width="230" alt="翻完微信群組，總結今天聊了什麼" /><br/><b>「總結一下群組裡今天聊了什麼」</b><br/><sub>在背景翻完聊天紀錄再總結</sub></td>
-<td align="center" width="33%"><img src="../media/amazon-cart.gif" width="230" alt="在購物網站挑充電器加入購物車" /><br/><b>「30 美元以內、4.5 星以上的充電器」</b><br/><sub>挑好加入購物車，停在結帳前</sub></td>
-<td align="center" width="33%"><img src="../media/xhs-summary.gif" width="230" alt="總結一位創作者最近發的內容" /><br/><b>「總結這位創作者最近發了什麼」</b><br/><sub>打開 App 逐篇看完再整理</sub></td>
-</tr>
-</table>
 
-<details>
-<summary>更多示範</summary>
 
-<table>
-<tr>
-<td align="center" width="33%"><img src="../media/boss-greet.gif" width="230" alt="在求職網站上向 3 個職缺打招呼" /><br/>在求職網站上向 3 個職缺打招呼</td>
-<td align="center" width="33%"><img src="../media/google-flights.gif" width="230" alt="找最便宜的直飛航班" /><br/>找舊金山飛紐約最便宜的直飛</td>
-<td align="center" width="33%"><img src="../media/hacker-news.gif" width="230" alt="念出首頁前 5 則和分數" /><br/>念出新聞網站首頁前 5 則</td>
-</tr>
-<tr>
-<td align="center"><img src="../media/job-greet.jpg" width="230" alt="找職缺、打招呼" /><br/>找職缺、打招呼</td>
-<td align="center"><img src="../media/music-vip.jpg" width="230" alt="看廣告領聽歌權益" /><br/>看廣告領聽歌權益</td>
-<td align="center"><img src="../media/food-order.jpg" width="230" alt="湊滿額折扣點外送，付款前問你" /><br/>湊滿額折扣點外送，付款前問你</td>
-</tr>
-</table>
 
-</details>
 
 ## 為什麼選 Hana
 
@@ -95,21 +73,9 @@
 
 每一項怎麼用、有哪些細節，見[詳細說明](../features.md)。
 
-<details>
-<summary>已經寫好使用知識的 App 和網站（沒寫到的照樣能用）</summary>
 
-完整清單見簡體中文版 README 的[「能做什么」](README.zh-CN.md#能做什么)一節，會隨內建知識自動更新。
 
-</details>
 
-<details>
-<summary>支援的模型服務商</summary>
-
-內建的服務商預設和「自定義」能接的介面類型，完整清單見簡體中文版 README 的[「能做什么」](README.zh-CN.md#能做什么)一節，會隨程式碼自動更新。
-
-也可以不填 Key：用 ChatGPT（Plus / Pro）、xAI / Grok、OpenRouter 帳號登入。新增模型的步驟和各家登入的注意事項見[模型與登入](../models.md)。
-
-</details>
 
 ## 能在哪些手機上用
 
@@ -127,24 +93,7 @@
 - API Key、記憶加密保存在手機上；對話、執行紀錄只存在本機；檢查更新只連到 GitHub。
 - 自動操作第三方 App 和網站可能違反它們的使用條款，請自行判斷。重要的事用詢問模式，並檢查結果。詳見[免責聲明](../disclaimer.md)。
 
-<details>
-<summary><b>常見問題</b></summary>
 
-**無線偵錯自己關掉了？** Android 在換 Wi-Fi、重新開機後會關掉它。Hana 會在你允許的前提下自己打開；連不上就回到「設定手機操作」重新配對。
-
-**系統裡找不到無線偵錯？** 有的手機系統拿掉了這一項，可以用電腦透過 USB 啟動手機助手，見[設定指南](../setup-guide.md)。
-
-**有的頁面讀不到、截不到？** 付款、輸入密碼這類頁面禁止截圖，Hana 會請你接手。
-
-**能用自己電腦上跑的模型嗎？** 可以，服務商選「自定義」，填區域網路位址即可。
-
-**App 有繁體中文介面嗎？** 有。介面有繁體中文、簡體中文、英文、日文、韓文、西班牙文、葡萄牙文、俄文和印尼文，跟隨系統語言，也可以在 設定 › 語言 裡切換。
-
-**更新從哪裡來？** 只從本倉庫的 [Releases](https://github.com/mengqingshi922-ctrl/hana/releases) 發布；App 裡「關於 › 檢查更新」也能直接升級。
-
-更多問答見[常見問題](../faq.md)。
-
-</details>
 
 ## 社群與貢獻
 
