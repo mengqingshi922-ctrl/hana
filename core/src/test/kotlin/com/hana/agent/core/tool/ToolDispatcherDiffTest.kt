@@ -65,7 +65,7 @@ class ToolDispatcherDiffTest {
         val o = d.execute(call("phone_observe")).content
         assertEquals("p1", o.s("snapshotId"))
         val r = d.execute(call("phone_tap", """{"ref":"@e1","snapshotId":"p1"}""")).content
-        assertEquals(listOf("tapRef @e1 p1", "waitStable 1500"), s.calls)
+        assertEquals(listOf("tapRef @e1 p1", "waitStable 350"), s.calls)
         val screen = r["screen"]!!.jsonObject
         assertFalse(screen["full"]!!.jsonPrimitive.boolean)
         assertEquals("p2", screen.s("snapshotId")); assertEquals("p1", screen.s("base"))

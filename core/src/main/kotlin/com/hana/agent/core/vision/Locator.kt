@@ -8,6 +8,7 @@ import com.hana.agent.core.uistate.TreeAdequacy
 import com.hana.agent.core.uistate.TreeQuality
 import com.hana.agent.core.uistate.UiElement
 import com.hana.agent.core.uistate.VisibleTextLine
+import com.hana.agent.core.visual.FrameDiff
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -81,9 +82,21 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
 
     suspend fun locate(target: String, text: String?): LocateResult {
         val first = capture().let { it as? Shot.Ok ?: return (it as Shot.Missing).asNotFound() }
+        val beforeGrid = try { screen.frameGrid() } catch (e: Exception) { null }
         val elements = if (text != null) readElements() else null
-        val second = capture().let { it as? Shot.Ok ?: return (it as Shot.Missing).asNotFound() }
-        val synced = elements != null && hamming(first.hash, second.hash) <= LOCATE_SCREEN_CHANGE
+        val second = if (text == null) {
+            // 没有目标文本时无需核验元素与截图同步性，直接复用首帧
+            first
+        } else {
+            val afterGrid = try { screen.frameGrid() } catch (e: Exception) { null }
+            if (beforeGrid != null && afterGrid != null && FrameDiff.compare(beforeGrid, afterGrid)?.visible == false) {
+                // 静态画面轻量直通：未发生视觉漂移，直接复用首帧截图，消除昂贵的二次全量 PNG 压缩与 aHash 运算
+                first
+            } else {
+                capture().let { it as? Shot.Ok ?: return (it as Shot.Missing).asNotFound() }
+            }
+        }
+        val synced = elements != null && (second === first || hamming(first.hash, second.hash) <= LOCATE_SCREEN_CHANGE)
 
         if (text != null && synced) {
             val hit = exactMatch(elements!!, text)
@@ -134,8 +147,13 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
         if (!confirmed) return LocateResult.NotFound("not_confirmed", "Something was marked, but a second look did not confirm it is the described element. ${m.notFoundNext}")
 
         val nameChecked = occupant != null && occupant.name.isNotBlank()
-        // 高置信度直通机制：当视觉模型在第一轮已成功提取出 seen 标签且复看确认通过，直接直通，杜绝耗时的 3~4 轮串行 VLM 往返
-        val strongConfidence = confirmed && ((text != null && box.seen != null && !disagree(box.seen, text)) ||
+        // 坐标防漂移检查：若控件树中明确存在目标文字的候选元素，但视觉定位框未落在该元素上，判定为坐标漂移/幻觉，严禁直通
+        val allElements = elements ?: peekOrNull()?.elements
+        val targetInTree = text != null && allElements?.any { it.name.isNotBlank() && norm(text) in norm(it.name) } == true
+        val driftDetected = targetInTree && !nameChecked
+
+        // 高置信度直通机制：受坐标防漂移与二次核验约束，当无坐标漂移且视觉模型提取出 seen 标签并复看确认通过时才允许直通
+        val strongConfidence = !driftDetected && confirmed && ((text != null && box.seen != null && !disagree(box.seen, text)) ||
             (box.seen != null && norm(target) in norm(box.seen)))
         val visionOnly = !vision.groundingVerified && !nameChecked && nothingToCheckAgainst(text)
         if (!vision.groundingVerified && !nameChecked && !visionOnly && !strongConfidence) {

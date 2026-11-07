@@ -49,6 +49,20 @@ class GesturePacingTest {
         }
     }
 
+    @Test fun fastPacingTimingIsStrictlyBoundedAndFaster() {
+        val fast = GesturePacing.Fast
+        assertTrue(fast.paced)
+        repeat(500) { i ->
+            val p = GesturePacing.fast(Random(i))
+            assertTrue(p.approach() in GesturePacing.FastLimits.approachMs)
+            assertTrue(p.press() in GesturePacing.FastLimits.pressMs)
+            assertTrue(p.approach() <= 20L)
+            assertTrue(p.press() in 30L..50L)
+            assertTrue(p.doublePress() in 30L..50L)
+            assertTrue(p.doubleGap() in 40L..80L)
+        }
+    }
+
     @Test fun jitteredPointStaysWellInsideTheElement() {
         repeat(2_000) { i ->
             val r = Random(i)

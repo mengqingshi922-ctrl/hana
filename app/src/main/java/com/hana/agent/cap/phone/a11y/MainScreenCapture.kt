@@ -12,6 +12,8 @@ import com.hana.agent.core.userscreen.UserScreenText
 import com.hana.agent.vision.BitmapImageOps
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
@@ -44,11 +46,11 @@ internal object MainScreenCapture {
         return packages.filterNotNull().toSet()
     }
 
-    /** 截图(调用方已把浮层藏好)。读树要在截图的同一时刻:截完马上读。 */
-    suspend fun shoot(service: ScreenAccessibility): Pair<ScreenAccessibility.MainShot, ScreenRead?> {
-        val shot = service.takeMainScreenshot()
-        val read = runCatching { readTree(service) }.getOrNull()
-        return shot to read
+    /** 截图(调用方已把浮层藏好)。读树要在截图的同一时刻:解耦为并发协程执行，大幅压缩冷等待。 */
+    suspend fun shoot(service: ScreenAccessibility): Pair<ScreenAccessibility.MainShot, ScreenRead?> = coroutineScope {
+        val shotDeferred = async { service.takeMainScreenshot() }
+        val readDeferred = async { runCatching { readTree(service) }.getOrNull() }
+        shotDeferred.await() to readDeferred.await()
     }
 
     /** 截下的画面和树整理成一屏(在后台:编码、认字);[topInset]/[bottomInset] 是状态栏、导航条占掉的像素。 */

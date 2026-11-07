@@ -43,7 +43,16 @@ internal object ChangeWait {
     ): Boolean {
         val deadline = now() + capMs
         var prev = frame()
-        var wait = pollMs
+        // [Check-First 零延迟短路] 进入循环前先做零延迟探测：若动作完成后事件已安静且树已更新，立即短路返回
+        val initQuietFor = quietForMs()
+        val initQuiet = initQuietFor >= quietMs
+        if (initQuiet && treeChanged()) return true
+        val initStable = if (beforeFrame == null || prev == null) beforeFrame == null && prev == null else !FrameMath.differs(beforeFrame, prev)
+        val initFrameChanged = FrameMath.differs(beforeFrame, prev)
+        if (initQuiet && initStable && initFrameChanged) return true
+
+        // 动态对齐初始等待步长：精确对齐剩余安静时间，杜绝盲目休眠满 pollMs
+        var wait = if (initQuiet) pollMs else minOf(pollMs, quietMs - initQuietFor).coerceAtLeast(MIN_SLEEP_MS)
         while (true) {
             sleep(minOf(wait, (deadline - now()).coerceAtLeast(0)))
             val cur = frame()

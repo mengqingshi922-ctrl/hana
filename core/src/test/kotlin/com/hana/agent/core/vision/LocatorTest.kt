@@ -43,6 +43,8 @@ internal class LocScreen(
     private val queue = ArrayDeque(shots.toList().ifEmpty { listOf(FRAME_A) })
     var peeks = 0
     val taps = mutableListOf<String>()
+    var shotCalls = 0
+    var frameGridProvider: (() -> com.hana.agent.core.visual.FrameGrid?)? = null
     fun show(vararg next: ByteArray?) { queue.clear(); queue.addAll(next.toList()) }
     private fun read(id: String) = ScreenSnapshot(id, if (hasWindow) "com.android.settings" else null, elements, width, height, hasWindow = hasWindow)
     override suspend fun snapshot() = read("s")
@@ -50,7 +52,11 @@ internal class LocScreen(
         if (peekFails) throw IllegalStateException("unreadable")
         peeks++; return read("p$peeks")
     }
-    override suspend fun screenshotPng(): ByteArray? = if (queue.size > 1) queue.removeFirst() else queue.firstOrNull()
+    override suspend fun frameGrid(): com.hana.agent.core.visual.FrameGrid? = frameGridProvider?.invoke()
+    override suspend fun screenshotPng(): ByteArray? {
+        shotCalls++
+        return if (queue.size > 1) queue.removeFirst() else queue.firstOrNull()
+    }
     override suspend fun readVisibleText(): List<VisibleTextLine>? = ocr
     override suspend fun isProtected() = secure
     override suspend fun tapRef(ref: String, snapshotId: String): ActionResult { taps += "ref $ref"; return ActionResult.Ok(changed = true) }
@@ -349,5 +355,25 @@ class LocatorTest {
         val tree = unverified()
         assertEquals("elements", found(locator(LocScreen(listOf(wlan)), tree).locate("WLAN", "WLAN")).source)
         assertEquals(0, tree.requests.size)
+    }
+
+    @Test fun textNullDirectlyReusesFirstScreenshot() = runTest {
+        // 当 text 为 null 时，直接复用首帧截图，杜绝无意义的二次全尺寸截图
+        val s = LocScreen()
+        val m = says("""{"bbox_2d":[100,200,300,400],"seen":"图标"}""", "是")
+        val r = found(locator(s, m).locate("某个图标", null))
+        assertEquals("vision", r.source)
+        assertEquals("text == null 时仅截取 1 次，消除了冗余的开局二次截图", 1, s.shotCalls)
+    }
+
+    @Test fun lazySecondReusesFirstScreenshotWhenFrameGridUnchanged() = runTest {
+        // 静态画面且 frameGrid 相同：Lazy-Second 机制生效，直接复用首帧，不触发第二次截图
+        val s = LocScreen(listOf(wlan)).apply {
+            frameGridProvider = { com.hana.agent.core.visual.FrameGrid(2, 2, IntArray(4) { 100 }) }
+        }
+        val m = says()
+        val r = found(locator(s, m).locate("WLAN 那一行", "WLAN"))
+        assertEquals("elements", r.source)
+        assertEquals("静态画面下 frameGrid 一致，直接复用首次截图，总截图次数为 1", 1, s.shotCalls)
     }
 }
