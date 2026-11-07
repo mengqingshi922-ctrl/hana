@@ -2,7 +2,7 @@
 <resources>
     <string name="card_approve_once">이번 한 번만 승인</string>
     <string name="card_see_process">Hana로 돌아가 전체 과정 보기</string>
-    <string name="card_back_to_mika">Hana로 돌아가기</string>
+    <string name="card_back_to_hana">Hana로 돌아가기</string>
     <string name="card_continue_last">지난 채팅 이어가기</string>
     <string name="card_screen">백그라운드 화면, 눌러서 확대</string>
     <string name="card_screen_label">백그라운드</string>

@@ -26,8 +26,8 @@
     <string name="browser_home">起始页</string>
     <string name="share">分享</string>
     <string name="more">更多</string>
-    <string name="browser_login_for_mika">给 Hana 登录</string>
-    <string name="browser_login_for_mika_sub">" · 用 Hana 办事时的%1$s打开，登录好了 Hana 也能用"</string>
+    <string name="browser_login_for_hana">给 Hana 登录</string>
+    <string name="browser_login_for_hana_sub">" · 用 Hana 办事时的%1$s打开，登录好了 Hana 也能用"</string>
     <string name="browser_mobile">手机版</string>
     <string name="browser_copy_link">复制链接</string>
     <string name="browser_open_outside">在其他浏览器里打开</string>

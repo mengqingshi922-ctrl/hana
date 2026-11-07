@@ -2,7 +2,7 @@
 <resources>
     <string name="card_approve_once">Setujui kali ini saja</string>
     <string name="card_see_process">Kembali ke Hana untuk proses lengkapnya</string>
-    <string name="card_back_to_mika">Kembali ke Hana</string>
+    <string name="card_back_to_hana">Kembali ke Hana</string>
     <string name="card_continue_last">Lanjutkan obrolan terakhir</string>
     <string name="card_screen">Layar latar belakang, ketuk untuk memperbesar</string>
     <string name="card_screen_label">Latar belakang</string>

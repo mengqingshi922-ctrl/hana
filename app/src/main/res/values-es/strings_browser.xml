@@ -28,8 +28,8 @@
     <string name="browser_home">Página de inicio</string>
     <string name="share">Compartir</string>
     <string name="more">Más</string>
-    <string name="browser_login_for_mika">Iniciar sesión para Hana</string>
-    <string name="browser_login_for_mika_sub">" · abre la versión %1$s que Hana usa en sus tareas; una vez que inicies sesión, Hana también podrá usarla"</string>
+    <string name="browser_login_for_hana">Iniciar sesión para Hana</string>
+    <string name="browser_login_for_hana_sub">" · abre la versión %1$s que Hana usa en sus tareas; una vez que inicies sesión, Hana también podrá usarla"</string>
     <string name="browser_mobile">Móvil</string>
     <string name="browser_copy_link">Copiar enlace</string>
     <string name="browser_open_outside">Abrir en otro navegador</string>

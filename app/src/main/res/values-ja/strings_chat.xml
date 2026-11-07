@@ -135,7 +135,7 @@
     <string name="chat_copied">コピーしました</string>
     <string name="chat_select_hint">テキストを長押しして選択します</string>
     <string name="chat_quote_remove">引用を削除</string>
-    <string name="chat_quoting_mika">Hana を引用: %1$s</string>
+    <string name="chat_quoting_hana">Hana を引用: %1$s</string>
     <string name="chat_quoting_you">自分を引用: %1$s</string>
     <string name="chat_edit_message">メッセージを編集</string>
     <string name="chat_withdraw_message">メッセージを取り消す</string>

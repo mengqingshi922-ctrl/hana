@@ -140,7 +140,7 @@
     <string name="chat_copied">Copied</string>
     <string name="chat_select_hint">Press and hold the text to select it</string>
     <string name="chat_quote_remove">Remove quote</string>
-    <string name="chat_quoting_mika">Quoting Hana: %1$s</string>
+    <string name="chat_quoting_hana">Quoting Hana: %1$s</string>
     <string name="chat_quoting_you">Quoting you: %1$s</string>
     <string name="chat_edit_message">Edit message</string>
     <string name="chat_withdraw_message">Withdraw message</string>

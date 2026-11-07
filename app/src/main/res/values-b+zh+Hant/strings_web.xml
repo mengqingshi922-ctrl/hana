@@ -11,7 +11,7 @@
     <string name="web_manage">管理</string>
     <string name="web_logout_all_title">全部退出並清除網頁資料</string>
     <string name="web_you_signed_in">你在 Hana 裡登入過這個網站。</string>
-    <string name="web_mika_visited">Hana 造訪過這個網站。</string>
+    <string name="web_hana_visited">Hana 造訪過這個網站。</string>
     <string name="web_open_login">開啟登入</string>
     <string name="web_cleared">已清除 %1$s 的 Cookie 與網頁儲存,下次用要重新登入。個別資料可能仍在,如需徹底清除請用「全部退出」。</string>
     <string name="web_signed_out">已退出 %1$s。%2$s</string>

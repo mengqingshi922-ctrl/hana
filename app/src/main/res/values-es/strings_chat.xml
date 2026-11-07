@@ -145,7 +145,7 @@
     <string name="chat_copied">Copiado</string>
     <string name="chat_select_hint">Mantén pulsado el texto para seleccionarlo</string>
     <string name="chat_quote_remove">Quitar cita</string>
-    <string name="chat_quoting_mika">Citando a Hana: %1$s</string>
+    <string name="chat_quoting_hana">Citando a Hana: %1$s</string>
     <string name="chat_quoting_you">Citándote a ti: %1$s</string>
     <string name="chat_edit_message">Editar mensaje</string>
     <string name="chat_withdraw_message">Retirar mensaje</string>

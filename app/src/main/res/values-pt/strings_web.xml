@@ -11,7 +11,7 @@
     <string name="web_manage">Gerenciar</string>
     <string name="web_logout_all_title">Sair de todos e limpar dados da web</string>
     <string name="web_you_signed_in">Você entrou neste site pelo Hana.</string>
-    <string name="web_mika_visited">O Hana já visitou este site.</string>
+    <string name="web_hana_visited">O Hana já visitou este site.</string>
     <string name="web_open_login">Abrir login</string>
     <string name="web_cleared">Cookies e armazenamento web de %1$s foram limpos; você precisará entrar de novo. Alguns dados podem permanecer; use “Sair de todos” para limpar tudo.</string>
     <string name="web_signed_out">Saiu de %1$s. %2$s</string>

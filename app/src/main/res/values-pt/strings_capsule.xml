@@ -2,7 +2,7 @@
 <resources>
     <string name="card_approve_once">Aprovar só desta vez</string>
     <string name="card_see_process">Voltar ao Hana para ver o processo completo</string>
-    <string name="card_back_to_mika">Voltar ao Hana</string>
+    <string name="card_back_to_hana">Voltar ao Hana</string>
     <string name="card_continue_last">Continuar a última conversa</string>
     <string name="card_screen">Tela em segundo plano, toque para ampliar</string>
     <string name="card_screen_label">Segundo plano</string>

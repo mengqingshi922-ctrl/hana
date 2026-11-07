@@ -2,7 +2,7 @@
 <resources>
     <string name="card_approve_once">只同意这一次</string>
     <string name="card_see_process">回到 Hana 看完整过程</string>
-    <string name="card_back_to_mika">回到 Hana</string>
+    <string name="card_back_to_hana">回到 Hana</string>
     <string name="card_continue_last">接着上次聊</string>
     <string name="card_screen">后台画面，点一下放大</string>
     <string name="card_screen_label">后台</string>

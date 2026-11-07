@@ -29,7 +29,7 @@
 正常 Android 开发环境可运行：
 
 ```sh
-./gradlew :app:testDebugUnitTest --tests 'com.wangzan101.mika.voice.*'
+./gradlew :app:testDebugUnitTest --tests 'com.wangzan101.hana.voice.*'
 ./gradlew :app:assembleDebug
 ```
 

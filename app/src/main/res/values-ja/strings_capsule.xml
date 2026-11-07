@@ -2,7 +2,7 @@
 <resources>
     <string name="card_approve_once">今回だけ許可</string>
     <string name="card_see_process">Hana に戻って全体の流れを見る</string>
-    <string name="card_back_to_mika">Hana に戻る</string>
+    <string name="card_back_to_hana">Hana に戻る</string>
     <string name="card_continue_last">前回のチャットを続ける</string>
     <string name="card_screen">バックグラウンドの画面。タップで拡大</string>
     <string name="card_screen_label">バックグラウンド</string>
