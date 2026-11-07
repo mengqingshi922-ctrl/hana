@@ -308,10 +308,13 @@ object LocalModelManager {
             } ?: return false
 
         return try {
-            // 移动端硬件调度安全准则：
-            // ARM Mali GPU 承担系统 SurfaceFlinger 120Hz 界面渲染与应用合成，强行卸载大模型会导致整机严重掉帧卡死；
-            // 采用天玑 8400 Cortex-X4 全大核 CPU + Neon Dot Product 硬件向量指令集，配合 KV Cache 固化即可实现 165ms 极速响应，且系统 100% 丝滑流畅。
-            val commandList = listOf(
+            // 移动端硬件调度：采用全大核 CPU + Neon Dot Product 向量指令集并行加速，自适应动态算力
+            val optimalThreads = maxOf(4, minOf(Runtime.getRuntime().availableProcessors() - 2, 8))
+            // 自动检测与该模型匹配的多模态视觉投影权重 (mmproj)，若存在则自动附加加载以释放原生 GUI 视觉定位能力
+            val mmprojFile = readyModel.parentFile?.listFiles()?.firstOrNull { f ->
+                f.name.startsWith("mmproj") && f.name.endsWith(".gguf")
+            }
+            val commandList = mutableListOf(
                 exe.absolutePath,
                 "-m", readyModel.absolutePath,
                 "--host", "127.0.0.1",
@@ -320,9 +323,12 @@ object LocalModelManager {
                 "-fa", "on",
                 "-np", "1",
                 "-ngl", "0",
-                "-t", "4",
+                "-t", optimalThreads.toString(),
                 "--alias", readyModel.name.removeSuffix(".gguf")
             )
+            if (mmprojFile != null && mmprojFile.exists()) {
+                commandList.addAll(listOf("--mmproj", mmprojFile.absolutePath))
+            }
             val pb = ProcessBuilder(commandList)
             pb.environment()["LD_LIBRARY_PATH"] = binDir.absolutePath
             val logFile = File(context.filesDir, "llama_server.log")
@@ -358,11 +364,14 @@ object LocalModelManager {
         val localBaseUrl = "http://127.0.0.1:8080/v1"
         val existing = providerStore.configs.value.firstOrNull { it.baseUrl.trimEnd('/') == localBaseUrl }
 
+        val hasVision = (spec.id.contains("tars") || spec.id.contains("vl")) &&
+            file.parentFile?.listFiles()?.any { it.name.startsWith("mmproj") && it.name.endsWith(".gguf") } == true
+
         val configId = if (existing != null) {
             val updated = existing.copy(
                 model = spec.fileName.removeSuffix(".gguf"),
                 name = "端侧模型 (${spec.name.substringBefore(' ')})",
-                capabilities = existing.capabilities.copy(toolCalls = true, contextTokens = 4096),
+                capabilities = existing.capabilities.copy(toolCalls = true, vision = hasVision, contextTokens = 4096),
             )
             providerStore.save(updated, "local-embedded")
             updated.id
@@ -374,7 +383,7 @@ object LocalModelManager {
                 kind = ProviderConfig.Kind.OpenAiCompat,
                 baseUrl = localBaseUrl,
                 model = spec.fileName.removeSuffix(".gguf"),
-                capabilities = Capabilities(toolCalls = true, vision = false, contextTokens = 4096, reasoning = false),
+                capabilities = Capabilities(toolCalls = true, vision = hasVision, contextTokens = 4096, reasoning = false),
             )
             providerStore.save(newConfig, "local-embedded")
             newId

@@ -29,20 +29,28 @@ import kotlinx.serialization.json.put
 object EdgeFastReflex {
     const val ROLE_REFLEX = "reflex"
 
-    // 常见阻断/确认关键词（命中且用户目标未明确要求与之相悖时，秒级直通点击）
-    private val POPUP_FAST_KEYWORDS = listOf(
-        // 权限与安全弹窗
+    // 1. 绝对高置信度直接阻断词（权限授权、广告跳过、营销浮层；正常业务页面绝不会以此命名业务操作）
+    private val HIGH_CONFIDENCE_DISMISS_WORDS = setOf(
+        // 系统权限与安全授权
         "允许", "始终允许", "仅在使用中允许", "同意并继续", "同意", "同意并使用", "我已阅读并同意", "同意并授权",
-        // 广告与营销阻断
-        "跳过", "跳过广告", "知道了", "开心收下", "残忍拒绝", "稍后再说", "不感兴趣", "关闭广告", "继续播放",
-        "进入主页", "立即体验", "开启体验", "进入应用", "跳过引导", "先逛逛", "我知道了", "暂不开启", "放弃",
-        "不再提示", "不再提醒", "直接进入", "继续使用", "知道了并关闭", "立即关闭", "忽略", "忽略本次", "朕知道了",
-        // 更新与版本弹窗
-        "以后再说", "暂不更新", "暂不升级", "取消", "取消更新", "好的"
+        // 广告与营销快速跳过
+        "跳过", "跳过广告", "跳过引导", "关闭广告", "知道了并关闭", "朕知道了", "开心收下", "残忍拒绝",
+        "稍后再说", "以后再说", "暂不更新", "暂不升级", "取消更新", "不感兴趣", "暂不开启", "忽略本次"
     )
 
-    // 精确匹配的图标/文字
-    private val EXACT_CLOSE_LABELS = setOf("关闭", "close", "cancel", "dismiss", "x", "X", "✕", "✖")
+    // 2. 上下文限定词（在普通业务界面也可能出现，如结算取消/表单确定，必须伴随弹窗/提示/对话框上下文时才允许反射点击）
+    private val CONTEXT_SENSITIVE_WORDS = setOf(
+        "取消", "好的", "确定", "知道了", "我知道了", "关闭", "放弃", "进入应用", "立即体验", "直接进入"
+    )
+
+    // 弹窗与权限特征识别词（用于判断当前界面是否处于 Dialog / 遮罩 / 授权状态）
+    private val DIALOG_CONTEXT_CLUES = listOf(
+        "权限", "申请", "访问", "隐私政策", "用户协议", "服务协议", "青少年模式", "未成年人", "防沉迷",
+        "新版本", "更新提示", "版本更新", "dialog", "popup", "alert", "modal", "提示", "温馨提示", "notice"
+    )
+
+    // 精确匹配的关闭图标/符号
+    private val EXACT_CLOSE_LABELS = setOf("close", "cancel", "dismiss", "x", "X", "✕", "✖")
 
     data class ReflexResult(val reply: ModelReply, val reason: String)
 
@@ -168,6 +176,14 @@ object EdgeFastReflex {
             val screenObj = json["screen"] as? JsonObject ?: json
             val elements = (screenObj["elements"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return null
 
+            // 全局文本与弹窗上下文特征分析
+            val allTexts = elements.mapNotNull {
+                (it["name"] as? JsonPrimitive)?.contentOrNull
+                    ?: (it["text"] as? JsonPrimitive)?.contentOrNull
+                    ?: (it["desc"] as? JsonPrimitive)?.contentOrNull
+            }.joinToString(" ")
+            val hasDialogContext = DIALOG_CONTEXT_CLUES.any { allTexts.contains(it, ignoreCase = true) }
+
             // 优先查找符合阻断特征的可点击控件
             for (elem in elements) {
                 val clickable = (elem["clickable"] as? JsonPrimitive)?.contentOrNull == "true"
@@ -184,12 +200,22 @@ object EdgeFastReflex {
                     continue
                 }
 
-                val isExactClose = cleanLabel in EXACT_CLOSE_LABELS
-                val isKeywordHit = POPUP_FAST_KEYWORDS.any { cleanLabel == it || (cleanLabel.startsWith(it) && cleanLabel.length <= it.length + 3) }
+                // 尺寸安全约束：全屏或过大容器（例如宽 > 850 且 高 > 800）绝不能当作普通点击按钮
+                val bounds = (elem["bounds"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.toIntOrNull() }
+                if (bounds != null && bounds.size >= 4) {
+                    val w = bounds[2] - bounds[0]
+                    val h = bounds[3] - bounds[1]
+                    if (w > 850 && h > 800) continue
+                }
 
-                if (clickable && (isExactClose || isKeywordHit)) {
+                val isHighConfidence = cleanLabel in HIGH_CONFIDENCE_DISMISS_WORDS ||
+                    HIGH_CONFIDENCE_DISMISS_WORDS.any { cleanLabel.startsWith(it) && cleanLabel.length <= it.length + 4 }
+                val isContextSensitive = hasDialogContext && (cleanLabel in CONTEXT_SENSITIVE_WORDS ||
+                    CONTEXT_SENSITIVE_WORDS.any { cleanLabel == it || (cleanLabel.startsWith(it) && cleanLabel.length <= it.length + 3) } ||
+                    cleanLabel in EXACT_CLOSE_LABELS)
+
+                if (clickable && (isHighConfidence || isContextSensitive)) {
                     val ref = (elem["ref"] as? JsonPrimitive)?.contentOrNull
-                    val bounds = (elem["bounds"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.toIntOrNull() }
                     val coords = if (bounds != null && bounds.size >= 4) {
                         Pair((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)
                     } else null

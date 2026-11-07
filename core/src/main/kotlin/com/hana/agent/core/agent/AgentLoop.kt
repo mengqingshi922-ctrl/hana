@@ -218,6 +218,9 @@ class AgentLoop(
     private val review = AnswerReview(tools, verifier, ::emit, ::now)
     /** 本任务每一步存下的画面编号(步 → 编号),回答的来源按它附上画面。 */
     private val media = mutableMapOf<Int, MutableList<Int>>()
+    /** WorkingMemoryPad: 跨屏幕持久化长程焦点笔记黑板 (对标 Mobile-Agent-v2/v3，防止剪裁历史屏幕导致的失忆) */
+    private val workingMemory = LinkedHashMap<String, String>()
+    private val subgoals = mutableListOf<String>()
     /** 本任务的回答已因核对没对上退回过一次;再没对上就标成未确认交出,不再退回。 */
     private var gapsNudged = false
     private var provenance = RunProvenance()
@@ -242,6 +245,13 @@ class AgentLoop(
         // 同意只在一次任务内有效
         confirmations?.reset()
         utterances?.clear()
+        workingMemory.clear()
+        subgoals.clear()
+        // 从用户长目标中自动识别子目标列表（支持分步 1. 2. 3. 或 -> 分割）
+        val goalParts = task.split(Regex("(?:\\n\\s*\\d+[.、]\\s*|\\s*->\\s*)")).map { it.trim() }.filter { it.length >= 2 }
+        if (goalParts.size >= 2) {
+            subgoals.addAll(goalParts.take(6))
+        }
         emit(RunEvent.TaskStarted(now(), Redactor.text(task), model.name,
             origin = runProvenance.origin.takeIf { it != RunOrigin.Ui }?.name?.lowercase()))
         var end: TaskState? = null
@@ -599,28 +609,6 @@ class AgentLoop(
             answered = null
 
             val first = calls.first()
-            val batchableNames = if (flags.batchSteps && calls.size > 1) tools.batchable().toSet() else emptySet()
-            if (flags.batchSteps && calls.size > 1 && first.name != DO_STEPS_TOOL && calls.all { it.name in batchableNames } && confirmations?.hasGrant != true) {
-                // AutoGLM 风格 Action Chunking 连续顺序连发：大模型下发的原子连续动作直接无缝合成批处理执行，端侧连续注入
-                val synthBatchArgs = buildJsonObject {
-                    put("steps", JsonArray(calls.map { c ->
-                        buildJsonObject {
-                            put("tool", c.name)
-                            parseArgs(c.argsJson).forEach { (k, v) -> put(k, v) }
-                        }
-                    }))
-                }.toString()
-                val synthCall = Part.ToolCall(first.id, DO_STEPS_TOOL, synthBatchArgs)
-                when (val end = batch(synthCall, emptyList(), history, specs, guards, executor, track, step, note, DO_STEPS_TOOL, reason, narration,
-                    recordReply = ::recordReply, app = { place = it }, steerWaiting = { inbox?.hasSteers() == true },
-                    noteVerdicts = { s, sub, v ->
-                        val typed = StuckAdvice.typedText(tools.verb(s.tool), parseArgs(s.argsJson), sub?.content)
-                        stuckTracker.advice(v, typed, place?.name)
-                    })) {
-                    null -> continue
-                    else -> return end
-                }
-            }
 
             trace?.toolStarted(step, first.name, first.id, now())
             val skipped = calls.drop(1).map {
@@ -631,6 +619,12 @@ class AgentLoop(
                 }.toString(), isError = true)
             }
             val args = parseArgs(first.argsJson)
+            val memo = (args["memo"] as? JsonPrimitive)?.contentOrNull
+                ?: (args["note"] as? JsonPrimitive)?.contentOrNull
+                ?: (args["summary"] as? JsonPrimitive)?.contentOrNull
+            if (!memo.isNullOrBlank()) {
+                workingMemory["Step $step (${first.name})"] = memo.take(120)
+            }
 
             // 用户刚同意的那一步要单独做:批里的步不带同意,混进去会被关卡拦下,同意也可能被别的步用掉或作废
             if (((flags.batchSteps && first.name == DO_STEPS_TOOL) || tools.composite(first.name)) && confirmations?.hasGrant == true) {
@@ -814,7 +808,22 @@ class AgentLoop(
      */
     private suspend fun appendRuntimeState(history: MutableList<Message>, place: Place?, labels: Map<String, String>, step: Int) {
         val mode = if (place?.kind == PlaceKind.Site) tools.placeMode() else null
-        val state = ctx.runtimeState(place, place?.name?.let(labels::get), mode, step, maxSteps, now(), latestWords)
+        val baseState = ctx.runtimeState(place, place?.name?.let(labels::get), mode, step, maxSteps, now(), latestWords)
+        val state = if (workingMemory.isNotEmpty() || subgoals.isNotEmpty()) {
+            val memoryBlock = buildString {
+                append("\n[Working Memory Pad]")
+                if (subgoals.isNotEmpty()) {
+                    append("\nSubgoals: ")
+                    append(subgoals.joinToString(" -> "))
+                }
+                if (workingMemory.isNotEmpty()) {
+                    workingMemory.forEach { (k, v) ->
+                        append("\n- $k: $v")
+                    }
+                }
+            }
+            Part.Text(baseState.text + memoryBlock)
+        } else baseState
         val last = history.lastOrNull()
         if (last == null || last.role == Role.Assistant) history += Message(Role.User, listOf(state), Author.Mika)
         else history[history.lastIndex] = last.copy(parts = last.parts + state)

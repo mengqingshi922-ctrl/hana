@@ -9,6 +9,7 @@ import com.hana.agent.core.model.ModelError
 import com.hana.agent.core.model.ModelReply
 import com.hana.agent.core.model.Part
 import com.hana.agent.core.model.Role
+import com.hana.agent.core.model.StopReason
 import com.hana.agent.core.model.StreamingChatModel
 import com.hana.agent.core.model.ToolSpec
 import com.hana.agent.core.model.Usage
@@ -125,10 +126,23 @@ internal class ModelCaller(
         val ctx = track.context(step, latestHasImage)
         val picked = r.pick(ctx)
         if (!r.isLight(picked)) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
+
+        val isLocal = isLocalOnDevice(picked)
+        val slotCtx = if (isLocal) buildLocalSlotPrompt(history) else null
+        val targetSpecs = if (isLocal) specs.filter { it.name in LIGHT_ACTION_TOOLS } else specs
+
+        if (isLocal && slotCtx?.hasCandidates == false) {
+            // 端侧小模型在当前屏幕没有可操作候选，直接交由主模型决策，避免无效推理
+            return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
+        }
+
+        val targetHistory = if (slotCtx != null) slotCtx.messages else viewFor(history, picked)
+        val targetPrompt = slotCtx?.systemPrompt
+
         // 轻量模型的上下文可能更小:它报超长、它那次折叠多少,都不连累主模型(压缩状态按模型分开记)
         var lightErrorDetail: String? = null
         val light = try {
-            complete(viewFor(history, picked), specs, picked, RetryPolicy.NONE, step, onText)
+            complete(targetHistory, targetSpecs, picked, RetryPolicy.NONE, step, onText, customPrompt = targetPrompt)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -140,8 +154,24 @@ internal class ModelCaller(
             null
         }
         val text = light?.parts?.filterIsInstance<Part.Text>()?.joinToString("") { it.text }?.trim().orEmpty()
-        val first = light?.parts?.filterIsInstance<Part.ToolCall>()?.firstOrNull()
-        if (first != null && !needsMain(first)) return RoutedOutcome(light, picked, startAsked)
+        var first = light?.parts?.filterIsInstance<Part.ToolCall>()?.firstOrNull()
+        var effectiveLight = light
+
+        // 端侧纯文本/伪代码/自然语言输出动作抢救机制
+        if (first == null && isLocal && slotCtx != null && text.isNotBlank()) {
+            val rescued = extractToolCallFromText(text, targetSpecs, slotCtx.anchorCoordinates, slotCtx.snapshotId)
+            if (rescued != null) {
+                first = rescued
+                effectiveLight = ModelReply(
+                    parts = listOf(Part.Text(text), rescued),
+                    stopReason = StopReason.ToolUse,
+                    usage = light?.usage
+                )
+            }
+        }
+
+        val chosenReply = effectiveLight ?: light
+        if (first != null && chosenReply != null && !needsMain(first)) return RoutedOutcome(chosenReply, picked, startAsked)
         r.noteTrouble()
         emit(RunEvent.ModelReply(
             now(), step, RunEvent.clip(Redactor.text(text)), first?.name, first?.let { Redactor.args(tools.verb(it.name), it.argsJson, secretField = true) },
@@ -189,11 +219,12 @@ internal class ModelCaller(
     private var lastTriggerLogged = -1
 
     private suspend fun complete(history: List<Message>, specs: List<ToolSpec>, using: ChatModel, policy: RetryPolicy, step: Int,
-        onText: ((String) -> Unit)? = null): ModelReply {
+        onText: ((String) -> Unit)? = null, customPrompt: String? = null): ModelReply {
         var retries = 0
         lastRetryWaitMs = 0
         val began = now()
-        val overhead = TokenEstimate.of(systemPrompt) + specs.sumOf { TokenEstimate.of(it.name + it.description + it.parametersJsonSchema) }
+        val effectivePrompt = customPrompt ?: systemPrompt
+        val overhead = TokenEstimate.of(effectivePrompt) + specs.sumOf { TokenEstimate.of(it.name + it.description + it.parametersJsonSchema) }
         val contextTokens = using.capabilities.contextTokens
         val compressor = compressorFor(using)
         var compaction = compactions[using] ?: CompactionState()
@@ -227,9 +258,9 @@ internal class ModelCaller(
                 if (tools.inlineScreen) tools.setVisibleObservations(visibleReads(optimizedMessages))
                 // 这一次之前花掉的(失败的请求、退避)都算重试等待
                 lastRetryWaitMs = now() - began
-                suspend fun send(): ModelReply = if (onText == null) using.complete(systemPrompt, optimizedMessages, specs)
-                    else if (using is StreamingChatModel) using.completeStreaming(systemPrompt, optimizedMessages, specs, onText)
-                    else using.complete(systemPrompt, optimizedMessages, specs).also { result ->
+                suspend fun send(): ModelReply = if (onText == null) using.complete(effectivePrompt, optimizedMessages, specs)
+                    else if (using is StreamingChatModel) using.completeStreaming(effectivePrompt, optimizedMessages, specs, onText)
+                    else using.complete(effectivePrompt, optimizedMessages, specs).also { result ->
                         result.parts.filterIsInstance<Part.Text>().joinToString("") { it.text }
                             .takeIf(String::isNotEmpty)?.let(onText)
                     }
@@ -375,12 +406,12 @@ internal class ModelCaller(
         internal fun isLocalOnDevice(model: ChatModel): Boolean {
             if (model is com.hana.agent.core.model.OpenAiCompatModel) {
                 val url = model.baseUrl.lowercase()
-                if (url.contains("127.0.0.1") || url.contains("localhost") || url.contains(":8080")) {
+                if (url.contains(":18080") || url.contains(":8080")) {
                     return true
                 }
             }
             val name = model.name.lowercase()
-            return name.contains("端侧") || name.contains("127.0.0.1") || name.contains("0.5b") ||
+            return name.contains("端侧") || name.contains("0.5b") ||
                    name.contains("1.5b") || name.contains("local") || name.contains("tars") ||
                    name.contains("smol") || name.contains("gguf")
         }
