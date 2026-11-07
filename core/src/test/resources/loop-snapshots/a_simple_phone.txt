@@ -10,8 +10,8 @@ user:
   ctx:runtime_state source="runtime" #f5e69ecc | Current place: no screen or page read yet ⏎…
 
 ## main #2
-system: len=25877 #e2982d7d | You are Hana, the user's personal assistant on their phone. Your job is to get ⏎…
-tools: #b8d14699 [wait, ask_user, request_confirmation, end_not_done, knowledge_search, knowledge_read, skill_search, skill_read, view_past_screens, hand_to_user, handle_obstacle, phone_observe, phone_list_elements, phone_tap, phone_scroll, phone_swipe, phone_type_text, phone_clear_text, phone_back, phone_press_key, phone_diagnose, phone_query, phone_find, phone_extract, phone_collect, phone_wait, phone_event, phone_search, phone_comment, phone_dialog, phone_gesture, phone_set_wheel, phone_run, phone_system_command, phone_list_apps, phone_launch_app, phone_app_after_task, phone_share_text, phone_set_alarm, phone_set_timer, phone_show_alarms, phone_add_calendar_event]
+system: len=26178 #6752477a | You are Hana, the user's personal assistant on their phone. Your job is to get ⏎…
+tools: #bc5240ce [wait, ask_user, request_confirmation, end_not_done, knowledge_search, knowledge_read, skill_search, skill_read, view_past_screens, hand_to_user, handle_obstacle, phone_observe, phone_list_elements, phone_tap, phone_scroll, phone_swipe, phone_type_text, phone_clear_text, phone_back, phone_press_key, phone_diagnose, phone_query, phone_find, phone_extract, phone_collect, phone_wait, phone_event, phone_search, phone_comment, phone_social_interact, phone_dialog, phone_gesture, phone_set_wheel, phone_run, phone_system_command, phone_list_apps, phone_launch_app, phone_app_after_task, phone_share_text, phone_set_alarm, phone_set_timer, phone_show_alarms, phone_add_calendar_event]
 … 2 messages unchanged
 assistant:
   thinking #990fbf88 | 先看屏

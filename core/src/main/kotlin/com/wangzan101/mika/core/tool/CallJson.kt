@@ -30,6 +30,20 @@ private val SITE_RESULT_VERBS = setOf(Verb.Observe, Verb.ListElements, Verb.Navi
  * 这次调用之后任务在哪;结果没说为 null(沿用之前的)。「在哪」分手机 App 与网站:换到网页、换了站点都算换了地方。
  * 打开网页、读页的结果只带网址:按网址的主机算到了哪个站点(和读屏报的 currentSite 同一算法)。
  */
-internal fun placeAfter(verb: Verb?, content: JsonObject): Place? =
-    placeOf(content) ?: if (verb in SITE_RESULT_VERBS && content["ok"] == JsonPrimitive(true))
-        (content["url"] as? JsonPrimitive)?.contentOrNull?.let(UrlHost::of)?.let(Place::site) else null
+internal fun placeAfter(verb: Verb?, content: JsonObject): Place? {
+    placeOf(content)?.let { return it }
+    if (verb == Verb.LaunchApp && content["ok"] == JsonPrimitive(true)) {
+        fun f(o: JsonObject?, k: String) = (o?.get(k) as? JsonPrimitive)?.contentOrNull
+        val pkg = f(content, "package") ?: f(content, "app")
+        if (pkg != null) return Place.app(pkg)
+        val hint = f(content, "hint")
+        if (hint != null) {
+            val match = Regex("""([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+)+)\s+is\s+open""").find(hint)
+            if (match != null) return Place.app(match.groupValues[1])
+        }
+    }
+    if (verb in SITE_RESULT_VERBS && content["ok"] == JsonPrimitive(true)) {
+        return (content["url"] as? JsonPrimitive)?.contentOrNull?.let(UrlHost::of)?.let(Place::site)
+    }
+    return null
+}

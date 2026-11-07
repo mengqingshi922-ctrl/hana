@@ -25,6 +25,7 @@ class ModelRouter(private val main: ChatModel, private val light: ChatModel?) {
     private var forcedMain = 0
     private var disabled = false
     private var consecutiveLightSteps = 0
+    private var consecutiveNoChangeSteps = 0
 
     /** 轻量模型能不能接手机步;不能时 lightSteps 不生效。 */
     val active: Boolean get() = !disabled && light != null && light.capabilities.toolCalls
@@ -33,16 +34,22 @@ class ModelRouter(private val main: ChatModel, private val light: ChatModel?) {
     fun disable() { disabled = true }
 
     fun pick(ctx: StepContext): ChatModel {
-        if (!ctx.lastOk || ctx.lastHadGuard || ctx.lastChanged == false) noteTrouble()
+        if (!ctx.lastOk || ctx.lastHadGuard || ctx.lastChanged == false) {
+            noteTrouble()
+        }
         if (forcedMain > 0) {
             forcedMain--
             consecutiveLightSteps = 0
             return main
         }
         val l = light?.takeIf { active } ?: return main
-        val simple = ctx.step > 1 && !ctx.lastWasRecovery && ctx.sameAppAsLast && (!ctx.hasImages || l.capabilities.vision)
-        // 借鉴 Mobile-Agent-v2 状态机理念：同应用内的简单微动作支持本地爆发（最多连跑 5 步），
-        // 超过 5 步交回主模型复核一次全局进展与验收锚点，杜绝端侧小模型注意力漂移。
+
+        // 端云分层协同：同 App 内且无异常状况时支持端侧自主推进（爆发上限 5 步，到期主动回退主模型复核）
+        // 端侧具备视觉或槽位解析时，直接接管屏幕决策，大幅削减云端高昂的 3~4 秒 RTT 往返
+        val isLocalLight = l.name.contains("端侧") || l.name.contains("tars") || l.name.contains("smol") || l.name.contains("0.5b")
+        val canHandleVisual = !ctx.hasImages || l.capabilities.vision || isLocalLight
+        val simple = ctx.step > 1 && !ctx.lastWasRecovery && ctx.sameAppAsLast && canHandleVisual
+
         return if (simple && consecutiveLightSteps < MAX_CONSECUTIVE_LIGHT_STEPS) {
             consecutiveLightSteps++
             l
@@ -52,7 +59,7 @@ class ModelRouter(private val main: ChatModel, private val light: ChatModel?) {
         }
     }
 
-    /** 出了状况(含轻量模型调用失败、回复被改派给主模型):之后 [TROUBLE_STEPS] 步用主模型。 */
+    /** 出了状况(含轻量模型调用失败、回复被改派给主模型、画面没变或纠错回退):之后 [TROUBLE_STEPS] 步用主模型。 */
     fun noteTrouble() {
         forcedMain = TROUBLE_STEPS
         consecutiveLightSteps = 0
@@ -63,17 +70,20 @@ class ModelRouter(private val main: ChatModel, private val light: ChatModel?) {
     companion object {
         const val TROUBLE_STEPS = 2
         /** 端侧轻量小模型最大连续自主爆发步数，到期主动回退主模型复核。 */
-        const val MAX_CONSECUTIVE_LIGHT_STEPS = 5
+        const val MAX_CONSECUTIVE_LIGHT_STEPS = 8
         /** 轻量模型给出这些调用(还有 do_steps)时不执行,这一步改问主模型:放弃、确认、接管、追问、沙箱命令都由主模型决定。 */
         private val MAIN_ONLY_VERBS = setOf(Verb.EndNotDone, Verb.RequestConfirmation, Verb.HandToUser, Verb.AskUser, Verb.HandleObstacle,
-            Verb.PhoneRun, Verb.Collect, Verb.PhoneFind, Verb.PhoneDialog, Verb.PhoneGesture, Verb.PhoneCommand) +
+            Verb.PhoneRun, Verb.Collect, Verb.PhoneFind, Verb.PhoneDialog, Verb.PhoneGesture, Verb.PhoneCommand, Verb.FindVisually) +
             // 沙箱里跑的是模型写的命令:只让主模型写
             setOf(Verb.RunCommand, Verb.RunBundledScript, Verb.ReadFile, Verb.WriteFile, Verb.SearchFiles, Verb.ShareFile)
         /** 只能由主模型给出的调用([name] 是工具名,[verb] 是它做的动作)。 */
         fun mainOnly(name: String, verb: Verb?): Boolean = name == DO_STEPS_TOOL || verb in MAIN_ONLY_VERBS
 
-        /** 这些动作之后的一步算恢复(等过用户)。 */
-        internal val RECOVERY_VERBS = setOf(Verb.HandToUser, Verb.AskUser, Verb.RequestConfirmation)
+        /** 这些动作之后的一步算恢复/纠错(等过用户、回退退出、视觉定位、等待)。严禁轻量模型无脑抢权！ */
+        internal val RECOVERY_VERBS = setOf(
+            Verb.HandToUser, Verb.AskUser, Verb.RequestConfirmation,
+            Verb.Back, Verb.FindVisually, Verb.Diagnose, Verb.Wait
+        )
         /** 这些动作会换前台 App 或网页(打开网址、换标签);之后的一步不算同一个地方。 */
         internal val APP_SWITCH_VERBS = setOf(Verb.LaunchApp, Verb.OpenLink, Verb.ShareText, Verb.ShowAlarms, Verb.AddCalendarEvent, Verb.Navigate, Verb.Tabs)
     }
@@ -90,7 +100,7 @@ internal class StepTrack {
     private var switched = false
 
     fun context(step: Int, hasImages: Boolean) =
-        StepContext(step, ok, guard, changed, recovery, !switched && app != null && app == appBefore, hasImages)
+        StepContext(step, ok, guard, changed, recovery, !switched && ((app != null && app == appBefore) || (app == null && appBefore == null && step > 2)), hasImages)
 
     /** [app] 为 null 表示这一步的结果没报前台 App,沿用之前的。 */
     /** 刚从回放交还、批量停止这类状况里恢复:下一步按恢复步算。在 [after] 之后调用。 */

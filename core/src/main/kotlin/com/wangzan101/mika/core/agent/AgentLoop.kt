@@ -68,6 +68,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.selects.select
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -655,6 +656,33 @@ class AgentLoop(
                 }
             }
 
+            // Google ARTEMIS 风格原生多动作并发流水线 (Action Bursting):
+            // 若模型直接输出多个可批处理的动作(如点击输入框+输入文字+点击搜索)，自动流水线连续执行，杜绝粗暴丢弃报错
+            val canBurst = flags.batchSteps && calls.size > 1 && calls.all { it.name in tools.batchable() } &&
+                first.name != DO_STEPS_TOOL && confirmations?.hasGrant != true
+            if (canBurst) {
+                val burstSteps = calls.map { call ->
+                    val cleanArgs = runCatching { Json.parseToJsonElement(call.argsJson) as? JsonObject }.getOrNull() ?: JsonObject(emptyMap())
+                    buildJsonObject {
+                        put("tool", call.name)
+                        put("args", cleanArgs)
+                    }
+                }
+                val syntheticArgsJson = buildJsonObject {
+                    put("steps", JsonArray(burstSteps))
+                }.toString()
+                val burstCall = Part.ToolCall(first.id, DO_STEPS_TOOL, syntheticArgsJson)
+                when (val end = batch(burstCall, emptyList(), history, specs, guards, executor, track, step, note, tool, reason, narration, recordReply = ::recordReply,
+                    app = { place = it }, steerWaiting = { inbox?.hasSteers() == true },
+                    noteVerdicts = { s, sub, v ->
+                        val typed = StuckAdvice.typedText(tools.verb(s.tool), parseArgs(s.argsJson), sub?.content)
+                        stuckTracker.advice(v, typed, place?.name)
+                    }, originalCalls = calls)) {
+                    null -> continue
+                    else -> return end
+                }
+            }
+
             val verb = tools.verb(first.name)
             val offScreen = tools.offScreen(first.name)
             val running = TaskState.Running(step, note, tool, reason = reason, narration = narration)
@@ -893,6 +921,7 @@ class AgentLoop(
         executor: ActionExecutor, track: StepTrack, step: Int, note: String, tool: String?, reason: String?, narration: String?,
         recordReply: (String?) -> Unit, app: (Place) -> Unit, steerWaiting: () -> Boolean,
         noteVerdicts: (BatchStep, ToolExecution?, List<GuardVerdict>) -> String?,
+        originalCalls: List<Part.ToolCall>? = null,
     ): TaskState? {
         // 收着的组里的工具也能放进批里(和单步一样照常执行、展开它那一组)
         val (parsed, problem) = BatchRunner.parse(first.argsJson, tools.definitions().map { it.name }.toSet(), tools.batchable())
@@ -912,7 +941,25 @@ class AgentLoop(
         }
         val durationMs = now() - started
         val isError = exec.content["ok"] != JsonPrimitive(true)
-        history += Message(Role.Tool, listOf(Part.ToolResult(first.id, exec.content.toString(), isError, exec.observations.map { it.tag })) + skipped, Author.Mika)
+        val toolResults = if (originalCalls != null && originalCalls.size > 1) {
+            val stepEntries = (exec.content["steps"] as? JsonArray)?.mapNotNull { it as? JsonObject }.orEmpty()
+            originalCalls.mapIndexed { idx, call ->
+                val subResult = stepEntries.getOrNull(idx)
+                if (subResult != null) {
+                    val subOk = (subResult["ok"] as? JsonPrimitive)?.booleanOrNull ?: true
+                    Part.ToolResult(call.id, subResult.toString(), isError = !subOk, if (idx == 0) exec.observations.map { it.tag } else emptyList())
+                } else {
+                    Part.ToolResult(call.id, buildJsonObject {
+                        put("ok", false)
+                        put("error", "action_burst_halted")
+                        put("message", "Preceding action halted or failed")
+                    }.toString(), isError = true)
+                }
+            }
+        } else {
+            listOf(Part.ToolResult(first.id, exec.content.toString(), isError, exec.observations.map { it.tag })) + skipped
+        }
+        history += Message(Role.Tool, toolResults, Author.Mika)
         // 批做完(或停下)后再给模型一份当前元素表；只有元素信息不足才附画面。
         if (steps != null && ranAnyStep(exec.content)) {
             tools.lookNow()?.let { v ->

@@ -76,10 +76,50 @@ class ModelRouterTest {
         assertSame(main, ModelRouter(main, light).pick(t.context(3, hasImages = false)))
     }
 
+    @Test fun backAndFindVisuallyForceMainRecovery() {
+        val t = StepTrack()
+        t.after(verb("phone_observe"), ok = true, guard = false, changed = null, recovery = false, app = "com.luna.music")
+        t.after(verb("phone_observe"), ok = true, guard = false, changed = null, recovery = false, app = "com.luna.music")
+        assertSame(light, ModelRouter(main, light).pick(t.context(3, hasImages = false)))
+
+        // 模拟误入商品页后主模型执行 phone_back: 之后一步必须严格强制为主模型接管纠错，绝不让轻量模型无脑抢权
+        t.after(com.wangzan101.mika.core.tool.Verb.Back, ok = true, guard = false, changed = true, recovery = false, app = "com.luna.music")
+        assertSame(main, ModelRouter(main, light).pick(t.context(4, hasImages = false)))
+
+        // 模拟自绘界面执行视觉定位 phone_find_visually: 之后一步必须严格由主模型接管
+        t.after(com.wangzan101.mika.core.tool.Verb.FindVisually, ok = true, guard = false, changed = null, recovery = false, app = "com.luna.music")
+        assertSame(main, ModelRouter(main, light).pick(t.context(5, hasImages = false)))
+    }
+
     @Test fun noToolCapableLightMeansMain() {
         val r = ModelRouter(main, NamedModel("plain", toolCalls = false))
         assertSame(main, r.pick(clean(2)))
         assertSame(main, ModelRouter(main, null).pick(clean(2)))
+    }
+
+    @Test fun consecutiveLightStepsUpToEight() {
+        val r = ModelRouter(main, light)
+        // 验证同应用内可以连续自主爆发 8 步端侧小脑动作
+        for (i in 2..9) {
+            assertSame("Step $i should be light", light, r.pick(clean(i)))
+        }
+        // 第 9 步（爆发满 8 步后）第 10 步强制回退给主模型做全局复核
+        assertSame("Step 10 should yield to main for reflection", main, r.pick(clean(10)))
+    }
+
+    @Test fun extractCoordinateToolCall() {
+        val tapTool = listOf(com.wangzan101.mika.core.model.ToolSpec("phone_tap", "tap", "{}"))
+        val call1 = ModelCaller.extractToolCallFromText("click(832, 399)", tapTool)
+        org.junit.Assert.assertNotNull(call1)
+        org.junit.Assert.assertEquals("phone_tap", call1?.name)
+        org.junit.Assert.assertTrue(call1?.argsJson?.contains("832") == true)
+        org.junit.Assert.assertTrue(call1?.argsJson?.contains("399") == true)
+
+        val call2 = ModelCaller.extractToolCallFromText("[500, 1200]", tapTool)
+        org.junit.Assert.assertNotNull(call2)
+        org.junit.Assert.assertEquals("phone_tap", call2?.name)
+        org.junit.Assert.assertTrue(call2?.argsJson?.contains("500") == true)
+        org.junit.Assert.assertTrue(call2?.argsJson?.contains("1200") == true)
     }
 
     @Test fun sandboxToolsAreMainOnlyAndNotBatchable() {
