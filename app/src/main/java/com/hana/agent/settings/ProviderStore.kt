@@ -387,6 +387,11 @@ class ProviderStore(
         writeConfig()
     }
 
+    @Synchronized
+    fun saveKey(providerId: String, apiKey: String) {
+        setKey(providerId, apiKey)
+    }
+
     /** 这个模型配置所属服务商的 Key。 */
     fun apiKey(configId: String): String? =
         _configs.value.firstOrNull { it.id == configId }?.let { providerKey(it.providerId) }
