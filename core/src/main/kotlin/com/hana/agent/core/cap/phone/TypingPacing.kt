@@ -32,9 +32,9 @@ class TypingPacing(private val random: Random?, val limits: Limits = Limits()) {
         val maxTotalMs: Long = 6_000L,
     ) {
         companion object {
-            /** 限制浏览快慢的 App(和「像人」时所有 App):打得更慢、停得更多,长消息至多 12 秒。 */
+            /** 限制浏览快慢的 App：打字适度平滑，长消息至多 6 秒。 */
             val CAREFUL = Limits(
-                latinMs = 90L..230L, cjkMs = 220L..520L, pauseChance = 0.1, pauseMs = 500L..1_400L, maxSteps = 60, maxTotalMs = 12_000L,
+                latinMs = 70L..190L, cjkMs = 180L..420L, pauseChance = 0.08, pauseMs = 400L..1_000L, maxSteps = 40, maxTotalMs = 6_000L,
             )
         }
     }

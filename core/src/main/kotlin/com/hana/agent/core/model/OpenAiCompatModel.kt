@@ -112,10 +112,6 @@ class OpenAiCompatModel(
                 // 写明不要流式:省掉这一项时有的兼容端点默认按 SSE 回
                 put("stream", false)
             }
-            // 本地端侧推理引擎（llama-server 等）开启 KV Cache 槽位复用，使前缀零开销重用，实现 150ms 神经反射级响应
-            if (baseUrl.contains("127.0.0.1") || baseUrl.contains("localhost")) {
-                put("cache_prompt", true)
-            }
         }
         return Request.Builder().url(endpoint)
             .withHeaders(headers)

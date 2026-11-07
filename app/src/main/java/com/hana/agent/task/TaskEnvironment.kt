@@ -45,10 +45,6 @@ class TaskEnvironment {
         val defaultModelFactory: (Context, ModelSession) -> ChatModel? = { c, s -> ProviderStore.get(c).modelFor(ModelRole.Main, s) }
         val defaultLightModelFactory: (Context, ModelSession) -> ChatModel? = { c, s ->
             val store = ProviderStore.get(c)
-            val lightCfg = store.configFor(ModelRole.Light)
-            if (lightCfg?.baseUrl?.contains("127.0.0.1:8080") == true) {
-                com.hana.agent.model.local.LocalModelManager.ensureServerRunning(c)
-            }
             store.modelFor(ModelRole.Light, s)
         }
         val defaultVisionModelFactory: (Context, ModelSession) -> ChatModel? = { c, s -> ProviderStore.get(c).modelFor(ModelRole.Vision, s) }

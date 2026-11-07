@@ -14,7 +14,11 @@ private val REF_RE = Regex("^@[ev][1-9]\\d*$")
 internal val PAGE_REF_RE = Regex("^@e[1-9]\\d*$")
 internal val LOCATED_REF = Regex("^@v[1-9]\\d*$")
 
-private val SAFE_EXTRA_KEYS = setOf("thought", "thoughts", "reason", "rationale", "explanation", "comment", "action", "label", "appName", "app", "description")
+private val SAFE_EXTRA_KEYS = setOf(
+    "thought", "thoughts", "reason", "rationale", "explanation", "comment", "action",
+    "label", "appName", "app", "description", "memo", "note", "summary", "target",
+    "element", "role", "index", "id", "name", "title", "text_hint", "target_name"
+)
 
 internal class Args(val tool: ToolDef, val o: JsonObject) {
     init {

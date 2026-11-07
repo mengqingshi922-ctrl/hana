@@ -109,7 +109,14 @@ internal class TypeText(f: ScreenFamily) : ScreenTool(f, "type_text") {
         failed?.let { return it }
         return when (target) {
             is FieldAim.Point -> located(ctx, target, typeInto(ctx, text, enter) { ctx.screen.typeAt(target.x, target.y, text) })
-            else -> ctx.withPortRef((target as FieldAim.Ref).ref) { ref -> typeInto(ctx, text, enter) { ctx.screen.typeText(ref?.first, ref?.second, text) } }
+            else -> {
+                val exec = ctx.withPortRef((target as FieldAim.Ref).ref) { ref -> typeInto(ctx, text, enter) { ctx.screen.typeText(ref?.first, ref?.second, text) } }
+                if (exec.content["ok"] == JsonPrimitive(false) && exec.content["error"] == JsonPrimitive("ref_expired")) {
+                    val fallback = typeInto(ctx, text, enter) { ctx.screen.typeText(null, null, text) }
+                    if (fallback.content["ok"] == JsonPrimitive(true)) return fallback
+                }
+                exec
+            }
         }
     }
 

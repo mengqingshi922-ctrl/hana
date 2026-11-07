@@ -7,7 +7,8 @@ package com.hana.agent.core.agent
  */
 internal object AppFastPath {
     private val PREFIXES = listOf(
-        "帮我打开", "请帮我打开", "打开", "帮我启动", "请帮我启动", "启动", "运行", "进一下", "进入", "去", "帮我进入", "launch ", "open "
+        "帮我打开", "请帮我打开", "打开", "帮我启动", "请帮我启动", "启动", "运行", "进一下", "进入",
+        "帮我进入", "去", "到", "在", "帮我在", "请在", "帮我去", "请到", "上", "launch ", "open "
     )
 
     data class FastMatch(val packageName: String, val appLabel: String, val isPureOpen: Boolean)
@@ -32,7 +33,8 @@ internal object AppFastPath {
 
             if (restLower.startsWith(labelLower)) {
                 val after = restLower.substring(labelLower.length).trimStart(' ', ',', '，', '。', '、', '的', '！', '!', '吧')
-                val isPure = after.isEmpty() || after == "app" || after == "应用" || after == "软件"
+                val cleanAfter = after.trimStart('里', '面', '中', '上', '去', '帮', '我', ' ', ',', '，', '。', '、', '！', '!')
+                val isPure = cleanAfter.isEmpty() || cleanAfter == "app" || cleanAfter == "应用" || cleanAfter == "软件"
                 return FastMatch(pkg, label, isPure)
             }
         }

@@ -37,11 +37,11 @@ internal const val MAX_ELEMENTS = 200
 /** 一次全量屏幕之后最多接几次差异。 */
 private const val MAX_CHAIN_DIFFS = 5
 /** 写操作后读屏前等界面稳定的上限。 */
-private const val INLINE_SETTLE_MS = 1500L
+private const val INLINE_SETTLE_MS = 350L
 /** OCR 是读屏补充，不能无限期挡住下一次模型调用。 */
-private const val OCR_WAIT_MS = 2000L
+private const val OCR_WAIT_MS = 600L
 /** 树不够用时屏上文字就是主要材料:多等一会儿(端口要先等画面停稳再认)。 */
-private const val OCR_WAIT_POOR_MS = 5000L
+private const val OCR_WAIT_POOR_MS = 1200L
 /** 不可逆判定要按 ref 所属的那次读屏找元素,留最近几次。 */
 private const val RECENT_SNAPSHOTS = 8
 /** 记住多少个发出过的 snapshotId。 */

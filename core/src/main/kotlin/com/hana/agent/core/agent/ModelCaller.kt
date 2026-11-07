@@ -127,22 +127,10 @@ internal class ModelCaller(
         val picked = r.pick(ctx)
         if (!r.isLight(picked)) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
 
-        val isLocal = isLocalOnDevice(picked)
-        val slotCtx = if (isLocal) buildLocalSlotPrompt(history) else null
-        val targetSpecs = if (isLocal) specs.filter { it.name in LIGHT_ACTION_TOOLS } else specs
-
-        if (isLocal && slotCtx?.hasCandidates == false) {
-            // 端侧小模型在当前屏幕没有可操作候选，直接交由主模型决策，避免无效推理
-            return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
-        }
-
-        val targetHistory = if (slotCtx != null) slotCtx.messages else viewFor(history, picked)
-        val targetPrompt = slotCtx?.systemPrompt
-
         // 轻量模型的上下文可能更小:它报超长、它那次折叠多少,都不连累主模型(压缩状态按模型分开记)
         var lightErrorDetail: String? = null
         val light = try {
-            complete(targetHistory, targetSpecs, picked, RetryPolicy.NONE, step, onText, customPrompt = targetPrompt)
+            complete(viewFor(history, picked), specs, picked, RetryPolicy.NONE, step, onText)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -157,9 +145,8 @@ internal class ModelCaller(
         var first = light?.parts?.filterIsInstance<Part.ToolCall>()?.firstOrNull()
         var effectiveLight = light
 
-        // 端侧纯文本/伪代码/自然语言输出动作抢救机制
-        if (first == null && isLocal && slotCtx != null && text.isNotBlank()) {
-            val rescued = extractToolCallFromText(text, targetSpecs, slotCtx.anchorCoordinates, slotCtx.snapshotId)
+        if (first == null && text.isNotBlank()) {
+            val rescued = extractToolCallFromText(text, specs)
             if (rescued != null) {
                 first = rescued
                 effectiveLight = ModelReply(
@@ -315,9 +302,7 @@ internal class ModelCaller(
          */
         internal fun extractToolCallFromText(
             text: String,
-            allowedTools: List<ToolSpec>,
-            anchorCoordinates: Map<String, Pair<Int, Int>> = emptyMap(),
-            snapshotId: String? = null
+            allowedTools: List<ToolSpec>
         ): Part.ToolCall? {
             if (text.isBlank()) return null
             val allowedNames = allowedTools.map { it.name }.toSet()
@@ -349,29 +334,19 @@ internal class ModelCaller(
                 tryParseToolJson(rawJson, allowedNames)?.let { return it }
             }
 
-            // 4. 尝试匹配引用元素：例如 "@e1" 或 "@t0"（历史热点解引用）
-            val refRegex = Regex("""(?:phone_tap\s+|点击\s+|tap\s+)?(@[et]\d+)""")
+            // 4. 尝试匹配引用元素：例如 "@e1"
+            val refRegex = Regex("""(?:phone_tap\s+|点击\s+|tap\s+)?(@e\d+)""")
             refRegex.find(text)?.let { match ->
                 val ref = match.groupValues[1]
-                val coords = anchorCoordinates[ref]
-                if (coords != null && ref.startsWith("@t")) {
+                if ("phone_tap" in allowedNames) {
                     return Part.ToolCall(
                         id = "rescued_${System.currentTimeMillis()}",
                         name = "phone_tap",
                         argsJson = buildJsonObject {
-                            put("x", coords.first)
-                            put("y", coords.second)
+                            put("ref", ref)
                         }.toString()
                     )
                 }
-                return Part.ToolCall(
-                    id = "rescued_${System.currentTimeMillis()}",
-                    name = "phone_tap",
-                    argsJson = buildJsonObject {
-                        put("ref", ref)
-                        snapshotId?.let { put("snapshotId", it) }
-                    }.toString()
-                )
             }
 
             // 4.1 尝试匹配 UI-TARS / 视觉动作坐标：例如 click(832, 399)、point=[832, 399] 或 [832, 399]
@@ -401,127 +376,6 @@ internal class ModelCaller(
             }
 
             return null
-        }
-
-        internal fun isLocalOnDevice(model: ChatModel): Boolean {
-            if (model is com.hana.agent.core.model.OpenAiCompatModel) {
-                val url = model.baseUrl.lowercase()
-                if (url.contains(":18080") || url.contains(":8080")) {
-                    return true
-                }
-            }
-            val name = model.name.lowercase()
-            return name.contains("端侧") || name.contains("0.5b") ||
-                   name.contains("1.5b") || name.contains("local") || name.contains("tars") ||
-                   name.contains("smol") || name.contains("gguf")
-        }
-
-        data class LocalSlotContext(
-            val systemPrompt: String,
-            val messages: List<Message>,
-            val hasCandidates: Boolean,
-            val anchorCoordinates: Map<String, Pair<Int, Int>> = emptyMap(),
-            val snapshotId: String? = null
-        )
-
-        internal fun buildLocalSlotPrompt(history: List<Message>): LocalSlotContext {
-            val userGoal = history.firstOrNull { it.author == Author.User }
-                ?.parts?.filterIsInstance<Part.Text>()?.firstOrNull()?.text?.take(80) ?: "执行屏幕动作"
-
-            // 倒序检索所有历史工具返回，找到最近一次包含屏幕候选的有效观察结果
-            val allToolResults = history.asReversed().flatMap { m ->
-                m.parts.filterIsInstance<Part.ToolResult>()
-            }
-            val screenResult = allToolResults.firstOrNull { r ->
-                val text = r.content.orEmpty()
-                text.contains("elements") || text.contains("screen") || text.contains("@e") || text.contains("coordinates")
-            } ?: allToolResults.firstOrNull()
-
-            val snapId = try {
-                val json = Json.parseToJsonElement(screenResult?.content.orEmpty()) as? JsonObject
-                val screenObj = json?.get("screen") as? JsonObject ?: json
-                (screenObj?.get("snapshotId") as? JsonPrimitive)?.contentOrNull
-            } catch (_: Exception) { null }
-
-            val (candidates, coords) = extractCompactCandidates(screenResult?.content, history, userGoal)
-            val hasCandidates = candidates != "None" && candidates.isNotBlank()
-            val slotText = "Task: $userGoal\nCandidates:\n$candidates\nAction:"
-            val systemPrompt = "You are a fast mobile action picker. Output ONLY target ref (e.g. '@e1'), click coordinate (e.g. 'click(500, 800)'), or 'wait'. No explanation. NEVER click unrelated top/bottom navigation tabs (like 商城, 我的, 首页, 发现) unless explicitly requested. If no candidates directly match the task goal, output 'wait'."
-            val messages = listOf(Message(Role.User, listOf(Part.Text(slotText)), Author.User))
-            return LocalSlotContext(systemPrompt, messages, hasCandidates, coords, snapId)
-        }
-
-        private val PURE_NAV_LABELS = setOf("商城", "音乐", "福利", "福利中心", "我的", "发现", "听抖音", "首页", "关注", "推荐", "设置", "消息", "直播", "短剧", "演出")
-
-        internal fun extractCompactCandidates(content: String?, history: List<Message>? = null, goal: String? = null): Pair<String, Map<String, Pair<Int, Int>>> {
-            val lines = mutableListOf<String>()
-            val coords = mutableMapOf<String, Pair<Int, Int>>()
-            var hasRealContentElement = false
-
-            // 1. 尝试从无障碍树读取普通 DOM 节点
-            if (!content.isNullOrBlank()) {
-                try {
-                    val json = Json.parseToJsonElement(content) as? JsonObject
-                    val screenObj = json?.get("screen") as? JsonObject ?: json
-                    val elements = (screenObj?.get("elements") as? JsonArray)?.mapNotNull { it as? JsonObject }
-                    if (elements != null) {
-                        val validElements = elements.filter { elem ->
-                            val clickable = (elem["clickable"] as? JsonPrimitive)?.contentOrNull == "true"
-                            val label = (elem["name"] as? JsonPrimitive)?.contentOrNull
-                                ?: (elem["text"] as? JsonPrimitive)?.contentOrNull
-                                ?: (elem["desc"] as? JsonPrimitive)?.contentOrNull
-                                ?: (elem["description"] as? JsonPrimitive)?.contentOrNull
-                                ?: ""
-                            clickable || label.isNotBlank()
-                        }
-                        // 语义相关度排序 + Top 4 精剪：
-                        // 将无关死重节点剔除，使端侧 Token 维持在 50 以内，配合 KV Cache 实现 150ms 极速反射
-                        val sortedElements = if (goal != null) {
-                            val goalWords = goal.lowercase().split(Regex("[\\s,，。！!]+")).filter { it.length >= 2 }
-                            validElements.sortedByDescending { elem ->
-                                val label = ((elem["name"] as? JsonPrimitive)?.contentOrNull
-                                    ?: (elem["text"] as? JsonPrimitive)?.contentOrNull ?: "").lowercase()
-                                var score = 0
-                                if (goalWords.any { it in label }) score += 10
-                                if (label in listOf("确定", "搜索", "发送", "跳过", "关闭", "领取", "开心收下", "允许")) score += 5
-                                score
-                            }
-                        } else validElements
-
-                        sortedElements.take(4).forEachIndexed { idx, elem ->
-                            val ref = (elem["ref"] as? JsonPrimitive)?.contentOrNull ?: "@e$idx"
-                            val label = (elem["name"] as? JsonPrimitive)?.contentOrNull
-                                ?: (elem["text"] as? JsonPrimitive)?.contentOrNull
-                                ?: (elem["desc"] as? JsonPrimitive)?.contentOrNull
-                                ?: (elem["description"] as? JsonPrimitive)?.contentOrNull
-                                ?: "clickable"
-                            val cleanLabel = label.trim()
-                            if (cleanLabel.isNotBlank() && cleanLabel !in PURE_NAV_LABELS) {
-                                hasRealContentElement = true
-                            }
-                            val bounds = (elem["bounds"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.toIntOrNull() }
-                            val coordHint = if (bounds != null && bounds.size >= 4) {
-                                val cx = (bounds[0] + bounds[2]) / 2
-                                val cy = (bounds[1] + bounds[3]) / 2
-                                coords[ref] = Pair(cx, cy)
-                                " [$cx, $cy]"
-                            } else ""
-                            lines += "$ref: ${cleanLabel.take(20)}$coordHint"
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-
-            // 自绘界面安全准则：
-            // 如果页面是自绘界面（无障碍 elements 为空），或者候选仅仅只有顶层框架导航 Tab（如仅有 商城、音乐、演出），
-            // 说明内容区完全由 Canvas 自绘或在加载中，此时绝不能给端侧小模型伪造历史点击或放行纯导航 Tab，
-            // 必须判定无业务候选（返回 None），迫使系统主动降级由具备多模态看图能力的主模型进行视觉找点（phone_find_visually），彻底消灭误点商城与 @t 死循环！
-            if (lines.isEmpty() || !hasRealContentElement) {
-                return Pair("None", emptyMap())
-            }
-
-            val textResult = lines.distinct().joinToString("\n")
-            return Pair(textResult, coords)
         }
 
         private fun tryParseToolJson(raw: String, allowedNames: Set<String>): Part.ToolCall? {

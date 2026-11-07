@@ -32,21 +32,21 @@ object EdgeFastReflex {
     // 1. 绝对高置信度直接阻断词（权限授权、广告跳过、营销浮层；正常业务页面绝不会以此命名业务操作）
     private val HIGH_CONFIDENCE_DISMISS_WORDS = setOf(
         // 系统权限与安全授权
-        "允许", "始终允许", "仅在使用中允许", "同意并继续", "同意", "同意并使用", "我已阅读并同意", "同意并授权",
+        "允许", "始终允许", "仅在使用中允许", "同意并继续", "同意并使用", "我已阅读并同意", "同意并授权",
         // 广告与营销快速跳过
         "跳过", "跳过广告", "跳过引导", "关闭广告", "知道了并关闭", "朕知道了", "开心收下", "残忍拒绝",
-        "稍后再说", "以后再说", "暂不更新", "暂不升级", "取消更新", "不感兴趣", "暂不开启", "忽略本次"
+        "稍后再说", "以后再说", "暂不更新", "暂不升级", "取消更新", "暂不开启", "忽略本次"
     )
 
-    // 2. 上下文限定词（在普通业务界面也可能出现，如结算取消/表单确定，必须伴随弹窗/提示/对话框上下文时才允许反射点击）
+    // 2. 上下文限定词（必须伴随明确的系统/权限/更新弹窗上下文，且页面为轻量浮层时才允许点击）
     private val CONTEXT_SENSITIVE_WORDS = setOf(
-        "取消", "好的", "确定", "知道了", "我知道了", "关闭", "放弃", "进入应用", "立即体验", "直接进入"
+        "好的", "知道了", "我知道了", "放弃", "进入应用", "立即体验", "直接进入"
     )
 
-    // 弹窗与权限特征识别词（用于判断当前界面是否处于 Dialog / 遮罩 / 授权状态）
+    // 明确的弹窗与权限特征识别词（杜绝宽泛日常词）
     private val DIALOG_CONTEXT_CLUES = listOf(
-        "权限", "申请", "访问", "隐私政策", "用户协议", "服务协议", "青少年模式", "未成年人", "防沉迷",
-        "新版本", "更新提示", "版本更新", "dialog", "popup", "alert", "modal", "提示", "温馨提示", "notice"
+        "权限申请", "权限提示", "获取权限", "想要访问", "隐私政策", "服务协议",
+        "青少年模式", "未成年人防沉迷", "版本更新", "发现新版本", "新版本上线"
     )
 
     // 精确匹配的关闭图标/符号
@@ -182,7 +182,8 @@ object EdgeFastReflex {
                     ?: (it["text"] as? JsonPrimitive)?.contentOrNull
                     ?: (it["desc"] as? JsonPrimitive)?.contentOrNull
             }.joinToString(" ")
-            val hasDialogContext = DIALOG_CONTEXT_CLUES.any { allTexts.contains(it, ignoreCase = true) }
+            // 只有当存在明确弹窗提示词，且总元素数量较少（典型浮层弹窗）时才认为处于弹窗上下文，防止在大业务页面误伤
+            val hasDialogContext = DIALOG_CONTEXT_CLUES.any { allTexts.contains(it, ignoreCase = true) } && elements.size <= 20
 
             // 优先查找符合阻断特征的可点击控件
             for (elem in elements) {

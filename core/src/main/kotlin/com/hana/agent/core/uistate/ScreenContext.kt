@@ -130,7 +130,8 @@ internal fun openedHint(o: OpenedElsewhere): String {
 internal suspend fun ToolContext.withPortRef(ref: Pair<String, String>?, act: suspend (Pair<String, String>?) -> ToolExecution): ToolExecution {
     val st = session.stabilizer
     if (st == null || ref == null) return act(ref)
-    val r = st.resolve(ref.first, ref.second) as? Resolved.Current ?: return action(ActionResult.Failed("ref_expired"))
+    val snapId = if (ref.second.isBlank()) (st.latest?.snapshotId ?: session.lastSnapshot?.snapshotId.orEmpty()) else ref.second
+    val r = st.resolve(ref.first, snapId) as? Resolved.Current ?: return action(ActionResult.Failed("ref_expired"))
     val e = act(r.portRef to r.portSnapshotId)
     val content = if (r.relocated && e.content["ok"] == JsonPrimitive(true)) JsonObject(e.content + ("relocated" to JsonPrimitive(true))) else e.content
     return ToolExecution(content, changed = e.changed, outcome = e.outcome, frame = e.frame, images = e.images,
