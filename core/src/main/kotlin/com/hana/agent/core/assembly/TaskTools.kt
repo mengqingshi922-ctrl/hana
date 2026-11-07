@@ -66,8 +66,8 @@ fun toolDispatcher(
     webIdleScroll: () -> IdleScroll? = { null },
     /** 在 App 里一步一步操作的节奏(改动屏幕的动作之前补足停留,见 [AppPacing]);默认不等。 */
     appPacing: () -> AppPacing = { AppPacing.Off },
-    /** App 对浏览快慢的要求(按包名);默认按 [skills] 里 App 知识的 pace。 */
-    appPace: (String) -> PlacePace = { pkg -> PlacePace.of(skills?.appPace(pkg)) },
+    /** App 对浏览快慢的要求(按包名);默认按 [skills] 里 App 知识的 pace 及内置高风控名单。 */
+    appPace: (String) -> PlacePace = { pkg -> PlacePace.of(skills?.appPace(pkg), pkg) },
     /** App 里新的一屏上的停留时轻轻滚几下(见 [IdleScroll]);默认不滚。 */
     appIdleScroll: () -> IdleScroll? = { null },
     /** 跨读屏的稳定编号:读屏给模型编号和 s<N>,动作前翻译回端口编号。 */

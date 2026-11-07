@@ -121,48 +121,14 @@ internal class ModelCaller(
         }
 
         val r = router?.takeIf { routing } ?: return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
-        // 关键修复：只检查当前最新屏（最后一次观察）是否带截图，而不是检查全局历史。
-        // 避免历史中只要出现过一次截图，后续 10 多步纯文本点击都被永久剥夺给小模型。
         val latestHasImage = history.takeLast(2).any { m -> m.parts.any { it is Part.Image } }
-        val picked = r.pick(track.context(step, latestHasImage))
+        val ctx = track.context(step, latestHasImage)
+        val picked = r.pick(ctx)
         if (!r.isLight(picked)) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
         // 轻量模型的上下文可能更小:它报超长、它那次折叠多少,都不连累主模型(压缩状态按模型分开记)
         var lightErrorDetail: String? = null
-        val lightSpecs = specs.filter { it.name in LIGHT_ACTION_TOOLS }
-        if (lightSpecs.isEmpty()) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
-        var isLocal = isLocalOnDevice(picked)
-        var anchorCoords: Map<String, Pair<Int, Int>> = emptyMap()
-        var currentSnapshotId: String? = null
         val light = try {
-            val (lightPrompt, lightMessages, specsToSend) = if (isLocal) {
-                // 【端侧协议与工程极致脱水】
-                // 倒序检索真实屏幕候选；若无任何可操作候选，直接降级为主模型读屏/规划，绝不盲目输出 wait
-                val slotCtx = buildLocalSlotPrompt(history)
-                anchorCoords = slotCtx.anchorCoordinates
-                currentSnapshotId = slotCtx.snapshotId
-                if (!slotCtx.hasCandidates) {
-                    return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
-                }
-                Triple(slotCtx.systemPrompt, slotCtx.messages, emptyList<ToolSpec>())
-            } else {
-                // 云端敏捷小脑：保留视觉感知与敏捷动作工具集
-                Triple(
-                    "You are a fast, agile phone operation agent. Decide the next immediate action on the screen to achieve the user goal. Directly call the appropriate phone tool. Never reply with conversational filler.",
-                    viewFor(history, picked),
-                    lightSpecs
-                )
-            }
-            // 端侧 8 秒充裕计算窗口 / 云端 15 秒网络防护超时，彻底避免 2B/3B 模型在手机端刚计算到第 3 秒就被掐死
-            val timeoutMs = if (isLocal) 8000L else 15000L
-            val reply = withTimeoutOrNull(timeoutMs) {
-                if (onText == null) picked.complete(lightPrompt, lightMessages, specsToSend)
-                else if (picked is StreamingChatModel) picked.completeStreaming(lightPrompt, lightMessages, specsToSend, onText)
-                else picked.complete(lightPrompt, lightMessages, specsToSend).also { result ->
-                    result.parts.filterIsInstance<Part.Text>().joinToString("") { it.text }
-                        .takeIf(String::isNotEmpty)?.let(onText)
-                }
-            }
-            reply
+            complete(viewFor(history, picked), specs, picked, RetryPolicy.NONE, step, onText)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -174,15 +140,8 @@ internal class ModelCaller(
             null
         }
         val text = light?.parts?.filterIsInstance<Part.Text>()?.joinToString("") { it.text }?.trim().orEmpty()
-        val directCall = light?.parts?.filterIsInstance<Part.ToolCall>()?.firstOrNull()
-        // 关键动作拯救：端侧或轻量小模型偶尔直接在文字里吐出动作格式，自动解析恢复为真实工具调用，杜绝白白打回
-        val first = directCall ?: extractToolCallFromText(text, lightSpecs, anchorCoords, currentSnapshotId)
-        if (first != null && !needsMain(first)) {
-            val rescuedLight = if (directCall != null) light else {
-                light?.copy(parts = light.parts + first)
-            }
-            return RoutedOutcome(rescuedLight ?: light!!, picked, startAsked)
-        }
+        val first = light?.parts?.filterIsInstance<Part.ToolCall>()?.firstOrNull()
+        if (first != null && !needsMain(first)) return RoutedOutcome(light, picked, startAsked)
         r.noteTrouble()
         emit(RunEvent.ModelReply(
             now(), step, RunEvent.clip(Redactor.text(text)), first?.name, first?.let { Redactor.args(tools.verb(it.name), it.argsJson, secretField = true) },
@@ -223,7 +182,7 @@ internal class ModelCaller(
                 })
             }
         }
-        return if (toLight) HistoryPruner.prune(cleaned, tools.index, HistoryPruner.LAST) else cleaned
+        return cleaned
     }
 
     /** 上次记过的压缩触发点:只在变化或真压缩时打日志。 */

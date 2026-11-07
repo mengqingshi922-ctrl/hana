@@ -1,4 +1,4 @@
-<!-- translated-from: README.md @ 33f3af965e5e -->
+<!-- translated-from: README.md @ 55937e9d15fd -->
 <div align="center">
 
 <img src="../media/logo.png" alt="Hana" width="88" />
@@ -103,6 +103,10 @@
 - **커뮤니티**: [X 그룹 채팅](https://x.com/i/chat/group_join/g2116926829198246025/48B52j5svL)에 참여하세요. WeChat으로 작성자에게 연락하려면 앱의 Hana 정보 › 개발자에게 연락에 있는 QR 코드를 스캔하세요(친구 신청에 "Hana"라고 적어 주세요)
 - **문제 신고**: [Issue 열기](https://github.com/mengqingshi922-ctrl/hana/issues/new/choose). 앱의 Hana 정보 › 의견 보내기에서 진단 정보를 첨부할 수 있습니다
 - **기여하기**: 앱이나 사이트의 사용 지식을 보태 주세요(일반 텍스트라 코드를 몰라도 됩니다). 코드 기여도 환영합니다. [기여 가이드](../../.github/CONTRIBUTING.md)를 보세요
+
+## 감사의 글
+
+Hana는 오픈소스 프로젝트 [Mika](https://github.com/hana/agent/Mika)에서 깊은 영감을 받아 탄생했습니다. 모바일 기기 자율 제어 에이전트 분야에서 선구적인 탐색과 기여를 해주신 Mika 및 오픈소스 커뮤니티에 진심으로 감사드립니다. Hana는 이러한 기반 위에서 인터랙티브 마스코트 시스템, 제로 레이턴시 의도 패스트패스, 온디바이스 SLM 하이브리드 제어 등 광범위한 혁신을 구현했습니다.
 
 ## 라이선스
 

@@ -134,13 +134,18 @@ open class ScreenAccessibility : AccessibilityService() {
     }
 
     /**
-     * 截一张主屏(用户看着的那块屏,包括 Mika 自己的浮层:要不要藏起来由调用方定)。系统限制两次截图至少隔一会儿,
-     * 太快时等一秒再截一次。画面是软件位图(可以读像素、编码)。
+     * 截一张主屏(用户看着的那块屏,包括 Hana 自己的浮层:要不要藏起来由调用方定)。系统限制两次截图至少隔一会儿,
+     * 太快时采用自适应快速退避重试（系统底层限制约为 250ms），避免死等 1000ms 造成严重卡顿。
      */
     suspend fun takeMainScreenshot(): MainShot {
         val first = screenshotOnce()
         if (first !is MainShot.Failed || first.code != ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) return first
-        kotlinx.coroutines.delay(SCREENSHOT_INTERVAL_MS)
+        // 快速自适应重试：先等待 280ms 快速重试
+        kotlinx.coroutines.delay(280L)
+        val second = screenshotOnce()
+        if (second !is MainShot.Failed || second.code != ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) return second
+        // 偶发慢速窗口时二次退避 350ms
+        kotlinx.coroutines.delay(350L)
         return screenshotOnce()
     }
 

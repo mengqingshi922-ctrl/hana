@@ -721,7 +721,7 @@ class TaskRun(
                     val childTools = toolDispatcher(accessedPhone, model.capabilities.vision,
                         web = web, webPacing = { PagePacing.human() }, webPlacePace = { PlacePace.of(catalog.sitePace(it)) },
                         webIdleScroll = { IdleScroll(Random.Default) },
-                        appPacing = { pace.appPacing() }, appPace = { PlacePace.of(catalog.appPace(it)) }, appIdleScroll = { IdleScroll(Random.Default) },
+                        appPacing = { pace.appPacing() }, appPace = { PlacePace.of(catalog.appPace(it), it) }, appIdleScroll = { IdleScroll(Random.Default) },
                         sandbox = sandbox, workspace = { conversationId }, runSpec = childSpec,
                         conversationId = conversationId, inlineScreen = speed.inlineScreen,
                         adaptiveVision = speed.adaptiveVision)

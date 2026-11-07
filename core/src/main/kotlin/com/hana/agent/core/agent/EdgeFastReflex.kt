@@ -32,12 +32,13 @@ object EdgeFastReflex {
     // 常见阻断/确认关键词（命中且用户目标未明确要求与之相悖时，秒级直通点击）
     private val POPUP_FAST_KEYWORDS = listOf(
         // 权限与安全弹窗
-        "允许", "始终允许", "仅在使用中允许", "同意并继续", "同意",
+        "允许", "始终允许", "仅在使用中允许", "同意并继续", "同意", "同意并使用", "我已阅读并同意", "同意并授权",
         // 广告与营销阻断
         "跳过", "跳过广告", "知道了", "开心收下", "残忍拒绝", "稍后再说", "不感兴趣", "关闭广告", "继续播放",
         "进入主页", "立即体验", "开启体验", "进入应用", "跳过引导", "先逛逛", "我知道了", "暂不开启", "放弃",
+        "不再提示", "不再提醒", "直接进入", "继续使用", "知道了并关闭", "立即关闭", "忽略", "忽略本次", "朕知道了",
         // 更新与版本弹窗
-        "以后再说", "暂不更新", "取消", "取消更新"
+        "以后再说", "暂不更新", "暂不升级", "取消", "取消更新", "好的"
     )
 
     // 精确匹配的图标/文字
@@ -112,13 +113,16 @@ object EdgeFastReflex {
         val ref2 = extractRefOrCoord(c2.argsJson)
         if (ref1 == null || ref2 == null || ref1 != ref2) return null
 
-        // 检查最新一次工具调用结果是否没有产生变化
+        // 检查最新一次工具调用结果是否没有产生变化（排除明确的报错/需要确认/风控拦截）
         val latestTool = history.asReversed().flatMap { m ->
             m.parts.filterIsInstance<Part.ToolResult>()
-        }.firstOrNull()
+        }.firstOrNull() ?: return null
 
-        val content = latestTool?.content.orEmpty()
-        val notChanged = content.contains("\"changed\":false") || content.contains("\"changed\": null") || !content.contains("\"changed\":true")
+        if (latestTool.isError) return null
+        val content = latestTool.content.orEmpty()
+        if (content.contains("\"error\"") || content.contains("confirmation_required") || content.contains("hand_to_user")) return null
+
+        val notChanged = content.contains("\"changed\":false") || content.contains("\"changed\": false") || content.contains("\"effect\":\"no_effect\"")
 
         if (notChanged) {
             val backCall = Part.ToolCall(

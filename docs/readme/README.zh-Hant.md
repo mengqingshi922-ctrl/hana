@@ -1,4 +1,4 @@
-<!-- translated-from: README.md @ 33f3af965e5e -->
+<!-- translated-from: README.md @ 55937e9d15fd -->
 <div align="center">
 
 <img src="../media/logo.png" alt="Hana" width="88" />
@@ -101,4 +101,12 @@
 - **交流**：App 裡「關於 › 聯絡作者」掃碼加作者微信（請備註 Hana）；不用微信的話可以加入 [X 群聊](https://x.com/i/chat/group_join/g2116926829198246025/48B52j5svL)
 - **回報問題**：[開 Issue](https://github.com/mengqingshi922-ctrl/hana/issues/new/choose)，App 裡「關於 › 回報問題」可以附上診斷資訊
 - **參與貢獻**：為某個 App、網站補一份使用知識（純文字，不用寫程式），或者貢獻程式碼，見[貢獻指南](../../.github/CONTRIBUTING.zh-CN.md)
+
+## 致敬與鳴謝
+
+Hana 的靈感來自開源專案 [Mika](https://github.com/hana/agent/Mika)，由 hana-team 最初建立。我們衷心感謝 Mika 及開源社群在手機 Agent 領域做出的開創性探索。Hana 在此基礎上進行了廣泛創新——引入了互動式桌寵伴侶系統、零延遲意圖直通、端側 SLM 混合執行以及強大的動作鏈結能力。
+
+## 許可證
+
+[Apache-2.0](../../LICENSE) · [NOTICE](../../NOTICE) · [第三方組件](../../licenses/THIRD_PARTY_NOTICES.md)
 

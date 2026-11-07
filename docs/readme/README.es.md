@@ -1,4 +1,4 @@
-<!-- translated-from: README.md @ 33f3af965e5e -->
+<!-- translated-from: README.md @ 55937e9d15fd -->
 <div align="center">
 
 <img src="../media/logo.png" alt="Hana" width="88" />
@@ -103,4 +103,12 @@ Para ver cómo funciona cada cosa y los detalles, consulta las [funciones en det
 - **Comunidad**: únete al [chat de grupo en X](https://x.com/i/chat/group_join/g2116926829198246025/48B52j5svL); para escribir al autor por WeChat, escanea el código QR de la app en Acerca de Hana › Contactar con el autor (menciona «Hana» en la solicitud)
 - **Informa de un problema**: [abre un issue](https://github.com/mengqingshi922-ctrl/hana/issues/new/choose); en la app, Acerca de Hana › Enviar comentarios permite adjuntar información de diagnóstico
 - **Contribuye**: añade conocimiento de uso para una app o un sitio web (texto plano, sin programar) o contribuye con código; consulta la [guía de contribución](../../.github/CONTRIBUTING.md)
+
+## Agradecimientos
+
+Hana se inspira en el proyecto de código abierto [Mika](https://github.com/hana/agent/Mika), creado originalmente por hana-team. Agradecemos sinceramente el trabajo pionero de Mika y de la comunidad de código abierto en el campo de los agentes para teléfonos móviles. Hana construye sobre estas bases e introduce innovaciones significativas, como el sistema interactivo de mascota compañera, rutas directas de intención de latencia cero y ejecución híbrida con modelos locales SLM.
+
+## Licencia
+
+[Apache-2.0](../../LICENSE) · [NOTICE](../../NOTICE) · [Componentes de terceros](../../licenses/THIRD_PARTY_NOTICES.md)
 

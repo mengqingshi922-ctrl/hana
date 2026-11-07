@@ -34,22 +34,15 @@ class ModelRouter(private val main: ChatModel, private val light: ChatModel?) {
     fun disable() { disabled = true }
 
     fun pick(ctx: StepContext): ChatModel {
-        if (!ctx.lastOk || ctx.lastHadGuard || ctx.lastChanged == false) {
-            noteTrouble()
-        }
+        if (!ctx.lastOk || ctx.lastHadGuard || ctx.lastChanged == false) noteTrouble()
         if (forcedMain > 0) {
             forcedMain--
             consecutiveLightSteps = 0
             return main
         }
         val l = light?.takeIf { active } ?: return main
-
-        // 端云分层协同：同 App 内且无异常状况时支持端侧自主推进（爆发上限 5 步，到期主动回退主模型复核）
-        // 端侧具备视觉或槽位解析时，直接接管屏幕决策，大幅削减云端高昂的 3~4 秒 RTT 往返
-        val isLocalLight = l.name.contains("端侧") || l.name.contains("tars") || l.name.contains("smol") || l.name.contains("0.5b")
-        val canHandleVisual = !ctx.hasImages || l.capabilities.vision || isLocalLight
-        val simple = ctx.step > 1 && !ctx.lastWasRecovery && ctx.sameAppAsLast && canHandleVisual
-
+        val simple = ctx.step > 1 && !ctx.lastWasRecovery && ctx.sameAppAsLast && (!ctx.hasImages || l.capabilities.vision)
+        // 同应用内的简单微动作支持本地爆发（最多连跑 5 步），到期主动回退主模型复核
         return if (simple && consecutiveLightSteps < MAX_CONSECUTIVE_LIGHT_STEPS) {
             consecutiveLightSteps++
             l
@@ -59,7 +52,7 @@ class ModelRouter(private val main: ChatModel, private val light: ChatModel?) {
         }
     }
 
-    /** 出了状况(含轻量模型调用失败、回复被改派给主模型、画面没变或纠错回退):之后 [TROUBLE_STEPS] 步用主模型。 */
+    /** 出了状况(含轻量模型调用失败、回复被改派给主模型):之后 [TROUBLE_STEPS] 步用主模型。 */
     fun noteTrouble() {
         forcedMain = TROUBLE_STEPS
         consecutiveLightSteps = 0
