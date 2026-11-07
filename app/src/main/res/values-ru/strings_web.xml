@@ -11,7 +11,7 @@
     <string name="web_manage">Управление</string>
     <string name="web_logout_all_title">Выйти везде и очистить веб-данные</string>
     <string name="web_you_signed_in">Вы вошли на этот сайт в Hana.</string>
-    <string name="web_mika_visited">Hana заходила на этот сайт.</string>
+    <string name="web_hana_visited">Hana заходила на этот сайт.</string>
     <string name="web_open_login">Открыть страницу входа</string>
     <string name="web_cleared">Cookie и веб-хранилище для %1$s очищены; потребуется войти снова. Некоторые данные могут остаться; чтобы очистить всё, нажмите «Выйти везде».</string>
     <string name="web_signed_out">Выход из %1$s выполнен. %2$s</string>

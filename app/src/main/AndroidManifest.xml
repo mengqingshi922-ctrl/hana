@@ -80,7 +80,7 @@
     </queries>
 
     <application
-        android:name=".MikaApp"
+        android:name=".HanaApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -92,7 +92,7 @@
             android:name=".ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
-            android:theme="@style/Theme.Mika"
+            android:theme="@style/Theme.Hana"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -114,7 +114,7 @@
             android:name=".ui.viewer.FileViewerActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|uiMode|density"
             android:exported="false"
-            android:theme="@style/Theme.Mika" />
+            android:theme="@style/Theme.Hana" />
 
         <!-- 网页接管:把后台的网页标签(同一个 WebView)拿到主屏给用户处理 -->
         <activity
@@ -138,7 +138,7 @@
             android:windowSoftInputMode="stateHidden" />
 
         <service
-            android:name=".a11y.MikaAccessibilityService"
+            android:name=".a11y.HanaAccessibilityService"
             android:exported="true"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">

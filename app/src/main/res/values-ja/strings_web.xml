@@ -11,7 +11,7 @@
     <string name="web_manage">管理</string>
     <string name="web_logout_all_title">すべてログアウトしてウェブデータを消去</string>
     <string name="web_you_signed_in">このサイトには、Hana の中であなたがログインしました。</string>
-    <string name="web_mika_visited">Hana はこのサイトを訪れました。</string>
+    <string name="web_hana_visited">Hana はこのサイトを訪れました。</string>
     <string name="web_open_login">ログインページを開く</string>
     <string name="web_cleared">%1$s の Cookie とウェブストレージを消去しました。もう一度ログインが必要です。一部のデータが残っている可能性があります。すべて消去するには「すべてログアウト」を使ってください。</string>
     <string name="web_signed_out">%1$s からログアウトしました。%2$s</string>

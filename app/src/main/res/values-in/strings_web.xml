@@ -11,7 +11,7 @@
     <string name="web_manage">Kelola</string>
     <string name="web_logout_all_title">Keluar dari semua dan hapus data web</string>
     <string name="web_you_signed_in">Anda masuk ke situs ini lewat Hana.</string>
-    <string name="web_mika_visited">Hana pernah mengunjungi situs ini.</string>
+    <string name="web_hana_visited">Hana pernah mengunjungi situs ini.</string>
     <string name="web_open_login">Buka halaman masuk</string>
     <string name="web_cleared">Cookie dan penyimpanan web untuk %1$s dihapus; Anda perlu masuk lagi. Sebagian data mungkin tersisa; gunakan “Keluar dari semua” untuk menghapus semuanya.</string>
     <string name="web_signed_out">Sudah keluar dari %1$s. %2$s</string>

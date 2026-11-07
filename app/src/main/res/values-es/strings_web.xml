@@ -11,7 +11,7 @@
     <string name="web_manage">Gestionar</string>
     <string name="web_logout_all_title">Cerrar todas las sesiones y borrar los datos web</string>
     <string name="web_you_signed_in">Iniciaste sesión en este sitio desde Hana.</string>
-    <string name="web_mika_visited">Hana ha visitado este sitio.</string>
+    <string name="web_hana_visited">Hana ha visitado este sitio.</string>
     <string name="web_open_login">Abrir inicio de sesión</string>
     <string name="web_cleared">Se borraron las cookies y el almacenamiento web de %1$s; tendrás que iniciar sesión de nuevo. Puede que queden algunos datos; usa “Cerrar todas las sesiones” para borrarlo todo.</string>
     <string name="web_signed_out">Sesión cerrada en %1$s. %2$s</string>

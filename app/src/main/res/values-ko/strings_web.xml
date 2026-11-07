@@ -11,7 +11,7 @@
     <string name="web_manage">관리</string>
     <string name="web_logout_all_title">모두 로그아웃하고 웹 데이터 지우기</string>
     <string name="web_you_signed_in">이 사이트에는 Hana에서 직접 로그인했어요.</string>
-    <string name="web_mika_visited">Hana가 이 사이트를 방문한 적이 있어요.</string>
+    <string name="web_hana_visited">Hana가 이 사이트를 방문한 적이 있어요.</string>
     <string name="web_open_login">로그인 열기</string>
     <string name="web_cleared">%1$s의 쿠키와 웹 저장소를 지웠어요. 다시 로그인해야 해요. 일부 데이터가 남아 있을 수 있어요. 모두 지우려면 “모두 로그아웃”을 사용하세요.</string>
     <string name="web_signed_out">%1$s에서 로그아웃했어요. %2$s</string>

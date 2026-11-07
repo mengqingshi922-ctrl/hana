@@ -29,8 +29,8 @@
     <string name="browser_home">Стартовая страница</string>
     <string name="share">Поделиться</string>
     <string name="more">Ещё</string>
-    <string name="browser_login_for_mika">Войти для Hana</string>
-    <string name="browser_login_for_mika_sub">" · открывает версию «%1$s», которую Hana использует в задачах; после вашего входа Hana тоже сможет ею пользоваться"</string>
+    <string name="browser_login_for_hana">Войти для Hana</string>
+    <string name="browser_login_for_hana_sub">" · открывает версию «%1$s», которую Hana использует в задачах; после вашего входа Hana тоже сможет ею пользоваться"</string>
     <string name="browser_mobile">Мобильная</string>
     <string name="browser_copy_link">Копировать ссылку</string>
     <string name="browser_open_outside">Открыть в другом браузере</string>

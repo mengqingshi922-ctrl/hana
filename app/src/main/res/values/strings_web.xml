@@ -11,7 +11,7 @@
     <string name="web_manage">Manage</string>
     <string name="web_logout_all_title">Sign out of all and clear web data</string>
     <string name="web_you_signed_in">You signed in to this site within Hana.</string>
-    <string name="web_mika_visited">Hana has visited this site.</string>
+    <string name="web_hana_visited">Hana has visited this site.</string>
     <string name="web_open_login">Open sign-in</string>
     <string name="web_cleared">Cleared cookies and web storage for %1$s; you’ll need to sign in again. Some data may remain; use “Sign out of all” to clear everything.</string>
     <string name="web_signed_out">Signed out of %1$s. %2$s</string>

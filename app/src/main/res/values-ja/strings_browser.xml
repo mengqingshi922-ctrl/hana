@@ -26,8 +26,8 @@
     <string name="browser_home">スタートページ</string>
     <string name="share">共有</string>
     <string name="more">その他</string>
-    <string name="browser_login_for_mika">Hana 用にログイン</string>
-    <string name="browser_login_for_mika_sub">" · Hana がタスクで使う %1$s 版を開きます。ログインすると Hana も使えます"</string>
+    <string name="browser_login_for_hana">Hana 用にログイン</string>
+    <string name="browser_login_for_hana_sub">" · Hana がタスクで使う %1$s 版を開きます。ログインすると Hana も使えます"</string>
     <string name="browser_mobile">モバイル版</string>
     <string name="browser_copy_link">リンクをコピー</string>
     <string name="browser_open_outside">別のブラウザで開く</string>

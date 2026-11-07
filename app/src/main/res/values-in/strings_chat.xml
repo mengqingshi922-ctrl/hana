@@ -135,7 +135,7 @@
     <string name="chat_copied">Disalin</string>
     <string name="chat_select_hint">Tekan lama teks untuk memilihnya</string>
     <string name="chat_quote_remove">Hapus kutipan</string>
-    <string name="chat_quoting_mika">Mengutip Hana: %1$s</string>
+    <string name="chat_quoting_hana">Mengutip Hana: %1$s</string>
     <string name="chat_quoting_you">Mengutip Anda: %1$s</string>
     <string name="chat_edit_message">Ubah pesan</string>
     <string name="chat_withdraw_message">Tarik pesan</string>
