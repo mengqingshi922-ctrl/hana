@@ -10,9 +10,10 @@ import kotlin.math.roundToInt
 /** 参数校验失败;message 点名字段。 */
 internal class ArgError(val field: String, msg: String) : Exception("$field: $msg")
 
-private val REF_RE = Regex("^@[ev][1-9]\\d*$")
+private val REF_RE = Regex("^@(e[1-9]\\d*|v[1-9]\\d*|v_txt\\d+|txt\\d+)$")
 internal val PAGE_REF_RE = Regex("^@e[1-9]\\d*$")
-internal val LOCATED_REF = Regex("^@v[1-9]\\d*$")
+internal val LOCATED_REF = Regex("^@(v[1-9]\\d*|v_txt\\d+|txt\\d+)$")
+internal val VISUAL_TXT_REF = Regex("^@(v_txt|txt)(\\d+)$")
 
 private val SAFE_EXTRA_KEYS = setOf(
     "thought", "thoughts", "reason", "rationale", "explanation", "comment", "action",

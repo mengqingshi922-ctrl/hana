@@ -75,6 +75,19 @@ object HistoryPruner {
     /** 压缩后仍超:只留最近一次往返原样。 */
     val LAST = Cut(1)
 
+    /**
+     * 阶梯对齐裁剪窗口（Stepped Window Cut）：
+     * 每 [stride] 轮固定一次裁剪边界（保留最近 1..stride 轮完整观测），
+     * 避免每走一步都改写倒数第 2 轮消息导致云端 Prefix KV Cache 每步 100% 失效。
+     */
+    fun steppedCut(rounds: Int, stride: Int = 3, minWindow: Int = 1): Cut {
+        require(stride >= 1 && minWindow >= 1) { "stride and minWindow must be >= 1" }
+        if (rounds <= minWindow) return Cut(minWindow)
+        val prunedRounds = ((rounds - minWindow) / stride) * stride
+        val window = (rounds - prunedRounds).coerceAtLeast(minWindow)
+        return Cut(window)
+    }
+
     /** [tools]:按调用的工具名查它做的动作。 */
     fun prune(input: List<Message>, tools: ToolIndex, cut: Cut): List<Message> {
         val starts = input.indices.filter { i -> input[i].role == Role.Assistant && input[i].parts.any { it is Part.ToolCall } }

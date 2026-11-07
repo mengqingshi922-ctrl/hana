@@ -74,4 +74,12 @@ class RouteMatcherTest {
         val got = RouteMatcher(FakeModel(), MemRoutes(*routes.toTypedArray()), null).candidates(goal)
         assertEquals(listOf("r1", "r2", "r3", "r4", "r5"), got.map { it.id })
     }
+
+    @Test fun politePrefixAndPunctuationGeneralizedMatch() = runTest {
+        val politeGoal = "请帮我在备忘录里写一下今天天气不错！"
+        val m = FakeModel(text("""{"route": 1, "slots": ["今天天气不错"]}"""))
+        val choice = RouteMatcher(m, MemRoutes(memo), null).choose(politeGoal)
+        assertEquals(RouteChoice(memo, listOf("今天天气不错")), choice)
+        assertEquals(1, m.requests.size)
+    }
 }

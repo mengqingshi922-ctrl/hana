@@ -1,6 +1,7 @@
 package com.hana.agent.core.uistate.tools
 
 import com.hana.agent.core.uistate.ScreenFamily
+import com.hana.agent.core.uistate.Located
 import com.hana.agent.core.risk.GateTarget
 import com.hana.agent.core.prompt.Feedback
 import com.hana.agent.core.uistate.ScreenSnapshot
@@ -108,6 +109,19 @@ internal class Tap(f: ScreenFamily) : ScreenTool(f, "tap") {
  * 换算像素按此刻的一屏(读不到再退回最近一次)。
  */
 internal suspend fun locatedPixel(ctx: ToolContext, ref: String, snapshotId: String): Pair<Int, Int>? {
+    val m = com.hana.agent.core.tool.VISUAL_TXT_REF.find(ref)
+    if (m != null) {
+        val idx = m.groupValues[2].toIntOrNull()
+        val lines = ctx.session.lastOcrText
+        val targetLine = if (idx != null) lines?.getOrNull(idx) else null
+        if (targetLine != null && targetLine.bounds.size == 4) {
+            val cx = (targetLine.bounds[0] + targetLine.bounds[2]) / 2
+            val cy = (targetLine.bounds[1] + targetLine.bounds[3]) / 2
+            val s = ctx.session.lastSnapshot ?: ctx.lastOrSnapshot()
+            ctx.locatedInfo[ref] = Located(targetLine.text, targetLine.text, targetLine.text, unverified = false)
+            return toPx(cx, s.width) to toPx(cy, s.height)
+        }
+    }
     val (p, hash) = ctx.located.get(ref, snapshotId) ?: return null
     val screen = ctx.screen
     val png = if (screen.isProtected()) null else screen.screenshotPng()

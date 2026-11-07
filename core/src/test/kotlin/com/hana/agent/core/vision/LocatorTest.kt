@@ -376,4 +376,24 @@ class LocatorTest {
         assertEquals("elements", r.source)
         assertEquals("静态画面下 frameGrid 一致，直接复用首次截图，总截图次数为 1", 1, s.shotCalls)
     }
+
+    @Test fun rejectsFullScreenHallucinationBox() = runTest {
+        val m = says("""{"bbox_2d":[0,0,1000,1000],"seen":"背景"}""", "是")
+        val r = notFound(locator(LocScreen(), m).locate("背景", null))
+        assertEquals("not_found", r.reason)
+        assertEquals("全屏幻觉框直接被 parseBox 拦截，不触发后续复看确认", 1, m.requests.size)
+    }
+
+    @Test fun smallTargetConfirmIncludesRoiCropAndFramedLast() = runTest {
+        // 微小目标：宽高均为 80 (180 - 100 <= 150)，触发局部 ROI 裁剪视图辅助确认
+        val m = says("""{"bbox_2d":[100,100,180,180],"seen":"小图标"}""", "是")
+        val r = found(locator(LocScreen(), m).locate("小图标", null))
+        assertEquals("vision", r.source)
+        assertEquals(2, m.requests.size)
+        val confirm = m.requests[1].single()
+        val images = confirm.parts.filterIsInstance<Part.Image>()
+        assertEquals("微小目标确认包含 2 张图：ROI 裁剪图与带红框全图", 2, images.size)
+        val framed = Base64.getDecoder().decode(images.last().pngBase64)
+        assertTrue(JvmTestImageOps.decode(framed).px.any { (it.toInt() and 0xFF) == 255 })
+    }
 }

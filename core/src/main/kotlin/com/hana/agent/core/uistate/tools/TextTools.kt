@@ -104,7 +104,8 @@ internal class TypeText(f: ScreenFamily) : ScreenTool(f, "type_text") {
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
         if (a.str(DESCRIBED_ELEMENT) != null) throw ArgError(DESCRIBED_ELEMENT, "could not be resolved to an input field here; use ref+snapshotId")
-        val text = a.str("text", max = 10000)!!
+        val rawText = a.str("text", max = 10000)!!
+        val text = com.hana.agent.core.bus.RegisterBus.resolve(rawText)
         val enter = a.bool("pressEnter", false)
         val (target, failed) = aim(a, ctx)
         failed?.let { return it }

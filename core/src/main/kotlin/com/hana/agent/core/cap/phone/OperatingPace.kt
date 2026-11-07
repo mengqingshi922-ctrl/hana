@@ -14,6 +14,12 @@ import kotlin.random.Random
 enum class OperatingPace {
     FAST, STANDARD, HUMAN;
 
+    /** 这个任务在手机屏幕上的物理手势节奏（FAST 模式走高速低延迟触控，其余走拟人触控）。 */
+    fun gesturePacing(random: Random = Random.Default): GesturePacing = when (this) {
+        FAST -> GesturePacing.fast(random)
+        STANDARD, HUMAN -> GesturePacing.human(random)
+    }
+
     /** 这个任务在 App 里一步一步操作的节奏。 */
     fun appPacing(random: Random = Random.Default): AppPacing = when (this) {
         FAST -> AppPacing.Off

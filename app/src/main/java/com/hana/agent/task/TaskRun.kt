@@ -576,6 +576,7 @@ class TaskRun(
                     clipLock = service.clipLock, checkOtherTasks = parallel,
                     reserve = { pkg -> service.reservePackage(pkg, key, stillUsed(pkg, null)) },
                     reserveCopy = { pkg, user -> service.reservePackage(claimKey(pkg, user), key, stillUsed(pkg, user)) },
+                    pacing = pace.gesturePacing(),
                     appFree = { pkg, user -> service.packageFree(claimKey(pkg, user), key, stillUsed(pkg, user)) },
                     // 模型要了等:等的时候界面写「等另一个任务用完某 App」(仍是在干活,不算要你处理),等完放回原来那句
                     awaitApp = { pkg, user, timeoutMs, free ->
@@ -589,6 +590,7 @@ class TaskRun(
                     beforeOpen = muter::beforeOpen,
                     notOpened = muter::notOpened,
                     appAccess = appAccess,
+                    shellProvider = { phoneServices.hub.shell.value ?: shell },
                 )
                 val side0 = PhoneSide(shell, a11y, screen, agentDisplay, muter)
                 phone = side0

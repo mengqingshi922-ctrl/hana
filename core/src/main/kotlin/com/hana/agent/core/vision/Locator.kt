@@ -140,7 +140,9 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
         val boxArr = intArrayOf(box.l, box.t, box.r, box.b)
         val confirmed = try {
             val framed = vision.ops.drawFrame(second.png, boxArr)
-            YES.containsMatchIn(vision.ask(confirmPrompt.replace("{target}", target), "Yes or no?", listOf(framed)).trim())
+            val roi = cropRoiIfSmall(second.png, box)
+            val confirmImages = if (roi != null) listOf(roi, framed) else listOf(framed)
+            YES.containsMatchIn(vision.ask(confirmPrompt.replace("{target}", target), "Yes or no?", confirmImages).trim())
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             return LocateResult.NotFound("vision_unavailable", "Locating by sight failed this time. ${m.notFoundNext}")
         }
@@ -264,18 +266,33 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
         b.size == 4 && x in b[0]..b[2] && y in b[1]..b[3] && area(e) < 999L * 999 / 2
     }.minByOrNull(::area)
 
+    private fun cropRoiIfSmall(png: ByteArray, box: Box): ByteArray? {
+        val w = box.r - box.l
+        val h = box.b - box.t
+        if (w !in 1..150 || h !in 1..150) return null
+        val pad = 50
+        val cl = (box.l - pad).coerceAtLeast(0)
+        val ct = (box.t - pad).coerceAtLeast(0)
+        val cr = (box.r + pad).coerceAtMost(999)
+        val cb = (box.b + pad).coerceAtMost(999)
+        return runCatching { vision.ops.crop(png, intArrayOf(cl, ct, cr, cb)) }.getOrNull()
+    }
+
     private fun parseBox(reply: String): Box? {
-        val t = reply.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
-        if (t == "null") return null
-        if (Regex("bbox_2d").findAll(t).count() > 1 || FOUR_NUMBERS.findAll(t).count() > 1) return null
-        val m = BBOX_2D.find(t) ?: BARE_BOX.find(t) ?: return null
+        val trimmed = reply.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        if (trimmed == "null") return null
+        if (Regex("bbox_2d").findAll(trimmed).count() > 1 || FOUR_NUMBERS.findAll(trimmed).count() > 1) return null
+        val m = BBOX_2D.find(trimmed) ?: BARE_BOX.find(trimmed) ?: return null
         val (x1, y1, x2, y2) = m.groupValues.drop(1).map { it.toDouble() }
         if (listOf(x1, y1, x2, y2).any { it > 1000 } || x2 <= x1 || y2 <= y1) return null
         // 0–1 的小数框是另一种坐标约定,换算不可靠
         if (maxOf(x1, y1, x2, y2) <= 1) return null
         fun scale(v: Double) = (v * 999 / 1000).roundToInt()
-        val seen = SEEN.find(t)?.groupValues?.get(1)?.let(::unescape)?.trim()?.take(MAX_SEEN)?.ifEmpty { null }
-        return Box(scale(x1), scale(y1), scale(x2), scale(y2), seen)
+        val l = scale(x1); val t = scale(y1); val r = scale(x2); val b = scale(y2)
+        val boxArea = (r - l).toLong() * (b - t).toLong()
+        if (boxArea <= 0L || boxArea > 999L * 999 * 85 / 100) return null
+        val seen = SEEN.find(trimmed)?.groupValues?.get(1)?.let(::unescape)?.trim()?.take(MAX_SEEN)?.ifEmpty { null }
+        return Box(l, t, r, b, seen)
     }
 
     private fun unescape(raw: String): String =

@@ -57,6 +57,7 @@ import com.hana.agent.settings.SystemStatusMonitor
 import com.hana.agent.cap.phone.PhoneServices
 import com.hana.agent.cap.phone.setup.DeveloperSettings
 import com.hana.agent.cap.phone.setup.PairingNotifier
+import com.hana.agent.core.agent.TaskState
 import com.hana.agent.core.shell.BuiltinShellStatus
 import com.hana.agent.ui.theme.MikaTheme
 import com.hana.agent.ui.theme.animationsOff
@@ -66,6 +67,36 @@ import com.hana.agent.ui.theme.systemBarsFor
 class MainActivity : ComponentActivity() {
     private lateinit var monitor: SystemStatusMonitor
     private var requestedConversation by mutableStateOf<String?>(null)
+    private var voiceSpeaker: com.hana.agent.voice.VoiceSpeaker? = null
+
+    fun speakAlert(text: String) {
+        if (voiceSpeaker == null) {
+            voiceSpeaker = com.hana.agent.voice.VoiceSpeaker(this)
+        }
+        voiceSpeaker?.speak(text)
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val env = (application as? HanaApp)?.tasks
+            val hasActivePreview = env != null && (env.agentAppShown.value || env.webScreenOpen.value)
+            if (hasActivePreview) {
+                runCatching {
+                    val params = android.app.PictureInPictureParams.Builder()
+                        .setAspectRatio(android.util.Rational(9, 16))
+                        .build()
+                    enterPictureInPictureMode(params)
+                }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        voiceSpeaker?.shutdown()
+        voiceSpeaker = null
+        super.onDestroy()
+    }
 
     private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         // 用户选过「不再询问」时系统不再弹窗,只能去设置里打开
@@ -231,6 +262,14 @@ private fun MikaRoot(store: ProviderStore, monitor: SystemStatusMonitor, activit
     val check = Prerequisites.check(status, hasMain)
     val context = LocalContext.current
     val app = context.applicationContext as HanaApp
+    val currentTaskState by app.taskState.state.collectAsState()
+    LaunchedEffect(currentTaskState) {
+        val s = currentTaskState
+        if (s is TaskState.WaitingTakeover) {
+            val alert = s.message.takeIf { it.isNotBlank() } ?: "需要您的协助处理"
+            (context as? MainActivity)?.speakAlert(alert)
+        }
+    }
     // 查到的新版本:侧栏、设置首页、关于页的红点都看它
     val updateState by app.updates.state.collectAsState()
     LaunchedEffect(requestedConversation) {

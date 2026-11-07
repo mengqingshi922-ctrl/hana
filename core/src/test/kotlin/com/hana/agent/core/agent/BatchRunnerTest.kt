@@ -8,6 +8,8 @@ import com.hana.agent.core.gate.ConfirmationGate
 import com.hana.agent.core.record.RunEvent
 import com.hana.agent.core.record.RunSink
 import com.hana.agent.core.uistate.ActionResult
+import com.hana.agent.core.uistate.ChoiceOption
+import com.hana.agent.core.uistate.LaunchChoice
 import com.hana.agent.core.uistate.Verification
 import com.hana.agent.core.uistate.ScreenPort
 import com.hana.agent.core.uistate.ScreenSnapshot
@@ -274,5 +276,15 @@ class BatchRunnerTest {
         assertTrue("request_confirmation" !in r.s("message"))
         val with = runner(toolDispatcher(BatchScreen(home))).run(steps(st("phone_back"), st("phone_tap", """{"x":900,"y":950}""")), "c2").content
         assertTrue("request_confirmation" in with.s("message"))
+    }
+
+    @Test fun stopsWhenChooserPopupOpensMidBatch() = runTest {
+        val s = BatchScreen(home).apply {
+            results += ActionResult.Ok(changed = true, chooser = LaunchChoice("android", listOf(ChoiceOption("App", false))))
+        }
+        val r = runner(toolDispatcher(s)).run(steps(st("phone_back"), st("phone_back")), "c1").content
+        assertEquals("chooser_opened", r.s("reason"))
+        assertEquals("batch_stopped", r.s("error"))
+        assertEquals(listOf("back"), s.calls)
     }
 }

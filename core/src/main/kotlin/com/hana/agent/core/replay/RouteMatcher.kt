@@ -29,8 +29,13 @@ class RouteMatcher(private val model: ChatModel, val store: RouteStore, private 
     fun candidates(goal: String, limit: Int = 5): List<Route> {
         val apps = knowledge?.matchTask(goal, Int.MAX_VALUE)?.flatMap { it.packages }?.toSet().orEmpty()
         val g = bigrams(goal)
+        val gNorm = bigrams(normalizeGoal(goal))
         return store.all().filter { !it.disabled }
-            .map { it to jaccard(g, bigrams(SLOT.replace(it.template, "\u0000"))) }
+            .map {
+                val tplBigrams = bigrams(SLOT.replace(it.template, "\u0000"))
+                val tplNormBigrams = bigrams(SLOT.replace(normalizeGoal(it.template), "\u0000"))
+                it to maxOf(jaccard(g, tplBigrams), jaccard(gNorm, tplNormBigrams))
+            }
             .filter { (r, sim) -> sim >= MIN_SIMILARITY || r.packages.any(apps::contains) }
             .sortedByDescending { it.second }
             .take(limit)
@@ -59,6 +64,16 @@ class RouteMatcher(private val model: ChatModel, val store: RouteStore, private 
 
         private fun squash(s: String) = s.filterNot { it.isWhitespace() }
 
+        private val POLITE_PREFIX = Regex("^(?:请帮我|麻烦帮我|请替我|帮我|麻烦你|麻烦|请你|请)+")
+        private val TRAILING_PUNCT = Regex("[。！!？?～~，,；;…]+$")
+
+        /** 剥离句首礼貌寒暄词、句尾标点与常见无损口语助词（如“一下”），保留核心实体与额外动作要求。 */
+        internal fun normalizeGoal(s: String): String =
+            squash(s)
+                .replace(POLITE_PREFIX, "")
+                .replace(TRAILING_PUNCT, "")
+                .replace("一下", "")
+
         private fun occurrences(s: String, v: String): Int {
             var n = 0; var i = s.indexOf(v)
             while (i >= 0) { n++; i = s.indexOf(v, i + 1) }
@@ -82,7 +97,7 @@ class RouteMatcher(private val model: ChatModel, val store: RouteStore, private 
             if (slots.any { it.isBlank() || occurrences(goal, it) != 1 }) return null
             var unknown = false
             val filled = SLOT_N.replace(route.template) { m -> slots.getOrNull(m.groupValues[1].toInt() - 1) ?: run { unknown = true; "" } }
-            if (unknown || squash(filled) != squash(goal)) return null
+            if (unknown || (squash(filled) != squash(goal) && normalizeGoal(filled) != normalizeGoal(goal))) return null
             return RouteChoice(route, slots)
         }
 

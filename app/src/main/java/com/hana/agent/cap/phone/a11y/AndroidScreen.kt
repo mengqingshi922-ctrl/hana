@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Bundle
+import android.os.DeadObjectException
 import android.os.SystemClock
 import android.util.Log
 import android.view.Display
@@ -125,12 +126,25 @@ class AndroidScreen(
      */
     private val awaitApp: suspend (packageName: String, user: Int?, timeoutMs: Long, free: suspend () -> Boolean) -> AppWait =
         { _, _, _, _ -> AppWait.Unsupported },
+    /** 动态获取最新重连的 IHanaShell 实例，防止助手进程重启后持有死 Binder 单点故障。 */
+    private val shellProvider: () -> IHanaShell = { shell },
 ) : ScreenPort {
     /** 屏还没建时为 -1;只在确认屏已建好之后用。 */
     private val displayId get() = display.current?.displayId ?: -1
     /** 屏已经建好(不等于打开过 App)。 */
     private val hasDisplay get() = display.current != null
     private val ids = NodeIds()
+
+    private val activeShell: IHanaShell
+        get() = runCatching { shellProvider() }.getOrDefault(shell)
+
+    private inline fun <T> withShell(block: (IHanaShell) -> T): T {
+        return try {
+            block(activeShell)
+        } catch (e: DeadObjectException) {
+            block(shellProvider())
+        }
+    }
 
     /** 最近一次 launch_app 成功打开的包,用于判断是否被切走。 */
     @Volatile private var targetPackage: String? = null
@@ -256,9 +270,9 @@ class AndroidScreen(
      */
     private fun foregroundTaskPackage(): String? {
         if (!hasDisplay) return null
-        val task = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+        val task = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
         if (task < 0) return null
-        return runCatching { shell.packageOfTask(task) }.getOrNull()?.takeIf { it.isNotBlank() }
+        return runCatching { withShell { it.packageOfTask(task) } }.getOrNull()?.takeIf { it.isNotBlank() }
     }
 
     /**
@@ -270,9 +284,9 @@ class AndroidScreen(
         emitAll(a11y.windowChanges())
     }.conflate().mapNotNull {
         if (!hasDisplay) return@mapNotNull null
-        val task = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+        val task = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
         if (task < 0) return@mapNotNull null
-        val pkg = runCatching { shell.packageOfTask(task) }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val pkg = runCatching { withShell { it.packageOfTask(task) } }.getOrNull()?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
         TargetApp(pkg, task, userOf(task))
     }.distinctUntilChanged { a, b -> a.packageName == b.packageName && a.userId == b.userId }
 
@@ -458,7 +472,7 @@ class AndroidScreen(
             }
             try {
                 fun matched(): Boolean = when (condition) {
-                    "activity" -> runCatching { shell.topActivity(displayId)?.contains(value, true) == true }.getOrDefault(false)
+                    "activity" -> runCatching { withShell { it.topActivity(displayId) }?.contains(value, true) == true }.getOrDefault(false)
                     else -> {
                         val r = read()
                         val exists = r.windows.any { w ->
@@ -942,20 +956,20 @@ class AndroidScreen(
         requestedUser = user
         // 打开了:Mika 屏上最上面的任务是它(问不到任务时退回看无障碍读到的最上面的窗口);指定了哪一份时还得是那份用户的任务
         fun launched(): Boolean = (foregroundTaskPackage()?.let { it == packageName } ?: (ScreenReader.topPackage(windows()) == packageName)) &&
-            (user == null || userOf(runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)).let { it < 0 || it == user })
+            (user == null || userOf(runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)).let { it < 0 || it == user })
         fun picker(): String? = if (sharing) systemPickerOf(packageName, before) else null
         val deadline = SystemClock.uptimeMillis() + LAUNCH_WAIT_MS
         // 系统先问打开哪一个时 App 不会自己到前台:看到选择框就不再干等
         while (!launched() && chooserOf(packageName, before) == null && picker() == null && SystemClock.uptimeMillis() < deadline) delay(POLL_MS)
         waitStable(SETTLE_CAP_MS)
         val onTop = launched()
-        val task = if (onTop) shell.topTaskId(displayId) else -1
+        val task = if (onTop) runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1) else -1
         _target.value = TargetApp(packageName, task, if (task >= 0) userOf(task) else user ?: -1)
         if (!onTop && user != null) {
             // 要的是另一份,系统却先问打开哪一个:自己逐个点选项,认开出来的是哪一份,不交给模型猜
             if (chooserTargets(packageName, before) != null) return resolveCopyChooser(packageName, user, before, hint)
             // 直接开出来的是这个 App 的别的那份:照实失败,不当成要的那份
-            if (foregroundTaskPackage() == packageName) return copyNotOpened(user, userOf(runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)))
+            if (foregroundTaskPackage() == packageName) return copyNotOpened(user, userOf(runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)))
         }
         // 系统在问打开哪一个(App 装了两份等):算打开了,等模型选;选完 App 到了前台,之后的动作照常认它是目标。
         // App 已在最上面时盖着的系统窗口(权限框)不算
@@ -991,7 +1005,7 @@ class AndroidScreen(
      * 不结束它),再打开一次、点下一个。都试过还不是,照实失败 copy_not_opened,说开出来的是哪一份;不把错的那份当成功。
      */
     private suspend fun resolveCopyChooser(packageName: String, user: Int, before: String?, hint: String?): ActionResult {
-        fun topTask() = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+        fun topTask() = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
         suspend fun opened(): ActionResult? {
             if (foregroundTaskPackage() != packageName) return null
             val task = topTask()
@@ -1088,7 +1102,7 @@ class AndroidScreen(
             if (checkOtherTasks) reserve(opened)
             targetPackage = opened
             requestedUser = null
-            val task = shell.topTaskId(displayId)
+            val task = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
             _target.value = TargetApp(opened, task, userOf(task))
         }
         ok(hint = if (expected != null && top != expected) hintLinkElsewhere(top, expected) else null)
@@ -1203,7 +1217,7 @@ class AndroidScreen(
         if (landed && (!action.silent || showing)) {
             targetPackage = pkg
             requestedUser = null
-            val task = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+            val task = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
             _target.value = TargetApp(pkg, task, userOf(task))
         }
         val hint = if (!action.silent && !landed) hintNotInFront(top(), pkg) else null
@@ -1282,9 +1296,9 @@ class AndroidScreen(
 
     private fun readProfiles(): Map<String, List<String>>? {
         val me = myUser
-        val users = AppProfiles.parseUsers(runCatching { shell.listUsers() }.getOrNull() ?: return null).filter { it.id != me && it.running }
+        val users = AppProfiles.parseUsers(runCatching { withShell { it.listUsers() } }.getOrNull() ?: return null).filter { it.id != me && it.running }
         return AppProfiles.alsoIn(users.associateWith { u ->
-            AppProfiles.parsePackages(runCatching { shell.listPackages(u.id) }.getOrNull() ?: return null)
+            AppProfiles.parsePackages(runCatching { withShell { it.listPackages(u.id) } }.getOrNull() ?: return null)
         })
     }
 
@@ -1298,7 +1312,7 @@ class AndroidScreen(
     @Volatile private var copiedPackages: Set<String> = emptySet()
 
     /** 任务所属的用户;任务不存在或问不到为 -1。 */
-    private fun userOf(task: Int): Int = if (task < 0) -1 else runCatching { shell.userOfTask(task) }.getOrDefault(-1)
+    private fun userOf(task: Int): Int = if (task < 0) -1 else runCatching { withShell { it.userOfTask(task) } }.getOrDefault(-1)
 
     // ---------- 核实 ----------
 
@@ -1459,7 +1473,7 @@ class AndroidScreen(
         val since = SystemClock.uptimeMillis()
         watchUserTaps(since + SPILL_WINDOW_MS)
         val top = runCatching { shell.watchMainScreen(SPILL_WINDOW_MS.toInt()) }.getOrNull() ?: return null
-        val agentTop = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+        val agentTop = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
         return Watch(since, top, agentTop).also { watch = it }
     }
 
@@ -1608,7 +1622,7 @@ class AndroidScreen(
         // 事先不知道会开出哪个 App:挪回来后再占;占不到也不撤回
         if (checkOtherTasks) reserve(pkg)
         val deadline = SystemClock.uptimeMillis() + LAUNCH_WAIT_MS
-        while (runCatching { shell.topTaskId(displayId) }.getOrDefault(-1) != a.taskId && SystemClock.uptimeMillis() < deadline) delay(POLL_MS)
+        while (runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1) != a.taskId && SystemClock.uptimeMillis() < deadline) delay(POLL_MS)
         waitStable(SETTLE_CAP_MS)
         val profile = if (isSystemPackage(pkg)) null else inProfileOf(pkg, a.userId)
         return Spill(OpenedElsewhere(pkg, appLabel(pkg), pulledBack = true, inProfile = profile, byUser = byUser), null)
@@ -1656,12 +1670,12 @@ class AndroidScreen(
                     return@withContext PickResult.Settled
                 }
                 // 选中的 App 开在了 Mika 的屏上(从那边打开的)
-                val top = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+                val top = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
                 if (top >= 0 && top != p.agentTop && top !in adopted) {
                     adopted += top
                     waitStable(SETTLE_CAP_MS)
-                    val pkg = runCatching { shell.packageOfTask(top) }.getOrNull() ?: p.packageName
-                    val profile = inProfileOf(pkg, runCatching { shell.userOfTask(top) }.getOrDefault(-1))
+                    val pkg = runCatching { withShell { it.packageOfTask(top) } }.getOrNull() ?: p.packageName
+                    val profile = inProfileOf(pkg, runCatching { withShell { it.userOfTask(top) } }.getOrDefault(-1))
                     pendingReport = Spill(OpenedElsewhere(pkg, appLabel(pkg), pulledBack = true, inProfile = profile), null)
                     return@withContext PickResult.Settled
                 }
@@ -1711,11 +1725,11 @@ class AndroidScreen(
      */
     private suspend fun adoptFromAdopted(w: Watch?): String? {
         if (w == null || w.agentTopBefore !in adopted) return null
-        val top = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+        val top = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
         if (top < 0 || top == w.agentTopBefore || top in adopted || top == _target.value?.taskId) return null
         adopted += top
-        val pkg = runCatching { shell.packageOfTask(top) }.getOrNull() ?: return null
-        return inProfileOf(pkg, runCatching { shell.userOfTask(top) }.getOrDefault(-1))
+        val pkg = runCatching { withShell { it.packageOfTask(top) } }.getOrNull() ?: return null
+        return inProfileOf(pkg, runCatching { withShell { it.userOfTask(top) } }.getOrDefault(-1))
     }
 
     /** 装了两份的 App 开的是哪一份:和 Mika 同一个用户的是本来那份;只装了一份或看不出为 null。 */
@@ -1804,7 +1818,7 @@ class AndroidScreen(
             ScreenReader.topPackage(windows()),
             // 从用户主屏挪回来的(及从它们里面打开的)也是目标 App 这一路打开的
             sameTask = {
-                val top = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+                val top = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
                 top >= 0 && (target != null && target.taskId == top || top in adopted)
             },
             partOfTask = chooserPackage?.let { systemPickers + it } ?: systemPickers,
@@ -1813,7 +1827,7 @@ class AndroidScreen(
             // 只在目标是另一份、或这个 App 列出过另一份时才问任务(只装一份的 App 每个动作不多问两次)
             otherCopy = {
                 target != null && target.userId >= 0 && (target.userId != myUser || target.packageName in copiedPackages) && run {
-                    val top = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+                    val top = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
                     top >= 0 && top != target.taskId && top !in adopted && userOf(top).let { it >= 0 && it != target.userId }
                 }
             },
@@ -1827,7 +1841,7 @@ class AndroidScreen(
     private suspend fun adoptTargetTask(): String? {
         val t = _target.value ?: return null
         if (t.taskId >= 0 || foregroundTaskPackage() != t.packageName) return null
-        val task = runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)
+        val task = runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)
         if (task < 0) return null
         val user = userOf(task)
         _target.value = TargetApp(t.packageName, task, user)
@@ -1863,7 +1877,7 @@ class AndroidScreen(
         val t = _target.value ?: return null
         if (requestedUser == null && t.packageName !in copiedPackages && (t.userId < 0 || t.userId == myUser)) return null
         if (foregroundTaskPackage() != t.packageName) return null
-        val user = userOf(runCatching { shell.topTaskId(displayId) }.getOrDefault(-1)).takeIf { it >= 0 } ?: return null
+        val user = userOf(runCatching { withShell { it.topTaskId(displayId) } }.getOrDefault(-1)).takeIf { it >= 0 } ?: return null
         return (if (user == myUser) OpenedElsewhere.MAIN_PROFILE else OpenedElsewhere.OTHER_PROFILE) to user
     }
 

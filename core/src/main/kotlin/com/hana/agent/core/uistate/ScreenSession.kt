@@ -12,6 +12,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.math.roundToInt
@@ -48,6 +49,8 @@ private const val RECENT_SNAPSHOTS = 8
 private const val ISSUED_MEMORY = 256
 /** 结果里「到上限了」那句话最多留这么长。 */
 private const val LIMIT_TEXT_MAX = 120
+/** 动作前探针复用最近一次读屏快照的安全时间窗口（毫秒）。 */
+private const val PROBE_REUSE_TTL_MS = 1500L
 
 /** find_visually 找到的一个点:找的是什么、给的原文、视觉模型看到的字;不可逆判定都要看。[unverified]:只靠看图、没有佐证。 */
 internal class Located(val target: String, val text: String?, val seen: String?, val unverified: Boolean = false)
@@ -96,6 +99,8 @@ internal class ScreenSession(
     /** find_visually 在这块屏上找到的点(@vN);这块屏上任何写操作后清空。 */
     val located = LocateRegistry()
     val locatedInfo = mutableMapOf<String, Located>()
+    /** 最近一次读取到的屏幕可见文本行 (供 Visual Marks 和 Set-of-Marks 快速定位) */
+    var lastOcrText: List<VisibleTextLine>? = null
     /** 上次写操作之后看过 describe:这期间的坐标点击按看图得来的点对待。 */
     var described = false
     val locator = vision?.let { Locator(screen, it, located, surface.family) }
@@ -158,6 +163,7 @@ internal class ScreenSession(
     suspend fun observe(withImage: Boolean, adaptiveImage: Boolean = false, recordFrame: Boolean = true): ToolExecution {
         val s = snapshot()
         val (tree, ocr, ocrStatus) = readTree(s)
+        lastOcrText = ocr
         val imageReason = if (adaptiveImage && tree.poor) tree.reason else null
         val sendImage = withImage || imageReason != null
         stabilizer?.latest?.let { shown = it; chain.clear(); chain += it.snapshotId }
@@ -186,6 +192,22 @@ internal class ScreenSession(
             if (surface.id == "phone" && s.windows.isNotEmpty()) put("tree", UiTreeJson.windows(s))
             ocr?.let { put("visibleText", VisibleText.json(it)) }
             if (surface.id == "phone") ScreenMap.json(s, ocr.orEmpty())?.let { put("screenMap", it) }
+            if (surface.id == "phone" && tree.poor && !ocr.isNullOrEmpty()) {
+                put("visualMarks", buildJsonArray {
+                    ocr.forEachIndexed { i, line ->
+                        add(buildJsonObject {
+                            put("ref", "@v_txt$i")
+                            put("text", line.text)
+                            put("bounds", JsonArray(line.bounds.map(::JsonPrimitive)))
+                            if (line.bounds.size == 4) {
+                                val cx = (line.bounds[0] + line.bounds[2]) / 2
+                                val cy = (line.bounds[1] + line.bounds[3]) / 2
+                                put("center", buildJsonObject { put("x", cx); put("y", cy) })
+                            }
+                        })
+                    }
+                })
+            }
             val omitted = s.web?.omitted ?: 0
             put("truncated", hidden > 0 || omitted > 0)
             if (omitted > 0) put("omitted", hidden + omitted)
@@ -353,6 +375,11 @@ internal class ScreenSession(
      */
     suspend fun probe(snapshotId: String? = null): EffectProbe {
         val ready = primed?.takeIf { it.first == snapshotId }?.second
+            ?: snapshotId?.let { id ->
+                val last = lastSnapshot
+                val at = readAt[id] ?: 0L
+                if (last != null && last.snapshotId == id && !stale && (System.currentTimeMillis() - at) in 0..PROBE_REUSE_TTL_MS) last else null
+            }
         primed = null
         if (ready != null) {
             var frame: FrameGrid? = null
@@ -473,6 +500,7 @@ internal class ScreenSession(
         val (ocr, status) = visibleText(s, if (tree.poor) OCR_WAIT_POOR_MS else OCR_WAIT_MS)
         val checked = TreeAdequacy.withText(tree, ocr)
         lastTree = checked
+        lastOcrText = ocr
         // 树不够用、屏上文字也一行没有:照实说为什么,模型才知道该看图找,而不是再读一次
         return TreeRead(checked, ocr, status.takeIf { quality(checked) != null && ocr.isNullOrEmpty() })
     }

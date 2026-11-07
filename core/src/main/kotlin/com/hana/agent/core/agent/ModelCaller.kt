@@ -238,7 +238,8 @@ internal class ModelCaller(
             // 使用 HistoryPruner.LAST（Cut(1)）保留当前最新屏幕的全量控件树，脱水更早之前的历史屏幕，
             // 确保 Prompt 稳定在数千 tokens，消除 3.8 万 Token 带来的 40 秒 Prefill 与网关 503 排队爆满。
             val optimizedMessages = if (flags.structuredCompaction) {
-                HistoryPruner.prune(sent.messages, tools.index, HistoryPruner.LAST)
+                val toolRounds = sent.messages.count { m -> m.role == Role.Assistant && m.parts.any { it is Part.ToolCall } }
+                HistoryPruner.prune(sent.messages, tools.index, HistoryPruner.steppedCut(toolRounds, stride = 3, minWindow = 1))
             } else sent.messages
             try {
                 // 差异的 base 被裁掉或折叠时,下一次写操作要发全量

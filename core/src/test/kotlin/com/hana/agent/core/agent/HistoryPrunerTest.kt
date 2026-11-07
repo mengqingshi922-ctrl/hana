@@ -148,4 +148,18 @@ class HistoryPrunerTest {
         val recent = (1..6).flatMap { obs("c$it") } + recall
         assertTrue(text in results(HistoryPruner.prune(recent, TOOLS, cut)).first { it.callId == "r1" }.content)
     }
+
+    @Test fun steppedCutPreservesPrefixStabilityAcrossStride() {
+        // rounds 1..3: cutLine 恒定为 0 (保留最近 1..3 轮，不裁剪前缀)
+        val cuts1to3 = (1..3).map { r -> HistoryPruner.steppedCut(r, stride = 3, minWindow = 1).before(r) }
+        assertEquals(listOf(0, 0, 0), cuts1to3)
+
+        // rounds 4..6: 步进固定为 3，裁剪前 3 轮，保留最近 1..3 轮，裁剪线恒定为 3 (前缀历史稳定)
+        val cuts4to6 = (4..6).map { r -> HistoryPruner.steppedCut(r, stride = 3, minWindow = 1).before(r) }
+        assertEquals(listOf(3, 3, 3), cuts4to6)
+
+        // rounds 7..9: 步进固定为 6，裁剪前 6 轮，裁剪线恒定为 6
+        val cuts7to9 = (7..9).map { r -> HistoryPruner.steppedCut(r, stride = 3, minWindow = 1).before(r) }
+        assertEquals(listOf(6, 6, 6), cuts7to9)
+    }
 }

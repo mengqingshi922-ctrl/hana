@@ -138,6 +138,8 @@ class BatchRunner(
                 failed -> (c["error"] as? JsonPrimitive)?.contentOrNull ?: "failed"
                 c["verification"] == JsonPrimitive("mismatch") -> "action_not_applied"
                 c["app_switched"] != null -> "app_switched"
+                c["chooser"] != null && i < steps.lastIndex -> "chooser_opened"
+                screen?.get("dialog") != null && i < steps.lastIndex -> "dialog_opened"
                 // 开到了用户的主屏上(挪回来了也是换了地方):后面的步骤是按原来那一屏排的
                 c["opened"] != null -> "opened_elsewhere"
                 // 网站、App 说到上限了:后面的步骤不再做

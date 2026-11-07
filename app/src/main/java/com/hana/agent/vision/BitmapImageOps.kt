@@ -62,12 +62,34 @@ object BitmapImageOps : ImageOps {
         gray.foldIndexed(0L) { i, acc, g -> if (g >= mean) acc or (1L shl i) else acc }
     }
 
-    override fun toJpeg(img: ByteArray, maxSide: Int, quality: Int): ByteArray = use(img) { bmp ->
-        val f = maxSide.toDouble() / max(bmp.width, bmp.height)
-        val out = if (f < 1.0) {
-            Bitmap.createScaledBitmap(bmp, max(1, (bmp.width * f).roundToInt()), max(1, (bmp.height * f).roundToInt()), true)
-        } else bmp
-        try { out.encode(Bitmap.CompressFormat.JPEG, quality) } finally { if (out !== bmp) out.recycle() }
+    override fun toJpeg(img: ByteArray, maxSide: Int, quality: Int): ByteArray {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(img, 0, img.size, bounds)
+        val rawMax = max(bounds.outWidth, bounds.outHeight)
+        val decodeOptions = BitmapFactory.Options().apply {
+            if (maxSide > 0 && rawMax > maxSide * 2) {
+                var sample = 1
+                while (rawMax / (sample * 2) >= maxSide) {
+                    sample *= 2
+                }
+                inSampleSize = sample
+            }
+        }
+        val bmp = BitmapFactory.decodeByteArray(img, 0, img.size, decodeOptions)
+            ?: throw IllegalArgumentException("not a decodable image")
+        try {
+            val f = maxSide.toDouble() / max(bmp.width, bmp.height)
+            val out = if (f < 1.0) {
+                Bitmap.createScaledBitmap(bmp, max(1, (bmp.width * f).roundToInt()), max(1, (bmp.height * f).roundToInt()), true)
+            } else bmp
+            try {
+                return out.encode(Bitmap.CompressFormat.JPEG, quality)
+            } finally {
+                if (out !== bmp) out.recycle()
+            }
+        } finally {
+            bmp.recycle()
+        }
     }
 
     override fun drawFrame(img: ByteArray, box: IntArray, expandPx: Int, strokePx: Int): ByteArray = use(img) { bmp ->

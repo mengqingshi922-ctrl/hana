@@ -221,6 +221,7 @@ class AgentLoop(
     /** WorkingMemoryPad: 跨屏幕持久化长程焦点笔记黑板 (对标 Mobile-Agent-v2/v3，防止剪裁历史屏幕导致的失忆) */
     private val workingMemory = LinkedHashMap<String, String>()
     private val subgoals = mutableListOf<String>()
+    private var currentSubgoalIndex = 0
     /** 本任务的回答已因核对没对上退回过一次;再没对上就标成未确认交出,不再退回。 */
     private var gapsNudged = false
     private var provenance = RunProvenance()
@@ -247,9 +248,13 @@ class AgentLoop(
         utterances?.clear()
         workingMemory.clear()
         subgoals.clear()
+        currentSubgoalIndex = 0
+        com.hana.agent.core.bus.RegisterBus.clear()
         // 从用户长目标中自动识别子目标列表（支持分步 1. 2. 3. 或 -> 分割）
-        val goalParts = task.split(Regex("(?:\\n\\s*\\d+[.、]\\s*|\\s*->\\s*)")).map { it.trim() }.filter { it.length >= 2 }
-        if (goalParts.size >= 2) {
+        val goalParts = task.split(Regex("(?:\\n\\s*\\d+[.、]\\s*|\\s*->\\s*|\\s*(?:然后|接着|再去|最后)\\s*)"))
+            .map { it.trim() }
+            .filter { it.length >= 2 }
+        if (goalParts.size >= 2 && (task.contains("->") || task.contains("\n") || task.length >= 16)) {
             subgoals.addAll(goalParts.take(6))
         }
         emit(RunEvent.TaskStarted(now(), Redactor.text(task), model.name,
@@ -622,8 +627,20 @@ class AgentLoop(
             val memo = (args["memo"] as? JsonPrimitive)?.contentOrNull
                 ?: (args["note"] as? JsonPrimitive)?.contentOrNull
                 ?: (args["summary"] as? JsonPrimitive)?.contentOrNull
+                ?: MEMO_TAG_REGEX.find(text)?.groupValues?.getOrNull(1)?.trim()
             if (!memo.isNullOrBlank()) {
+                if (workingMemory.size >= MAX_WORKING_MEMORY_ITEMS) {
+                    workingMemory.keys.firstOrNull()?.let { workingMemory.remove(it) }
+                }
                 workingMemory["Step $step (${first.name})"] = memo.take(120)
+            }
+            SUBGOAL_DONE_REGEX.find(text)?.let { m ->
+                val specified = m.groupValues.getOrNull(1)?.toIntOrNull()
+                if (specified != null) {
+                    currentSubgoalIndex = specified.coerceIn(0, subgoals.size)
+                } else {
+                    currentSubgoalIndex = (currentSubgoalIndex + 1).coerceAtMost(subgoals.size)
+                }
             }
 
             // 用户刚同意的那一步要单独做:批里的步不带同意,混进去会被关卡拦下,同意也可能被别的步用掉或作废
@@ -747,6 +764,10 @@ class AgentLoop(
             noteResultEvents(verb, exec.content)
             exec.place?.let { place = it }
             track.after(tools.verb(first.name), !isError, ran.verdicts.isNotEmpty() || advice != null, exec.changed, false, exec.place?.name)
+            com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
+            if (advice != null && exec.changed == true && place?.name != null) {
+                com.hana.agent.core.knowledge.AppTipsStore.recordTip(place?.name, "曾在此界面遇阻，换用其他动作或等待刷新可脱困")
+            }
             val picture = ran.picture
             val shotId = ran.shotId
             if (picture != null && shotId != null) {
@@ -814,11 +835,33 @@ class AgentLoop(
                 append("\n[Working Memory Pad]")
                 if (subgoals.isNotEmpty()) {
                     append("\nSubgoals: ")
-                    append(subgoals.joinToString(" -> "))
+                    append(subgoals.mapIndexed { i, sg ->
+                        val marker = when {
+                            i < currentSubgoalIndex -> "[✓]"
+                            i == currentSubgoalIndex -> "[▶]"
+                            else -> "[ ]"
+                        }
+                        "$marker $sg"
+                    }.joinToString(" -> "))
                 }
                 if (workingMemory.isNotEmpty()) {
                     workingMemory.forEach { (k, v) ->
                         append("\n- $k: $v")
+                    }
+                }
+                val regs = com.hana.agent.core.bus.RegisterBus.snapshot()
+                if (regs.isNotEmpty()) {
+                    append("\n[Zero-Copy Registers]")
+                    regs.entries.toList().takeLast(3).forEach { (k, v) ->
+                        val preview = if (v.length > 30) v.take(27) + "..." else v
+                        append("\n- $k: \"$preview\" (${v.length}c)")
+                    }
+                }
+                val tips = com.hana.agent.core.knowledge.AppTipsStore.getTips(place?.name)
+                if (tips.isNotEmpty()) {
+                    append("\n[App Tips]")
+                    tips.take(2).forEach { tip ->
+                        append("\n• $tip")
                     }
                 }
             }
@@ -987,6 +1030,10 @@ class AgentLoop(
         // 为新插话停下的批同样不算失败
         val confirm = exec.content["error"] == JsonPrimitive("confirmation_required") || exec.content["reason"] == JsonPrimitive(BatchRunner.NEW_MESSAGE)
         track.after(tools.verb(first.name), !isError || confirm, runner?.verdicts?.isNotEmpty() == true || exec.content["advice"] != null, exec.changed, false, currentPlace?.name)
+        com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
+        if (exec.changed == true && currentPlace?.name != null && (runner?.verdicts?.isNotEmpty() == true || exec.content["advice"] != null)) {
+            com.hana.agent.core.knowledge.AppTipsStore.recordTip(currentPlace?.name, "批处理遇阻后成功恢复状态")
+        }
         // 批停下(核对没过、要确认):下一步交给主模型
         if (isError) track.markRecovery()
         if (picture != null && shotId != null) {
@@ -1089,6 +1136,9 @@ class AgentLoop(
     }
 
     companion object {
+        private val MEMO_TAG_REGEX = Regex("""<memo>\s*(.*?)\s*</memo>""", RegexOption.DOT_MATCHES_ALL)
+        private val SUBGOAL_DONE_REGEX = Regex("""<subgoal_done(?:\s+index="?(\d+)"?)?\s*/?>""")
+        private const val MAX_WORKING_MEMORY_ITEMS = 8
         const val STEER_MARKER = "<user_interjection>"
         const val DEFAULT_MAX_STEPS = 60
         /** 正常任务没有固定步数截止；显式步数预算只用于评测和指定上限的子任务。 */
