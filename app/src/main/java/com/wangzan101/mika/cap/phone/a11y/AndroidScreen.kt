@@ -262,11 +262,11 @@ class AndroidScreen(
 
     override suspend fun screenshotPng(): ByteArray? = withContext(Dispatchers.IO) {
         val cur = display.current ?: return@withContext null
-        val bmp = cur.latestFrameBitmap() ?: return@withContext null
+        val rawBmp = cur.latestFrameBitmap() ?: return@withContext null
         try {
             val masks = findPrivacyMaskBounds()
             if (masks.isNotEmpty()) {
-                val canvas = android.graphics.Canvas(bmp)
+                val canvas = android.graphics.Canvas(rawBmp)
                 val paint = android.graphics.Paint().apply {
                     color = android.graphics.Color.BLACK
                     style = android.graphics.Paint.Style.FILL
@@ -275,11 +275,24 @@ class AndroidScreen(
                     canvas.drawRect(rect, paint)
                 }
             }
-            val out = java.io.ByteArrayOutputStream()
-            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
-            out.toByteArray()
+            // 针对高分辨率屏幕（如 1220×2712）进行等比自适应降采样，最大边限制在 1280 内，极大提升编码速度并降低 VLM Token 开销
+            val maxDim = maxOf(rawBmp.width, rawBmp.height)
+            val bmp = if (maxDim > 1280) {
+                val scale = 1280f / maxDim
+                val targetW = (rawBmp.width * scale).roundToInt().coerceAtLeast(1)
+                val targetH = (rawBmp.height * scale).roundToInt().coerceAtLeast(1)
+                android.graphics.Bitmap.createScaledBitmap(rawBmp, targetW, targetH, true)
+            } else rawBmp
+
+            try {
+                val out = java.io.ByteArrayOutputStream()
+                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
+                out.toByteArray()
+            } finally {
+                if (bmp !== rawBmp) bmp.recycle()
+            }
         } finally {
-            bmp.recycle()
+            rawBmp.recycle()
         }
     }
 
@@ -1270,18 +1283,18 @@ class AndroidScreen(
             // [Mobile-Agent 风格即时差分自愈 1]：尝试快速穿透潜在阻断蒙层或弹窗
             val dismissed = autoDismissBarriers()
             if (dismissed) {
-                // 阻断弹窗关闭后，重新执行原始动作并检查页面变化
+                // 阻断弹窗关闭后，重新执行原始动作并检查页面变化 (高速重试 400ms)
                 val retryChanged = withEventClock { clock ->
                     clock.mark()
-                    if (action()) awaitChange(clock, beforeTree, beforeFrame) else null
+                    if (action()) awaitChange(clock, beforeTree, beforeFrame, capMs = 400L, quietMs = 120L) else null
                 } ?: false
                 if (retryChanged) hasChanged = true
             } else {
-                // [Mobile-Agent 风格即时差分自愈 2]：针对渲染微延迟或触控抖动进行轻量微重试
-                delay(120L)
+                // [Mobile-Agent 风格即时差分自愈 2]：针对渲染微延迟或触控抖动进行轻量微重试 (紧凑等待 350ms)
+                delay(60L)
                 val retryChanged = withEventClock { clock ->
                     clock.mark()
-                    if (action()) awaitChange(clock, beforeTree, beforeFrame) else null
+                    if (action()) awaitChange(clock, beforeTree, beforeFrame, capMs = 350L, quietMs = 120L) else null
                 } ?: false
                 if (retryChanged) hasChanged = true
             }
@@ -1655,8 +1668,15 @@ class AndroidScreen(
         }
     }
 
-    /** 等界面稳定后比对指纹(规则见 [ChangeWait]);确认变了立即返回 true。 */
-    private suspend fun awaitChange(clock: EventClock, beforeTree: Long, beforeFrame: IntArray?): Boolean =
+    /** 等界面稳定后比对指纹(规则见 [ChangeWait]);确认变了立即返回 true。采用 Google ARTEMIS 风格的高敏捷等待。 */
+    private suspend fun awaitChange(
+        clock: EventClock,
+        beforeTree: Long,
+        beforeFrame: IntArray?,
+        capMs: Long = 850L,
+        quietMs: Long = 150L,
+        pollMs: Long = 60L,
+    ): Boolean =
         ChangeWait.awaitStableChange(
             now = SystemClock::uptimeMillis,
             sleep = { delay(it) },
@@ -1664,6 +1684,9 @@ class AndroidScreen(
             quietForMs = clock::quietForMs,
             treeChanged = { treeHash() != beforeTree },
             beforeFrame = beforeFrame,
+            capMs = capMs,
+            quietMs = quietMs,
+            pollMs = pollMs,
         )
 
     /** 前台不是目标 App、也不是它调起的系统页面或系统选择器时,返回当前前台包名及是否由目标 App 打开。 */
@@ -1846,12 +1869,35 @@ class AndroidScreen(
 
     // ---------- 底层操作 ----------
 
-    /** 优先对节点(或最近的可点祖先)发点击;不行再在其中心做手势,最后注入触摸。 */
+    /**
+     * 对节点执行点击：物理触摸注入优先（Physical Touch-First，对标 Google ARTEMIS 与 UI-TARS 规范）。
+     * 针对现代 Android (Jetpack Compose / Flutter / 自绘 Canvas / 嵌套监听)，
+     * 规避系统无障碍 performAction(ACTION_CLICK) 返回 true 却未真正触发业务监听的“假点击/空点击”缺陷。
+     */
     private suspend fun click(node: AccessibilityNodeInfo): Boolean {
-        val target = ancestorOrSelf(node) { it.isClickable && it.isEnabled }
-        if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
         val rect = android.graphics.Rect().also { node.getBoundsInScreen(it) }
-        return touch(pacing.within(rect.left, rect.top, rect.right, rect.bottom))
+        val target = ancestorOrSelf(node) { it.isClickable && it.isEnabled }
+
+        // 1. 若控件存在有效可视区域，优先进行真实电容物理触摸注入
+        if (rect.width() > 0 && rect.height() > 0) {
+            val tapPt = pacing.within(rect.left, rect.top, rect.right, rect.bottom)
+            val touchOk = touch(tapPt)
+            if (touchOk) {
+                // 辅助触发 A11y 动作（双保险，不依赖其返回值）
+                runCatching { target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+                return true
+            }
+        }
+
+        // 2. 若物理触摸因窗口或坐标异常未成功，fallback 走无障碍节点点击
+        if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            return true
+        }
+
+        // 3. 最终兜底尝试几何中心点触摸
+        return if (rect.width() > 0 && rect.height() > 0) {
+            touch(rect.centerX() to rect.centerY())
+        } else false
     }
 
     /**

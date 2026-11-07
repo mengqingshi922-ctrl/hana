@@ -799,8 +799,8 @@ class TaskRun(
                 flags = speed,
                 // 只在 lightSteps 打开、轻量模型能调工具时生效
                 router = light?.let { ModelRouter(model, it) },
-                // 只有配了专门的轻量级模型才跑意图分类，避免单主模型时在开局发起冗余请求造成数十秒延迟
-                intentJudge = if (provenance.origin == RunOrigin.Ui) light else null,
+                // 只有配了非端侧的专门轻量级模型才跑意图分类，端侧小模型专精于局部动作爆发，严禁用端侧小模型做意图分类避免误判
+                intentJudge = if (provenance.origin == RunOrigin.Ui && light != null && !light.name.contains("端侧") && !light.name.contains("qwen2.5")) light else null,
                 // 选路线是辅助判断:用轻量模型,没配用主模型
                 routes = if (speed.replay) RouteMatcher(light ?: model, routeStore, knowledge) else null,
                 skills = catalog,

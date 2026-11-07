@@ -26,6 +26,9 @@ internal object ChangeWait {
      * @param quietForMs 距最近一次界面事件过了多久
      * @param treeChanged 控件树指纹是否与动作前不同
      * @param beforeFrame 动作前的亮度格子
+     * @param capMs 最大超时时间(默认 CAP_MS)
+     * @param quietMs 事件判定安静窗口(默认 QUIET_MS)
+     * @param pollMs 轮询采样间隔(默认 POLL_MS)
      */
     suspend fun awaitStableChange(
         now: () -> Long,
@@ -34,21 +37,24 @@ internal object ChangeWait {
         quietForMs: () -> Long,
         treeChanged: () -> Boolean,
         beforeFrame: IntArray?,
+        capMs: Long = CAP_MS,
+        quietMs: Long = QUIET_MS,
+        pollMs: Long = POLL_MS,
     ): Boolean {
-        val deadline = now() + CAP_MS
+        val deadline = now() + capMs
         var prev = frame()
-        var wait = POLL_MS
+        var wait = pollMs
         while (true) {
             sleep(minOf(wait, (deadline - now()).coerceAtLeast(0)))
             val cur = frame()
             val quietFor = quietForMs()
-            val quiet = quietFor >= QUIET_MS
+            val quiet = quietFor >= quietMs
             if (quiet && treeChanged()) return true
             val stable = if (prev == null || cur == null) prev == null && cur == null else !FrameMath.differs(prev, cur)
             val frameChanged = FrameMath.differs(beforeFrame, cur)
             if (quiet && stable && frameChanged) return true
             if (now() >= deadline) return frameChanged || treeChanged()
-            wait = if (quiet) POLL_MS else minOf(POLL_MS, QUIET_MS - quietFor).coerceAtLeast(MIN_SLEEP_MS)
+            wait = if (quiet) pollMs else minOf(pollMs, quietMs - quietFor).coerceAtLeast(MIN_SLEEP_MS)
             prev = cur
         }
     }

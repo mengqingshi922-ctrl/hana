@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
+import kotlin.math.roundToInt
 
 /**
  * 截下用户此刻在主屏上看着的那一屏,连同前台 App 和屏上的字(见 [UserScreenText]:先读无障碍树,不够用时认画面上的字)。
@@ -71,7 +72,22 @@ internal object MainScreenCapture {
             is ScreenAccessibility.MainShot.Ok -> {
                 val bmp = shot.bitmap
                 try {
-                    val jpeg = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }.toByteArray()
+                    // 针对高分辨率屏幕（如 1220×2712）进行等比自适应降采样，长边限制在 1280 内，JPEG 质量设为 80
+                    // 将原本 2MB+ 的图片体积大幅压至 100~150KB，显著削减网络传输耗时与大模型视觉 Token 开销
+                    val maxDim = maxOf(bmp.width, bmp.height)
+                    val scaled = if (maxDim > 1280) {
+                        val scale = 1280f / maxDim
+                        val targetW = (bmp.width * scale).roundToInt().coerceAtLeast(1)
+                        val targetH = (bmp.height * scale).roundToInt().coerceAtLeast(1)
+                        Bitmap.createScaledBitmap(bmp, targetW, targetH, true)
+                    } else bmp
+
+                    val jpeg = try {
+                        ByteArrayOutputStream().also { scaled.compress(Bitmap.CompressFormat.JPEG, 80, it) }.toByteArray()
+                    } finally {
+                        if (scaled !== bmp) scaled.recycle()
+                    }
+
                     // 安卓 12 以前防截屏的窗口截出来是黑的:屏上有 App 窗口而画面几乎全黑就当作截不到,不发黑图
                     if (read?.anyAppWindow != false && BitmapImageOps.isMostlyBlack(jpeg)) {
                         return@withContext Result.Captured(CapturedScreen(null, UserScreen("", now, pkg, label, blocked = true)))

@@ -54,6 +54,7 @@ data class TimelineStep(
     val activities: List<TimelineActivity> = emptyList(),
     val timing: StepTiming = StepTiming(),
     val modelRole: String? = null,
+    val modelTag: Tag? = null,
 )
 
 data class TimelineHeader(
@@ -68,6 +69,8 @@ data class TimelineHeader(
     val usedMemory: List<String> = emptyList(),
     /** 这次运行的小结;记录里没有开始事件时为 null(只显示用时)。 */
     val metrics: RunMetrics? = null,
+    val modelName: String? = null,
+    val collaborative: Boolean = false,
 )
 
 sealed interface TimelineUi {
@@ -100,6 +103,18 @@ class RunTimelineViewModel(
         val ended = events.filterIsInstance<RunEvent.TaskEnded>().lastOrNull()
         val startMs = summary?.startedAtMs ?: events.first().atMs
         val endMs = summary?.endedAtMs ?: ended?.atMs
+        val modelReplies = events.filterIsInstance<RunEvent.ModelReply>()
+        val lightReply = modelReplies.firstOrNull { it.role == "light" || it.model?.contains("端侧") == true || it.model?.contains("qwen2.5", ignoreCase = true) == true }
+        val mainReply = modelReplies.firstOrNull { it.role == "main" || it.role == null }
+        val hasLight = lightReply != null
+        val hasMain = mainReply != null || started?.model != null
+        val lightModelName = cleanModelName(lightReply?.model ?: "qwen2.5-0.5b")
+        val mainModelName = cleanModelName(mainReply?.model ?: started?.model)
+        val displayModelName = when {
+            hasLight && hasMain -> "$mainModelName (主模型) + $lightModelName (轻量模型)"
+            hasLight -> "$lightModelName (轻量模型)"
+            else -> "$mainModelName (主模型)"
+        }
         val header = TimelineHeader(
             goal = summary?.goal ?: started?.goal.orEmpty(),
             criteria = summary?.criteria?.takeIf { it.isNotEmpty() }
@@ -113,6 +128,8 @@ class RunTimelineViewModel(
             modelCalls = events.count { it is RunEvent.ModelReply },
             usedMemory = resolveMemory(events.filterIsInstance<RunEvent.MemoryUsed>().lastOrNull()?.ids.orEmpty()),
             metrics = RunMetrics.of(events, runId),
+            modelName = displayModelName,
+            collaborative = hasLight,
         )
         return TimelineUi.Ready(header, steps(events, toolLabels::label))
     }
@@ -123,6 +140,23 @@ class RunTimelineViewModel(
 
     companion object {
         const val SAID_MAX = 80
+
+        fun cleanModelName(raw: String?): String {
+            if (raw.isNullOrBlank()) return "智能模型"
+            val trimmed = raw.trim()
+            if (trimmed.startsWith("LoadBalanced(")) {
+                val inner = trimmed.removePrefix("LoadBalanced(").removeSuffix(")").trim()
+                val first = inner.split(",").firstOrNull()?.trim()
+                return if (!first.isNullOrBlank()) cleanModelName(first) else inner
+            }
+            if (trimmed.contains("qwen2.5-0.5b", ignoreCase = true)) {
+                return "Qwen2.5-0.5B"
+            }
+            if (trimmed.contains("qwen2.5-1.5b", ignoreCase = true)) {
+                return "Qwen2.5-1.5B"
+            }
+            return trimmed
+        }
 
         /** 按步号归组;没有步号的事件(核查、确认、接管、障碍)挂在它之前最近的一步上。 */
         internal fun steps(events: List<RunEvent>, toolLabel: (String) -> String = { it }): List<TimelineStep> {
@@ -140,31 +174,29 @@ class RunTimelineViewModel(
                     if (elapsed > 0) modelTimes[e.step] = modelTimes.getOrDefault(e.step, 0) + elapsed
                     if (e.retryWaitMs > 0) retryTimes[e.step] = retryTimes.getOrDefault(e.step, 0) + e.retryWaitMs
                     val modelName = e.model
-                    val isLight = e.role == "light" || modelName?.contains("端侧") == true || modelName?.contains("qwen2.5") == true
-                    val modelTag = when {
-                        isLight -> Tag("⚡ 端侧小脑 (Qwen2.5)", TagTone.Ok)
-                        e.role == "main" -> Tag("☁️ 云端主脑", TagTone.Info)
-                        modelName != null -> Tag("☁️ ${modelName.substringBefore('(').trim()}", TagTone.Info)
-                        else -> null
+                    val isLight = e.role == "light" || modelName?.contains("agnes-2.5-flash", ignoreCase = true) == true || modelName?.contains("端侧") == true || modelName?.contains("0.5b", ignoreCase = true) == true
+                    val specificName = cleanModelName(modelName)
+                    val modelTag = if (isLight) {
+                        Tag("$specificName (轻量模型)", TagTone.Ok)
+                    } else {
+                        Tag("$specificName (主模型)", TagTone.Info)
                     }
                     if (e.acted) {
                         val row = at(e.step)
                         val said = listOf(row.said, e.text.trim()).filter { it.isNotEmpty() }.joinToString(" ")
-                        val newTags = if (modelTag != null && row.tags.none { it.text == modelTag.text }) row.tags + modelTag else row.tags
                         rows[e.step] = row.copy(
                             said = said,
                             tool = e.tool?.let(toolLabel) ?: row.tool,
                             detail = e.argsJson?.let(::detailOf) ?: row.detail,
-                            tags = newTags,
                             modelRole = if (isLight) "light" else "main",
+                            modelTag = modelTag,
                         )
                     } else if (e.text.isNotBlank()) {
                         val row = at(e.step)
-                        val newTags = if (modelTag != null && row.tags.none { it.text == modelTag.text }) row.tags + modelTag else row.tags
                         rows[e.step] = row.copy(
                             said = e.text.trim(),
-                            tags = newTags,
                             modelRole = if (isLight) "light" else "main",
+                            modelTag = modelTag,
                         )
                     }
                 }
@@ -212,19 +244,13 @@ class RunTimelineViewModel(
         }
 
         internal fun timingLabel(t: StepTiming): String {
-            val prefix = when (t.modelRole) {
-                "light" -> "【⚡端侧驱动】"
-                "main" -> "【☁️云端决策】"
-                else -> ""
-            }
-            if (t.modelMs == null && t.toolMs == null) return if (prefix.isEmpty()) tr(R.string.timing_unrecorded) else prefix
-            val details = buildList {
+            if (t.modelMs == null && t.toolMs == null) return tr(R.string.timing_unrecorded)
+            return buildList {
                 t.totalMs?.let { add(tr(R.string.timing_total, shortDuration(it))) }
                 t.modelMs?.let { add(tr(R.string.timing_model, shortDuration(it))) }
                 t.toolMs?.let { add(tr(R.string.timing_tool, shortDuration(it))) }
                 if (t.retryMs > 0) add(tr(R.string.timing_retry, shortDuration(t.retryMs)))
             }.joinToString(" · ")
-            return if (prefix.isNotEmpty()) "$prefix $details" else details
         }
 
         private fun shortDuration(ms: Long): String = when {

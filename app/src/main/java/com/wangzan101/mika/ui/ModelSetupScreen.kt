@@ -1079,9 +1079,6 @@ private fun RolesSection(
         )
     }
 
-    // 2.5 端侧小模型下载与加速 Bento 磁贴 (Qwen2.5-1.5B / UI-TARS-2B)
-    LocalSlmBentoCard(ui)
-
     // 3. 语音转文字:独立轻量胶囊入口
     if (onSpeech != null) {
         val speechLine = ModelsCopy.speechLine(ui)
@@ -1187,6 +1184,12 @@ private fun RoleBentoTile(
  */
 @Composable
 private fun LocalSlmBentoCard(ui: ModelSetupUi) {
+    // 端侧小模型已按全新架构彻底移除，UI 入口关闭
+    return
+}
+
+@Composable
+private fun UnusedLocalSlmBentoCard(ui: ModelSetupUi) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val c = MikaTheme.colors

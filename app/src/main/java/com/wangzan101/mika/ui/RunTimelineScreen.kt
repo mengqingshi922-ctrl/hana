@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -156,6 +158,11 @@ private fun HeaderGroup(h: TimelineHeader, onExport: () -> Unit) {
             }
         }
         h.metrics?.let { RunMetricsSummary(it) }
+        h.modelName?.let { modelName ->
+            ListRow(null, "驱动模型") {
+                RowValue(modelName, if (h.collaborative) ValueTone.Ok else ValueTone.Plain)
+            }
+        }
         // 还没跑完:这里说「进行中」,下面这些小结(核查、结局)等结束了才有
         if (h.running) {
             ListRow(null, stringResource(R.string.timeline_outcome)) { RowValue(stringResource(R.string.timeline_running), ValueTone.Plain) }
@@ -204,8 +211,12 @@ private fun TimelineRow(s: TimelineStep, first: Boolean, last: Boolean, vm: RunT
         dotY = 20.dp,
     ) {
         Column(Modifier.fillMaxWidth().padding(end = 16.dp, top = 11.dp, bottom = 11.dp)) {
-            Row(verticalAlignment = Alignment.Top) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(stringResource(R.string.step_number, s.step), style = MikaType.Label, color = c.ink3)
+                s.modelTag?.let { tag ->
+                    Spacer(Modifier.width(6.dp))
+                    TagChip(tag)
+                }
                 Text(
                     if (s.activities.isEmpty()) listOfNotNull(s.tool, s.detail).joinToString(" · ") else "",
                     Modifier.weight(1f).padding(start = 8.dp),
@@ -236,9 +247,10 @@ private fun TimelineRow(s: TimelineStep, first: Boolean, last: Boolean, vm: RunT
                     Modifier.padding(top = 3.dp), style = MikaType.Caption, color = c.ink2,
                 )
             }
-            if (s.tags.isNotEmpty()) {
+            val extraTags = s.tags.filter { it.text != s.modelTag?.text }
+            if (extraTags.isNotEmpty()) {
                 FlowRow(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    s.tags.forEach { TagChip(it) }
+                    extraTags.forEach { TagChip(it) }
                 }
             }
             if (shot != null) {
