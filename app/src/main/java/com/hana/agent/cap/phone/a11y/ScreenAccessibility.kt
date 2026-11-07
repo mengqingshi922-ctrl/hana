@@ -69,6 +69,9 @@ open class ScreenAccessibility : AccessibilityService() {
         if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED || event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             windowGeneration.incrementAndGet()
         }
+        if (event.eventType and IGNORED_CONTENT_EVENTS == 0) {
+            contentGeneration.incrementAndGet()
+        }
         val access = (application as com.hana.agent.HanaApp).appAccess.current()
         if (access.denial(event.packageName?.toString()) != null) return
         if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED && notifications.subscriptionCount.value > 0) {
@@ -214,9 +217,19 @@ open class ScreenAccessibility : AccessibilityService() {
         /** 窗口变了(加上、拿掉、挪动,包括输入法弹出收起):只是个信号,订阅方自己去读窗口。 */
         private val windowChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
         private val windowGeneration = java.util.concurrent.atomic.AtomicLong()
+        private val contentGeneration = java.util.concurrent.atomic.AtomicLong()
+
+        private const val IGNORED_CONTENT_EVENTS = AccessibilityEvent.TYPE_VIEW_HOVER_ENTER or AccessibilityEvent.TYPE_VIEW_HOVER_EXIT or
+            AccessibilityEvent.TYPE_TOUCH_EXPLORATION_GESTURE_START or AccessibilityEvent.TYPE_TOUCH_EXPLORATION_GESTURE_END or
+            AccessibilityEvent.TYPE_GESTURE_DETECTION_START or AccessibilityEvent.TYPE_GESTURE_DETECTION_END or
+            AccessibilityEvent.TYPE_TOUCH_INTERACTION_START or AccessibilityEvent.TYPE_TOUCH_INTERACTION_END or
+            AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUSED or AccessibilityEvent.TYPE_VIEW_ACCESSIBILITY_FOCUS_CLEARED
 
         /** 窗口每加上、拿掉、换页一次就加一(任何屏上的都算);只用来判断「窗口自上次以来变没变」,值本身没有含义。 */
         fun windowGeneration(): Long = windowGeneration.get()
+
+        /** 界面内容相关事件每到达一次就加一;用来零 IPC 判断读屏期间或两次紧邻调用之间是否有界面变化事件。 */
+        fun contentGeneration(): Long = contentGeneration.get()
         private val notifications = MutableSharedFlow<ScreenEvent>(
             extraBufferCapacity = EVENT_BUFFER,
             onBufferOverflow = BufferOverflow.DROP_OLDEST,

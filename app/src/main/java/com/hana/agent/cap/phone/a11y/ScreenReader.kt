@@ -25,6 +25,8 @@ internal class ScreenRead(
     val windows: List<UiWindowTree> = emptyList(),
     /** 有应用窗口(不管根节点读不读得到)。 */
     val anyAppWindow: Boolean = hasAppWindow,
+    /** 单次遍历顺带提取的隐私遮罩区域（密码框、验证码、身份证、银行卡），供截图零 IPC 脱敏复用。 */
+    val privacyMasks: List<Rect> = emptyList(),
 )
 
 /** 从某块屏的窗口里读出元素列表、界面指纹和诊断用的文字。 */
@@ -32,6 +34,7 @@ internal object ScreenReader {
     private const val MIN_SIZE = 5
     private const val MAX_DEPTH = 80
     private const val AGGREGATE_MAX = 60
+    private val SENSITIVE_REGEX = Regex("(?i)(\\b\\d{6}\\b|\\b\\d{17}[\\dXx]\\b|\\b\\d{16,19}\\b|验证码|取件码|密码|password|身份证)")
 
     // 输入法与无障碍浮层不属于被操作的 App
     private val SKIPPED_TYPES = setOf(
@@ -54,6 +57,7 @@ internal object ScreenReader {
         val content = contentWindows(windows)
         val entries = mutableListOf<NodeEntry>()
         val texts = mutableListOf<String>()
+        val privacyMasks = mutableListOf<Rect>()
         val seen = HashSet<String>()
         var hash = FNV_OFFSET
         var password = false
@@ -67,10 +71,19 @@ internal object ScreenReader {
             var clippedBounds = listOf(0, 0, 0, 0)
             if (visible) {
                 n.getBoundsInScreen(rect)
-                hash = mix(hash, n.className, n.text, n.contentDescription, rect.flattenToString(),
+                val nodeText = n.text?.toString()
+                val nodeDesc = n.contentDescription?.toString()
+                hash = mix(hash, n.className, nodeText, nodeDesc, rect.flattenToString(),
                     states(n))
-                if (n.isPassword) password = true
-                val own = if (n.isPassword) n.hintText?.toString()?.trim()?.ifEmpty { null } else ownLabel(n)
+                val isPwd = n.isPassword
+                if (isPwd) password = true
+                if (isPwd || (nodeText != null && SENSITIVE_REGEX.containsMatchIn(nodeText)) ||
+                    (nodeDesc != null && SENSITIVE_REGEX.containsMatchIn(nodeDesc))) {
+                    if (rect.width() > 0 && rect.height() > 0) {
+                        privacyMasks += Rect(rect)
+                    }
+                }
+                val own = if (isPwd) n.hintText?.toString()?.trim()?.ifEmpty { null } else ownLabel(n)
                 own?.let(texts::add)
                 clip(rect, width, height)
                 clippedBounds = listOf(normalize(rect.left, width), normalize(rect.top, height),
@@ -127,8 +140,15 @@ internal object ScreenReader {
             ))
         }
 
+        var hasAppRoot = false
+        var topAppPkg: String? = null
         val trees = content.map { w ->
             val root = w.root
+            val pkg = root?.packageName?.toString()
+            if (w.type == AccessibilityWindowInfo.TYPE_APPLICATION && root != null) {
+                hasAppRoot = true
+                if (topAppPkg == null && pkg != null) topAppPkg = pkg
+            }
             UiWindowTree(
                 id = w.id,
                 type = when (w.type) {
@@ -136,7 +156,7 @@ internal object ScreenReader {
                     AccessibilityWindowInfo.TYPE_SYSTEM -> "system"
                     else -> "other"
                 },
-                layer = w.layer, title = w.title?.toString(), packageName = root?.packageName?.toString(),
+                layer = w.layer, title = w.title?.toString(), packageName = pkg,
                 active = w.isActive, focused = w.isFocused,
                 nodes = root?.let { visit(it, 0, false) }.orEmpty(),
             )
@@ -146,10 +166,11 @@ internal object ScreenReader {
             hash = hash,
             texts = texts,
             passwordField = password,
-            hasAppWindow = content.any { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.root != null },
+            hasAppWindow = hasAppRoot,
             anyAppWindow = content.any { it.type == AccessibilityWindowInfo.TYPE_APPLICATION },
-            topPackage = topPackage(windows),
+            topPackage = topAppPkg,
             windows = trees,
+            privacyMasks = privacyMasks,
         )
     }
 
