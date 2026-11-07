@@ -13,11 +13,11 @@ val gitHash: String = runCatching {
 }.getOrNull()?.takeIf { it.isNotEmpty() } ?: "dev"
 
 android {
-    namespace = "com.wangzan101.hana"
+    namespace = "com.hana.agent"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.wangzan101.hana"
+        applicationId = "com.hana.agent"
         minSdk = 30
         targetSdk = 35
         versionCode = 35

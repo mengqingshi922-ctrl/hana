@@ -1,10 +1,10 @@
 # 预先编译清单:安装后系统按它把这些代码提前编译成机器码,第一次进各个页面就不用边解释边跑。
 # 界面库自带清单,这里只补 Mika 自己的代码:启动和各个页面(Application、界面、设置、对话存储)。
-HSPLcom/wangzan101/hana/HanaApp;->**(**)**
-HSPLcom/wangzan101/hana/ui/**;->**(**)**
-HSPLcom/wangzan101/hana/settings/**;->**(**)**
-HSPLcom/wangzan101/hana/chat/**;->**(**)**
-Lcom/wangzan101/hana/HanaApp;
-Lcom/wangzan101/hana/ui/**;
-Lcom/wangzan101/hana/settings/**;
-Lcom/wangzan101/hana/chat/**;
+HSPLcom/hana/agent/HanaApp;->**(**)**
+HSPLcom/hana/agent/ui/**;->**(**)**
+HSPLcom/hana/agent/settings/**;->**(**)**
+HSPLcom/hana/agent/chat/**;->**(**)**
+Lcom/hana/agent/HanaApp;
+Lcom/hana/agent/ui/**;
+Lcom/hana/agent/settings/**;
+Lcom/hana/agent/chat/**;

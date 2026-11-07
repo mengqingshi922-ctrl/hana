@@ -6,7 +6,7 @@
 - License: Apache-2.0
 - Usage: 以 shell 身份取得系统上下文(ActivityThread / 伪装包名的 Context)的做法仿照 scrcpy。
   源文件头部保留出处:
-  - `app/src/main/java/com/wangzan101/hana/shell/ShellContext.kt`
+  - `app/src/main/java/com/hana/agent/shell/ShellContext.kt`
 
 ## Apache Commons Compress
 
@@ -14,7 +14,7 @@
 - Artifact: `org.apache.commons:commons-compress:1.28.0`
 - License: Apache-2.0
 - Usage: 以库的形式依赖,用于流式解包沙箱根文件系统的 tar.gz
-  (`core/src/main/kotlin/com/wangzan101/hana/core/cap/sandbox/RootfsExtractor.kt`)。
+  (`core/src/main/kotlin/com/hana/agent/core/cap/sandbox/RootfsExtractor.kt`)。
 - NOTICE:
 
 ```
@@ -209,7 +209,7 @@ The Apache Software Foundation (https://www.apache.org/).
 - Artifacts: `org.commonmark:commonmark:0.30.1`、`commonmark-ext-gfm-tables:0.30.1`、`commonmark-ext-gfm-strikethrough:0.30.1`
 - License: BSD-2-Clause
 - Usage: 以库的形式依赖,未修改其代码;把对话里回答的 Markdown 解析成语法树,再由 Mika 自己的界面代码显示
-  (`app/src/main/java/com/wangzan101/hana/ui/MarkdownModel.kt`)。
+  (`app/src/main/java/com/hana/agent/ui/MarkdownModel.kt`)。
 - License text:
 
 ```

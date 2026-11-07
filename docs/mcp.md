@@ -18,7 +18,7 @@
 1. 在电脑上运行：
 
    ```
-   adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/connect-computer.sh
+   adb shell sh /sdcard/Android/data/com.hana.agent/files/connect-computer.sh
    ```
 
    它先启动 Hana 的手机助手（和「用电脑启动」一样，已经在运行就跳过），再打开 USB 方式，最后打印连接信息，形如：
@@ -48,7 +48,7 @@
 之后想再看连接信息：
 
 ```
-adb shell cat /sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json
+adb shell cat /sdcard/Android/data/com.hana.agent/files/mcp-usb.json
 ```
 
 打开以后：
@@ -61,7 +61,7 @@ adb shell cat /sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json
 关掉（任一种都行，关掉后旧令牌立即作废，连接信息文件也删掉；下次打开换一个新令牌）：
 
 ```
-adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/connect-computer.sh off
+adb shell sh /sdcard/Android/data/com.hana.agent/files/connect-computer.sh off
 ```
 
 或者在手机的 设置 › 连接电脑 › 高级设置 里关掉「经 USB 连接」，或者点通知上的「关闭」（Wi-Fi 那种开着的话也一起关）。
@@ -69,9 +69,9 @@ adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/connect-computer.sh 
 脚本做的事也可以直接用命令做（打开后等一两秒连接信息文件才写好）：
 
 ```
-adb shell am start-foreground-service -n com.wangzan101.hana/.mcp.McpService -a com.wangzan101.hana.mcp.USB_ON
-adb shell cat /sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json
-adb shell am start-foreground-service -n com.wangzan101.hana/.mcp.McpService -a com.wangzan101.hana.mcp.USB_OFF
+adb shell am start-foreground-service -n com.hana.agent/.mcp.McpService -a com.hana.agent.mcp.USB_ON
+adb shell cat /sdcard/Android/data/com.hana.agent/files/mcp-usb.json
+adb shell am start-foreground-service -n com.hana.agent/.mcp.McpService -a com.hana.agent.mcp.USB_OFF
 ```
 
 ## 经 Wi-Fi 或私有网络连接
@@ -173,7 +173,7 @@ curl -s http://192.168.1.23:8765/mcp \
 
 - **默认关闭**，打开后才监听；关掉立即停止。
 - **USB 方式只在本机（127.0.0.1）上监听**，Wi-Fi 和别的网络上连不到，电脑经 adb 的端口转发进来。手机上别的 App 也能连本机端口，所以照样要令牌，而且 USB 的令牌只认本机来的连接。
-- **只有电脑能打开 USB 方式、拿到它的令牌**：Hana 的这个服务只接受持有 `INTERACT_ACROSS_USERS_FULL` 权限的调用方，adb shell 有，普通 App 拿不到（这个权限也没法用 adb 授给别的 App）。令牌写在 Hana 的外部文件目录里（`/sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json`），安卓 11 起别的 App 读不到这个目录，只有 Hana 和 adb shell 读得到。
+- **只有电脑能打开 USB 方式、拿到它的令牌**：Hana 的这个服务只接受持有 `INTERACT_ACROSS_USERS_FULL` 权限的调用方，adb shell 有，普通 App 拿不到（这个权限也没法用 adb 授给别的 App）。令牌写在 Hana 的外部文件目录里（`/sdcard/Android/data/com.hana.agent/files/mcp-usb.json`），安卓 11 起别的 App 读不到这个目录，只有 Hana 和 adb shell 读得到。
 - **每个请求都要带令牌**。令牌是 32 字节的随机数，按常量时间比较；同一个地址一分钟内错 5 次，就先封一分钟。
 - **不接受浏览器的请求**：带 `Origin` 请求头的一律拒绝，网页没法借你的浏览器碰到这个端口。
 - **只接受私有网络**：两端都必须是局域网、私有 VPN 网络或本机的地址，公网地址来的连接当场断开。

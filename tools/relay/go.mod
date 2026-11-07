@@ -1,4 +1,4 @@
-module github.com/wangzan101/Mika/tools/relay
+module github.com/mengqingshi922-ctrl/hana/tools/relay
 
 go 1.23
 

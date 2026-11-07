@@ -18,7 +18,7 @@ You need adb on the computer, the phone listed in `adb devices`, and Hana opened
 1. On the computer, run:
 
    ```
-   adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/connect-computer.sh
+   adb shell sh /sdcard/Android/data/com.hana.agent/files/connect-computer.sh
    ```
 
    It first starts Hana's phone helper (the same as "Start from a computer"; skipped if it's already running), then turns USB mode on, and finally prints the connection info, like this:
@@ -48,7 +48,7 @@ You need adb on the computer, the phone listed in `adb devices`, and Hana opened
 To see the connection info again later:
 
 ```
-adb shell cat /sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json
+adb shell cat /sdcard/Android/data/com.hana.agent/files/mcp-usb.json
 ```
 
 Once it's on:
@@ -61,7 +61,7 @@ Once it's on:
 To turn it off (any of these; the old token stops working at once and the connection info file is deleted; the next time you turn it on you get a new token):
 
 ```
-adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/connect-computer.sh off
+adb shell sh /sdcard/Android/data/com.hana.agent/files/connect-computer.sh off
 ```
 
 Or switch off "Connect through USB" in Settings › Connect a computer › Advanced settings on the phone, or tap "Turn off" on the notification (which also turns off the Wi-Fi mode if it's on).
@@ -69,9 +69,9 @@ Or switch off "Connect through USB" in Settings › Connect a computer › Advan
 What the script does can also be done with plain commands (after turning it on, the connection info file takes a second or two to appear):
 
 ```
-adb shell am start-foreground-service -n com.wangzan101.hana/.mcp.McpService -a com.wangzan101.hana.mcp.USB_ON
-adb shell cat /sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json
-adb shell am start-foreground-service -n com.wangzan101.hana/.mcp.McpService -a com.wangzan101.hana.mcp.USB_OFF
+adb shell am start-foreground-service -n com.hana.agent/.mcp.McpService -a com.hana.agent.mcp.USB_ON
+adb shell cat /sdcard/Android/data/com.hana.agent/files/mcp-usb.json
+adb shell am start-foreground-service -n com.hana.agent/.mcp.McpService -a com.hana.agent.mcp.USB_OFF
 ```
 
 ## Connecting over Wi-Fi or a private network
@@ -171,7 +171,7 @@ Other statuses include `disabled`, `helper_unavailable`, `credential_required`, 
 
 - **Off by default**; it listens only while on and stops at once when turned off.
 - **USB mode listens on the phone itself (127.0.0.1) only**; it can't be reached over Wi-Fi or any other network, and the computer comes in through adb's port forwarding. Other apps on the phone can reach that port too, so the token is still required, and the USB token is only accepted from the phone itself.
-- **Only the computer can turn USB mode on and get its token**: Hana's service only accepts callers holding the `INTERACT_ACROSS_USERS_FULL` permission. The adb shell has it; ordinary apps can't get it (and adb can't grant it to other apps). The token is written in Hana's external files folder (`/sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json`); since Android 11 other apps can't read that folder, only Hana and the adb shell can.
+- **Only the computer can turn USB mode on and get its token**: Hana's service only accepts callers holding the `INTERACT_ACROSS_USERS_FULL` permission. The adb shell has it; ordinary apps can't get it (and adb can't grant it to other apps). The token is written in Hana's external files folder (`/sdcard/Android/data/com.hana.agent/files/mcp-usb.json`); since Android 11 other apps can't read that folder, only Hana and the adb shell can.
 - **Every request needs the token.** The token is 32 random bytes and is compared in constant time; 5 wrong tries from one address within a minute lock that address out for a minute.
 - **No browser requests**: anything carrying an `Origin` header is refused, so web pages can't reach the port through your browser.
 - **Private networks only**: both ends must be on a LAN, a private VPN network, or the phone itself; connections from public addresses are dropped immediately.
