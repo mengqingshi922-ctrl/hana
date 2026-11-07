@@ -556,8 +556,8 @@ class AndroidScreen(
         val hold = pacing.doublePress()
         val gap = pacing.doubleGap()
         val (x, y) = at
-        val microDx = if (x % 2 == 0) 0.5 else -0.5
-        val microDy = if (y % 2 == 0) 0.4 else -0.4
+        val microDx = gaussianJitter(0.5, 1.0).toDouble()
+        val microDy = gaussianJitter(0.5, 1.0).toDouble()
         val tap1 = listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, hold))
         val tap2 = listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, hold))
         if (injectStroke(tap1)) {
@@ -2068,13 +2068,18 @@ class AndroidScreen(
         return touch(pacing.near(mx, my))
     }
 
-    /** 在这一点上点一下:先停一会儿再落指,按住随机的一小会儿。引入拟人化微抖动与物理微弧，优先走底层 Shell 驱动注入，杜绝机械单点与 A11y 标志风控拦截。 */
+    private fun gaussianJitter(stdDev: Double = 0.5, maxAbs: Double = 1.2): Float {
+        val rng = java.util.concurrent.ThreadLocalRandom.current()
+        return (rng.nextGaussian() * stdDev).coerceIn(-maxAbs, maxAbs).toFloat()
+    }
+
+    /** 在这一点上点一下:先停一会儿再落指,按住随机的一小会儿。引入拟人化截断高斯微抖动与物理微弧，优先走底层 Shell 驱动注入，杜绝机械单点与 A11y 标志风控拦截。 */
     private suspend fun touch(at: Pair<Int, Int>): Boolean {
         val (x, y) = at
         delay(pacing.approach())
         val press = pacing.press()
-        val microDx = if (x % 2 == 0) 0.5f else -0.5f
-        val microDy = if (y % 2 == 0) 0.4f else -0.4f
+        val microDx = gaussianJitter(0.6, 1.2)
+        val microDy = gaussianJitter(0.5, 1.0)
         // 1. 优先尝试系统底层 Shell / InputManager 驱动原生注入（不带 FLAG_IS_ACCESSIBILITY_EVENT，消除风控指纹）
         if (injectStroke(listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, press)))) return true
         if (shell.injectTap(displayId, x, y)) return true
@@ -2117,13 +2122,17 @@ class AndroidScreen(
             val dy = p2.second - p1.second
             val dist = Math.hypot(dx.toDouble(), dy.toDouble())
             if (dist > 20) {
-                val bow = dist * 0.04 * (if ((p1.first + p1.second) % 2 == 0) 1 else -1)
+                val rng = java.util.concurrent.ThreadLocalRandom.current()
+                val curvature = (0.025 + rng.nextDouble() * 0.03) * (if (rng.nextBoolean()) 1 else -1)
+                val bow = dist * curvature
                 val nx = -dy / dist * bow
                 val ny = dx / dist * bow
-                val cx1 = (p1.first + dx * 0.3 + nx).toFloat()
-                val cy1 = (p1.second + dy * 0.3 + ny).toFloat()
-                val cx2 = (p1.first + dx * 0.7 + nx).toFloat()
-                val cy2 = (p1.second + dy * 0.7 + ny).toFloat()
+                val t1 = 0.25 + rng.nextDouble() * 0.1
+                val t2 = 0.65 + rng.nextDouble() * 0.1
+                val cx1 = (p1.first + dx * t1 + nx).toFloat()
+                val cy1 = (p1.second + dy * t1 + ny).toFloat()
+                val cx2 = (p1.first + dx * t2 + nx).toFloat()
+                val cy2 = (p1.second + dy * t2 + ny).toFloat()
                 cubicTo(cx1, cy1, cx2, cy2, p2.first.toFloat(), p2.second.toFloat())
                 return@apply
             }

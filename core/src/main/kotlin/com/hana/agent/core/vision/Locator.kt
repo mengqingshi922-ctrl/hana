@@ -134,10 +134,11 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
         if (!confirmed) return LocateResult.NotFound("not_confirmed", "Something was marked, but a second look did not confirm it is the described element. ${m.notFoundNext}")
 
         val nameChecked = occupant != null && occupant.name.isNotBlank()
-        // 定位准度没验证过的模型:只靠看图的框要有佐证——框中心的元素就是要找的字(上面已核过名字),或再框一次、复看两次都确认且看到的一致。
-        // 树不能用、或缺了一块而要找的不在树里时,没有东西可对照:照样交出去,标明没佐证,点完由效果说话
+        // 高置信度直通机制：当视觉模型在第一轮已成功提取出 seen 标签且复看确认通过，直接直通，杜绝耗时的 3~4 轮串行 VLM 往返
+        val strongConfidence = confirmed && ((text != null && box.seen != null && !disagree(box.seen, text)) ||
+            (box.seen != null && norm(target) in norm(box.seen)))
         val visionOnly = !vision.groundingVerified && !nameChecked && nothingToCheckAgainst(text)
-        if (!vision.groundingVerified && !nameChecked && !visionOnly) {
+        if (!vision.groundingVerified && !nameChecked && !visionOnly && !strongConfidence) {
             val again = try {
                 secondLook(target, text, box, second.png, locatePrompt, confirmPrompt)
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
@@ -342,8 +343,11 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
             }
         }
 
-        // 2.2 常见关键动作词
-        val actionKeywords = listOf("搜索", "确定", "允许", "继续", "完成", "下一步", "保存", "提交", "发送", "登录", "注册", "立即体验", "去开启")
+        // 2.2 常见关键动作与高频高价值控件词（端侧毫秒级 OCR 优先命中，0 网络 RTT）
+        val actionKeywords = listOf(
+            "搜索", "确定", "允许", "继续", "完成", "下一步", "保存", "提交", "发送", "登录", "注册",
+            "立即体验", "去开启", "购物车", "消息", "设置", "扫一扫", "支付", "结算", "去结算", "立即购买", "加入购物车"
+        )
         for (kw in actionKeywords) {
             if (kw in targetNorm) {
                 val hit = valid.firstOrNull { norm(it.text) == kw }

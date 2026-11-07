@@ -145,18 +145,53 @@ class Replayer(
     }
 
     /**
-     * 在当前屏里按选择器找唯一的目标。名字为空不比名字;`{n}` 先换成槽值。
-     * 记录时唯一、现在却不止一个:页面已不是那时的样子(如列表里多了同名条目),不认。
-     * 记录时就不唯一:取同序号的那个,且只有它离记录时的位置不超过屏宽 15% 才认。
+     * 工业级柔性多级选择器 (Fuzzy Multi-Tier Selector):
+     * Tier 1: 严格精确匹配 (role + resourceId + name)
+     * Tier 2: 动态数字剥离匹配 (应对 "购物车(2)" 匹配记录时的 "购物车")
+     * Tier 3: 语义与空间就近匹配 (当 resourceId 发生热更新/混淆变化时，基于 role + name + 屏宽 15% 坐标距离命中)
      */
     private fun find(s: ScreenSnapshot, sel: Selector, slots: List<String>): UiElement? {
         val name = fill(sel.name, slots) ?: return null
-        val same = s.elements.filter { it.role == sel.role && it.resourceId == sel.resourceId && (name.isEmpty() || it.name.trim() == name) }
-        if (same.size == 1) return same.single()
-        if (same.isEmpty() || sel.uniqueAtRecord || sel.bounds.size != 4) return null
         fun near(e: UiElement) = e.bounds.size == 4 && hypot(cx(e.bounds) - cx(sel.bounds), cy(e.bounds) - cy(sel.bounds)) <= NEAR
-        val pick = same.getOrNull(sel.ordinal)?.takeIf(::near) ?: return null
-        return pick.takeIf { same.count(::near) == 1 }
+
+        // Tier 1: 严格精确匹配
+        val sameExact = s.elements.filter { it.role == sel.role && it.resourceId == sel.resourceId && (name.isEmpty() || it.name.trim() == name) }
+        if (sameExact.size == 1) return sameExact.single()
+        if (sameExact.isNotEmpty()) {
+            if (!sel.uniqueAtRecord && sel.bounds.size == 4) {
+                val pick = sameExact.getOrNull(sel.ordinal)?.takeIf(::near)
+                if (pick != null && sameExact.count(::near) == 1) return pick
+            }
+        }
+
+        // Tier 2: 动态文本容错匹配 (剥离末尾动态数字角标如 "(3)", " 99+", "·")
+        if (name.isNotEmpty()) {
+            val baseName = stripDynamicBadge(name)
+            val sameFuzzyText = s.elements.filter { it.role == sel.role && it.resourceId == sel.resourceId && stripDynamicBadge(it.name.trim()) == baseName }
+            if (sameFuzzyText.size == 1) return sameFuzzyText.single()
+            if (sameFuzzyText.isNotEmpty() && sel.bounds.size == 4) {
+                val pick = sameFuzzyText.filter(::near)
+                if (pick.size == 1) return pick.single()
+            }
+        }
+
+        // Tier 3: 空间几何与语义容错 (App 版本更新导致混淆 resourceId 发生变动，但文案和角色一致且处于同一位置区域)
+        if (name.isNotEmpty() && sel.bounds.size == 4) {
+            val sameRoleAndName = s.elements.filter { it.role == sel.role && (it.name.trim() == name || stripDynamicBadge(it.name.trim()) == stripDynamicBadge(name)) }
+            val nearCandidates = sameRoleAndName.filter(::near)
+            if (nearCandidates.size == 1) {
+                return nearCandidates.single()
+            }
+        }
+
+        return null
+    }
+
+    private fun stripDynamicBadge(text: String): String {
+        return text.replace(Regex("""[\(\[（]\s*\d+\s*[\)\]）]"""), "")
+                   .replace(Regex("""\s*\d+\+?$"""), "")
+                   .replace("·", "")
+                   .trim()
     }
 
     private fun cx(b: List<Int>) = (b[0] + b[2]) / 2.0
