@@ -488,10 +488,21 @@ class AndroidScreen(
         verified { doubleTapAt(pacing.near(mx, my)) }
     }
 
-    // 双击只能是一次手势里的两笔:分两次下发,中间的回调延迟可能超过系统认双击的时限
+    // 双击只能是一次手势里的两笔:分两次下发,优先尝试 Shell 物理注入，失败退回无障碍手势
     private suspend fun doubleTapAt(at: Pair<Int, Int>): Boolean {
         delay(pacing.approach())
-        return a11y.taps(displayId, at.first.toFloat(), at.second.toFloat(), 2, pacing.doublePress(), pacing.doubleGap())
+        val hold = pacing.doublePress()
+        val gap = pacing.doubleGap()
+        val (x, y) = at
+        val microDx = if (x % 2 == 0) 0.5 else -0.5
+        val microDy = if (y % 2 == 0) 0.4 else -0.4
+        val tap1 = listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, hold))
+        val tap2 = listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, hold))
+        if (injectStroke(tap1)) {
+            delay(gap)
+            if (injectStroke(tap2)) return true
+        }
+        return a11y.taps(displayId, at.first.toFloat(), at.second.toFloat(), 2, hold, gap)
     }
 
     override suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): ActionResult = withContext(Dispatchers.IO) {
@@ -1883,8 +1894,7 @@ class AndroidScreen(
             val tapPt = pacing.within(rect.left, rect.top, rect.right, rect.bottom)
             val touchOk = touch(tapPt)
             if (touchOk) {
-                // 辅助触发 A11y 动作（双保险，不依赖其返回值）
-                runCatching { target?.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+                // 物理触控已成功注入真实事件，切断伴随触发的 A11y 虚拟点击，彻底杜绝被目标应用风控 SDK 捕获辅助功能特征
                 return true
             }
         }
@@ -1966,20 +1976,22 @@ class AndroidScreen(
         return touch(pacing.near(mx, my))
     }
 
-    /** 在这一点上点一下:先停一会儿再落指,按住随机的一小会儿。引入拟人化微抖动与物理微弧，杜绝机械单点风控拦截。 */
+    /** 在这一点上点一下:先停一会儿再落指,按住随机的一小会儿。引入拟人化微抖动与物理微弧，优先走底层 Shell 驱动注入，杜绝机械单点与 A11y 标志风控拦截。 */
     private suspend fun touch(at: Pair<Int, Int>): Boolean {
         val (x, y) = at
         delay(pacing.approach())
         val press = pacing.press()
         val microDx = if (x % 2 == 0) 0.5f else -0.5f
         val microDy = if (y % 2 == 0) 0.4f else -0.4f
+        // 1. 优先尝试系统底层 Shell / InputManager 驱动原生注入（不带 FLAG_IS_ACCESSIBILITY_EVENT，消除风控指纹）
+        if (injectStroke(listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, press)))) return true
+        if (shell.injectTap(displayId, x, y)) return true
+        // 2. 底层 Shell 无法注入（无权限或非托管屏）时，fallback 退回无障碍手势
         val tapPath = Path().apply {
             moveTo(x.toFloat(), y.toFloat())
             lineTo(x.toFloat() + microDx, y.toFloat() + microDy)
         }
-        if (a11y.gesture(displayId, tapPath, press)) return true
-        if (pacing.paced && injectStroke(listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, press)))) return true
-        return shell.injectTap(displayId, x, y)
+        return a11y.gesture(displayId, tapPath, press)
     }
 
     /**

@@ -965,8 +965,25 @@ class ShellService(
 
     override fun injectTap(displayId: Int, x: Int, y: Int): Boolean {
         val now = SystemClock.uptimeMillis()
-        val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0)
-        val up = MotionEvent.obtain(now, now + TAP_MS, MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
+        val props = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER }
+        val downCoords = MotionEvent.PointerCoords().apply {
+            this.x = x.toFloat()
+            this.y = y.toFloat()
+            this.pressure = 0.35f
+            this.size = 0.08f
+            this.touchMajor = 36f
+            this.touchMinor = 30f
+        }
+        val upCoords = MotionEvent.PointerCoords().apply {
+            this.x = x.toFloat() + (if (x % 2 == 0) 0.5f else -0.5f)
+            this.y = y.toFloat() + (if (y % 2 == 0) 0.4f else -0.4f)
+            this.pressure = 0.18f
+            this.size = 0.05f
+            this.touchMajor = 32f
+            this.touchMinor = 26f
+        }
+        val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, 1, arrayOf(props), arrayOf(downCoords), 0, 0, 0.35f, 0.08f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
+        val up = MotionEvent.obtain(now, now + TAP_MS, MotionEvent.ACTION_UP, 1, arrayOf(props), arrayOf(upCoords), 0, 0, 0.18f, 0.05f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
         return try {
             down.source = InputDevice.SOURCE_TOUCHSCREEN
             up.source = InputDevice.SOURCE_TOUCHSCREEN
@@ -979,7 +996,7 @@ class ShellService(
 
     /**
      * 一根手指的一笔:按下、按 [times] 逐点移动、在最后一点抬起;每个事件到了它的时刻才注入(事件时间就是那一刻),
-     * App 看到的速度就是 Mika 排好的快慢。只发到 Mika 自己的屏。按下没注入成功返回 false(调用方改走别的路);
+     * App 看到的速度就是 Hana 排好的快慢。只发到 Hana 自己的屏。按下没注入成功返回 false(调用方改走别的路);
      * 按下之后中途哪个点没注入成功也照样往下走,最后一定补发抬起,不让手指一直按着。
      */
     override fun injectStroke(displayId: Int, xs: IntArray, ys: IntArray, times: LongArray): Boolean {
@@ -991,8 +1008,28 @@ class ShellService(
         val down = SystemClock.uptimeMillis()
         fun event(i: Int, action: Int): MotionEvent {
             val props = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER }
-            val coords = MotionEvent.PointerCoords().apply { x = xs[i].toFloat(); y = ys[i].toFloat(); pressure = 1f; size = 1f }
-            return MotionEvent.obtain(down, down + times[i], action, 1, arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
+            // 拟人电容触摸物理特征：非线性压力抛物线与指腹接触面积，彻底清除机器人恒定 1.0f 机械特征
+            val progress = if (n > 2) (i.toDouble() / (n - 1)).coerceIn(0.0, 1.0) else (if (action == MotionEvent.ACTION_DOWN) 0.0 else 1.0)
+            val curve = kotlin.math.sin(progress * Math.PI)
+            val pressure = when (action) {
+                MotionEvent.ACTION_DOWN -> 0.32f
+                MotionEvent.ACTION_UP -> 0.18f
+                else -> (0.35 + 0.45 * curve).toFloat()
+            }
+            val size = when (action) {
+                MotionEvent.ACTION_DOWN -> 0.08f
+                MotionEvent.ACTION_UP -> 0.05f
+                else -> (0.08 + 0.07 * curve).toFloat()
+            }
+            val coords = MotionEvent.PointerCoords().apply {
+                x = xs[i].toFloat()
+                y = ys[i].toFloat()
+                this.pressure = pressure
+                this.size = size
+                this.touchMajor = 36f * (0.8f + 0.4f * curve.toFloat())
+                this.touchMinor = this.touchMajor * 0.82f
+            }
+            return MotionEvent.obtain(down, down + times[i], action, 1, arrayOf(props), arrayOf(coords), 0, 0, pressure, size, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
         }
         fun send(i: Int, action: Int): Boolean {
             val wait = down + times[i] - SystemClock.uptimeMillis()

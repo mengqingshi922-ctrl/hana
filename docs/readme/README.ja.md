@@ -1,4 +1,4 @@
-<!-- translated-from: README.md @ 33f3af965e5e -->
+<!-- translated-from: README.md @ 55937e9d15fd -->
 <div align="center">
 
 <img src="../media/logo.png" alt="Hana" width="88" />
@@ -103,6 +103,10 @@
 - **コミュニティ**：[X のグループチャット](https://x.com/i/chat/group_join/g2116926829198246025/48B52j5svL)に参加できます。WeChat で作者に連絡するには、アプリの 「Hana について › 作者に連絡」 にある QR コードを読み取ってください（友達申請に「Hana」と書いてください）
 - **問題を報告**：[Issue を作成](https://github.com/mengqingshi922-ctrl/hana/issues/new/choose)。アプリの 「Hana について › フィードバックを送信」 から診断情報を添えられます
 - **貢献する**：アプリやサイトの使い方の知識を書き足す（プレーンテキストで、コードは不要）、またはコードで貢献。[コントリビューションガイド](../../.github/CONTRIBUTING.md)をご覧ください
+
+## 謝辞
+
+Hana は、オープンソースプロジェクト [Mika](https://github.com/hana/agent/Mika) にインスパイアされて誕生しました。スマートフォン自律操作エージェントの領域において先駆的な貢献を果たされた Mika とオープンソースコミュニティに心より敬意と感謝を表します。Hana はこの基盤の上に立ち、コンパニオンマスコットシステム、ゼロレイテンシーのインテント直通、オンデバイス SLM ハイブリッド実行など、広範な革新を行っています。
 
 ## ライセンス
 

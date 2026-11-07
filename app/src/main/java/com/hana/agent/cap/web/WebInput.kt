@@ -74,8 +74,17 @@ class WebInput(private val tab: WebTab) {
     // 标明是手指:不设工具类型时页面看到的 pointerType 是空串,真手指是 touch
     private suspend fun touch(down: Long, at: Long, action: Int, x: Float, y: Float) = withContext(Dispatchers.Main) {
         val props = MotionEvent.PointerProperties().apply { id = 0; toolType = MotionEvent.TOOL_TYPE_FINGER }
-        val coords = MotionEvent.PointerCoords().apply { this.x = x; this.y = y; pressure = 1f; size = 1f }
-        val e = MotionEvent.obtain(down, at, action, 1, arrayOf(props), arrayOf(coords), 0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
+        val p = if (action == MotionEvent.ACTION_DOWN) 0.35f else if (action == MotionEvent.ACTION_UP) 0.18f else 0.65f
+        val s = 0.09f
+        val coords = MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            this.pressure = p
+            this.size = s
+            this.touchMajor = 34f
+            this.touchMinor = 28f
+        }
+        val e = MotionEvent.obtain(down, at, action, 1, arrayOf(props), arrayOf(coords), 0, 0, p, s, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0)
         try {
             view.dispatchTouchEvent(e)
         } finally {

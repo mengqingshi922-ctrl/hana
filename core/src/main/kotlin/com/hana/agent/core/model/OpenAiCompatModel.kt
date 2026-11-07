@@ -99,10 +99,8 @@ class OpenAiCompatModel(
             reasoningEffort?.let { put("reasoning_effort", it) }
             // 思考只在带工具的请求里回传(工具调用一步接一步时要接着想);不带工具的旁路调用不需要
             val replayReasoning = tools.isNotEmpty()
-            // 智能视觉滑动修剪：保留最新 2 帧高清截图，更早的历史截图修剪为轻量文本占位符，杜绝 Token 爆炸与网络延迟
-            val effectiveMessages = if (capabilities.vision) pruneVisualContext(messages) else messages
             val wire = listOf(buildJsonObject { put("role", "system"); put("content", system) }) +
-                effectiveMessages.flatMap { serialize(it, replayReasoning) }
+                messages.flatMap { serialize(it, replayReasoning) }
             put("messages", JsonArray(if (capabilities.promptCaching == PromptCaching.Explicit) withCacheMarks(wire) else wire))
             if (tools.isNotEmpty()) {
                 putJsonArray("tools") { tools.forEach { add(toolJson(it)) } }
@@ -158,33 +156,6 @@ class OpenAiCompatModel(
             put("parameters", try { json.parseToJsonElement(t.parametersJsonSchema) } catch (e: Exception) {
                 throw IllegalArgumentException("工具 ${t.name} 的参数 schema 不是合法 JSON", e)
             })
-        }
-    }
-
-    /**
-     * 智能视觉上下文滑动修剪 (Visual Context Sliding Pruning)：
-     * 大模型执行多步手机任务时，历史中所有旧屏幕如果全量上传，会导致 Payload 膨胀数十倍、网络延迟严重且视觉 Token 暴增。
-     * 仅保留最近 [MAX_RETAINED_IMAGES] 帧真实视觉图片，更早的历史截图自动修剪为轻量文本占位符，
-     * 既保证当前屏幕与前后对比的最高视觉精度，又使网络传输与推理延迟稳锁在百毫秒级。
-     */
-    private fun pruneVisualContext(messages: List<Message>, maxImages: Int = 2): List<Message> {
-        val imageMessageIndices = messages.mapIndexedNotNull { index, msg ->
-            if (msg.parts.any { it is Part.Image }) index else null
-        }
-        if (imageMessageIndices.size <= maxImages) return messages
-
-        val keepFromIndex = imageMessageIndices[imageMessageIndices.size - maxImages]
-        return messages.mapIndexed { index, msg ->
-            if (index < keepFromIndex && msg.parts.any { it is Part.Image }) {
-                val newParts = msg.parts.map { part ->
-                    if (part is Part.Image) {
-                        Part.Text("[历史步骤截屏已归档]")
-                    } else part
-                }
-                msg.copy(parts = newParts)
-            } else {
-                msg
-            }
         }
     }
 

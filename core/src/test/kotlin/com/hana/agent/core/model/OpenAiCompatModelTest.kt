@@ -378,29 +378,4 @@ class OpenAiCompatModelTest {
         assertEquals(listOf(Part.Thinking("思考内容", ReasoningVia.ReasoningContent.tag(endpoint)), Part.Text("最终回答")), reply.parts)
     }
 
-    @Test fun prunesExcessVisualImagesToRecentTwo() = runTest {
-        val m = model(vision = true)
-        server.enqueue(ok("""{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}"""))
-        val img = Part.Image("data", "image/png")
-        val longHistory = listOf(
-            Message(Role.User, listOf(Part.Text("step 1"), img), Author.Mika),
-            Message(Role.Assistant, listOf(Part.ToolCall("c1", "phone_tap", "{}")), Author.Mika),
-            Message(Role.User, listOf(Part.Text("step 2"), img), Author.Mika),
-            Message(Role.Assistant, listOf(Part.ToolCall("c2", "phone_tap", "{}")), Author.Mika),
-            Message(Role.User, listOf(Part.Text("step 3"), img), Author.Mika),
-        )
-        m.complete("sys", longHistory, emptyList())
-        val msgs = body()["messages"]!!.jsonArray.map { it.jsonObject }
-        // 系统消息 1 条 + 用户/工具消息
-        // step 1 (msgs[1]): 旧图片已被成功修剪，content 恢复为轻量纯文本字符串
-        val step1Content = msgs[1]["content"]!!.jsonPrimitive.content
-        assertTrue(step1Content.contains("截屏已归档"))
-
-        // step 2 (msgs[3]) 和 step 3 (msgs[5]) 应当保留真实 image_url
-        val step2Content = msgs[3]["content"]!!.jsonArray.map { it.jsonObject }
-        assertTrue(step2Content.any { it["type"]?.jsonPrimitive?.content == "image_url" })
-
-        val step3Content = msgs[5]["content"]!!.jsonArray.map { it.jsonObject }
-        assertTrue(step3Content.any { it["type"]?.jsonPrimitive?.content == "image_url" })
-    }
 }
