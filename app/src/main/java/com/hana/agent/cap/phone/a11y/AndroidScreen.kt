@@ -164,8 +164,49 @@ class AndroidScreen(
         packages.ifEmpty { listOfNotNull(foregroundTaskPackage()) }
     }
 
-    private fun read() = ScreenReader.read(windows(), display.width, display.height)
-    private fun treeHash() = ScreenReader.hash(windows())
+    private data class CachedRead(val contentGen: Long, val atUptimeMs: Long, val read: ScreenRead)
+    @Volatile private var cachedRead: CachedRead? = null
+    @Volatile private var latestPrivacyMasks: Pair<Long, List<android.graphics.Rect>>? = null
+    @Volatile private var lastSettledGen: Long = -1L
+    @Volatile private var lastSettledAtMs: Long = 0L
+
+    private fun invalidateReadCache() {
+        cachedRead = null
+        lastSettledGen = -1L
+    }
+
+    private fun markSettled() {
+        lastSettledGen = ScreenAccessibility.contentGeneration()
+        lastSettledAtMs = SystemClock.uptimeMillis()
+    }
+
+    private fun read(): ScreenRead {
+        val gen = ScreenAccessibility.contentGeneration()
+        val now = SystemClock.uptimeMillis()
+        cachedRead?.let { c ->
+            if (c.contentGen == gen && (now - c.atUptimeMs) in 0..READ_CACHE_TTL_MS) {
+                return c.read
+            }
+        }
+        val fresh = ScreenReader.read(windows(), display.width, display.height)
+        val genAfter = ScreenAccessibility.contentGeneration()
+        if (genAfter == gen) {
+            cachedRead = CachedRead(gen, SystemClock.uptimeMillis(), fresh)
+        }
+        latestPrivacyMasks = genAfter to fresh.privacyMasks
+        return fresh
+    }
+
+    private fun treeHash(): Long {
+        val gen = ScreenAccessibility.contentGeneration()
+        val now = SystemClock.uptimeMillis()
+        cachedRead?.let { c ->
+            if (c.contentGen == gen && (now - c.atUptimeMs) in 0..READ_CACHE_TTL_MS) {
+                return c.read.hash
+            }
+        }
+        return ScreenReader.hash(windows())
+    }
 
     /** 显式使用系统命令或事件工具时按需建屏;普通任务等到第一次打开 App 才建。 */
     suspend fun ensureDisplay() { display.get() }
@@ -187,8 +228,10 @@ class AndroidScreen(
                 if (!autoDismissBarriers()) return@repeat
             }
         }
+        val genBefore = ScreenAccessibility.contentGeneration()
         val r = read()
-        val after = treeHash()
+        val genAfter = ScreenAccessibility.contentGeneration()
+        val changedDuringRead = if (genBefore == genAfter) false else treeHash() != r.hash
         val snap = NodeSnapshot(snapshotId(), r.entries)
         if (register) ids.put(snap)
         ScreenSnapshot(
@@ -197,7 +240,7 @@ class AndroidScreen(
             elements = r.entries.map { it.element },
             width = display.width,
             height = display.height,
-            changedDuringRead = after != r.hash,
+            changedDuringRead = changedDuringRead,
             protected = r.hasAppWindow && frameBlack() == true,
             hasWindow = r.anyAppWindow,
             unreadableApp = if (r.topPackage == null) foregroundTaskPackage() else null,
@@ -235,8 +278,12 @@ class AndroidScreen(
 
     private val SENSITIVE_REGEX = Regex("(?i)(\\b\\d{6}\\b|\\b\\d{17}[\\dXx]\\b|\\b\\d{16,19}\\b|验证码|取件码|密码|password|身份证)")
 
-    /** 收集当前屏幕中需要进行本地物理遮罩脱敏的敏感区域（密码框、验证码、身份证、银行卡） */
+    /** 收集当前屏幕中需要进行本地物理遮罩脱敏的敏感区域（优先零 IPC 复用最近一次读屏提取的遮罩坐标） */
     private fun findPrivacyMaskBounds(): List<android.graphics.Rect> {
+        val gen = ScreenAccessibility.contentGeneration()
+        latestPrivacyMasks?.let { (maskGen, masks) ->
+            if (maskGen == gen) return masks
+        }
         val rects = mutableListOf<android.graphics.Rect>()
         fun scan(node: android.view.accessibility.AccessibilityNodeInfo?) {
             if (node == null) return
@@ -257,6 +304,7 @@ class AndroidScreen(
         runCatching {
             windows().forEach { w -> runCatching { scan(w.root) } }
         }
+        latestPrivacyMasks = gen to rects
         return rects
     }
 
@@ -320,17 +368,24 @@ class AndroidScreen(
     /**
      * 认屏上文字。自绘界面几乎没有无障碍事件,事件安静了画面可能还在过渡:先等画面停稳再认;认的过程中换了整页就按新的一页再认
      * (规则见 [StillFrameRead])。局部在动(动图头像、光标)不影响字的位置,照用,不再整个丢掉。
+     * 若虚拟屏最新一帧已静止超过采样周期，直接短路读取当前帧，省去 120ms 强制空等。
      */
     override suspend fun readVisibleText(): List<VisibleTextLine>? = withContext(Dispatchers.IO) {
-        if (!hasDisplay || frameBlack() == true) return@withContext null
+        val cur = display.current ?: return@withContext null
+        if (frameBlack() == true) return@withContext null
+        val frameQuietMs = SystemClock.uptimeMillis() - cur.lastFrameUptimeMs
+        if (cur.lastFrameUptimeMs > 0L && frameQuietMs >= StillFrameRead.POLL_MS) {
+            val before = frameSignature()
+            val res = cur.latestFrameBitmap()?.let { PhoneOcr.read(it) }
+            if (res != null && !FrameMath.pageChanged(before, frameSignature())) return@withContext res
+        }
         StillFrameRead.read(SystemClock::uptimeMillis, { delay(it) }, ::frameSignature) {
             display.current?.latestFrameBitmap()?.let { PhoneOcr.read(it) }
         }
     }
 
     override suspend fun frameGrid(): FrameGrid? = withContext(Dispatchers.IO) {
-        val bmp = display.current?.frames?.value ?: return@withContext null
-        runCatching { FrameGrid.sample(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()
+        display.current?.latestFrameGrid()
     }
 
     override suspend fun isProtected(): Boolean = withContext(Dispatchers.IO) {
@@ -368,7 +423,14 @@ class AndroidScreen(
 
     override suspend fun waitStable(timeoutMs: Long): Boolean = withContext(Dispatchers.IO) {
         if (!hasDisplay) return@withContext true
-        withEventClock { clock -> clock.awaitQuiet(QUIET_MS, timeoutMs) }
+        val gen = ScreenAccessibility.contentGeneration()
+        val now = SystemClock.uptimeMillis()
+        if (gen == lastSettledGen && (now - lastSettledAtMs) in 0..SETTLED_REUSE_TTL_MS) {
+            return@withContext true
+        }
+        withEventClock { clock -> clock.awaitQuiet(QUIET_MS, timeoutMs) }.also { quiet ->
+            if (quiet) markSettled()
+        }
     }
 
     /** 这块虚拟屏的下一条界面事件(悬停一类不算);屏还没开时等满时限。 */
@@ -609,20 +671,23 @@ class AndroidScreen(
             }
         }
         val textsBefore = read().texts.toSet()
+        invalidateReadCache()
         // 像人一样一段一段打出来(见 TypingPacing);密码框、要粘贴才收得到的网页框照旧一次写入。
         // 写不进、框不接受半截字时停下,下面照旧整段写入并读回核对
         typing(field.packageName?.toString()).forField(web, field.isPassword).leadIn(io, text)
         var frozen = false
         val verification = typeAndVerify(
             io, text, TYPE_ATTEMPTS,
-            settle = { withEventClock { clock -> clock.awaitQuiet(READBACK_QUIET_MS, READBACK_CAP_MS) } },
+            settle = { withEventClock { clock -> clock.awaitQuiet(READBACK_QUIET_MS, READBACK_CAP_MS).also { if (it) markSettled() } } },
             // 读回一直不变时,看界面上有没有冒出含所输文字的新文字(联想词等)
             reacted = {
+                invalidateReadCache()
                 val typed = text.filterNot { it.isWhitespace() }
                 (read().texts.toSet() - textsBefore).any { typed in it.filterNot { c -> c.isWhitespace() } }.also { frozen = it }
             },
             secret = field.isPassword,
         )
+        invalidateReadCache()
         val hint = listOfNotNull(
             HINT_TAPPED_TO_FOCUS.takeIf { found.tapped },
             HINT_READBACK_FROZEN.takeIf { frozen },
@@ -696,7 +761,9 @@ class AndroidScreen(
         var pasted: Boolean? = null
         val changed = withEventClock { clock ->
             clock.mark()
+            invalidateReadCache()
             pasted = pasteUnseen(text, beforeFrame)
+            invalidateReadCache()
             pasted == true && awaitChange(clock, beforeTree, beforeFrame)
         }
         when (pasted) {
@@ -1244,8 +1311,10 @@ class AndroidScreen(
         val r = runCatching { read() }.getOrNull() ?: return false
         val candidate = DialogFastBypass.findBypass(r.entries, r.topPackage, display.width, display.height) ?: return false
         Log.i(TAG, "Fast-Bypass auto-dismissing: ${candidate.reason} (${candidate.text}) at (${candidate.x}, ${candidate.y})")
+        invalidateReadCache()
         val clicked = candidate.target.node.performAction(AccessibilityNodeInfo.ACTION_CLICK) || touch(candidate.x to candidate.y)
         if (clicked) {
+            invalidateReadCache()
             delay(350L)
             waitStable(SETTLE_CAP_MS)
             return true
@@ -1284,7 +1353,11 @@ class AndroidScreen(
         val w = armSpillWatch()
         val changed = withEventClock { clock ->
             clock.mark()
-            if (action()) awaitChange(clock, beforeTree, beforeFrame) else null
+            invalidateReadCache()
+            if (action()) {
+                invalidateReadCache()
+                awaitChange(clock, beforeTree, beforeFrame)
+            } else null
         } ?: return ActionResult.Failed("action_failed")
         // 从挪回来的任务里又打开了一个的,一并算进来
         val profile = adoptFromAdopted(w)
@@ -1297,16 +1370,19 @@ class AndroidScreen(
                 // 阻断弹窗关闭后，重新执行原始动作并检查页面变化 (高速重试 400ms)
                 val retryChanged = withEventClock { clock ->
                     clock.mark()
-                    if (action()) awaitChange(clock, beforeTree, beforeFrame, capMs = 400L, quietMs = 120L) else null
+                    invalidateReadCache()
+                    if (action()) {
+                        invalidateReadCache()
+                        awaitChange(clock, beforeTree, beforeFrame, capMs = 400L, quietMs = 120L)
+                    } else null
                 } ?: false
                 if (retryChanged) hasChanged = true
             } else {
-                // [Mobile-Agent 风格即时差分自愈 2]：针对渲染微延迟或触控抖动进行轻量微重试 (紧凑等待 350ms)
-                delay(60L)
+                // [安全非侵入式重检]：无弹窗阻断时绝不二次重复执行 action()（防止误双击、取消点赞、关回开关或重复提交触发风控），
+                // 仅针对慢网或异步渲染延迟做一次紧凑重检 (150ms)
                 val retryChanged = withEventClock { clock ->
-                    clock.mark()
-                    if (action()) awaitChange(clock, beforeTree, beforeFrame, capMs = 350L, quietMs = 120L) else null
-                } ?: false
+                    awaitChange(clock, beforeTree, beforeFrame, capMs = 150L, quietMs = 80L)
+                }
                 if (retryChanged) hasChanged = true
             }
         }
@@ -1679,7 +1755,7 @@ class AndroidScreen(
         }
     }
 
-    /** 等界面稳定后比对指纹(规则见 [ChangeWait]);确认变了立即返回 true。采用 Google ARTEMIS 风格的高敏捷等待。 */
+    /** 等界面稳定后比对指纹(规则见 [ChangeWait]);确认变了立即返回 true。采用事件驱动记忆化避免轮询期重复跨进程 IPC 遍历。 */
     private suspend fun awaitChange(
         clock: EventClock,
         beforeTree: Long,
@@ -1687,18 +1763,34 @@ class AndroidScreen(
         capMs: Long = 850L,
         quietMs: Long = 150L,
         pollMs: Long = 60L,
-    ): Boolean =
-        ChangeWait.awaitStableChange(
+    ): Boolean {
+        val deadlineEst = SystemClock.uptimeMillis() + capMs
+        var lastCheckedEventAt = -1L
+        var lastTreeChanged = false
+        return ChangeWait.awaitStableChange(
             now = SystemClock::uptimeMillis,
             sleep = { delay(it) },
             frame = ::frameSignature,
             quietForMs = clock::quietForMs,
-            treeChanged = { treeHash() != beforeTree },
+            treeChanged = {
+                val evAt = clock.lastEventAt()
+                val now = SystemClock.uptimeMillis()
+                // 若自上次计算 treeHash 以来没有收到任何新的无障碍事件（且未到最终超时兜底时刻），直接复用上次结果，消除每 60ms 一次的全树 IPC
+                if (evAt == lastCheckedEventAt && now < deadlineEst) {
+                    lastTreeChanged
+                } else {
+                    lastCheckedEventAt = evAt
+                    (treeHash() != beforeTree).also { lastTreeChanged = it }
+                }
+            },
             beforeFrame = beforeFrame,
             capMs = capMs,
             quietMs = quietMs,
             pollMs = pollMs,
-        )
+        ).also {
+            if (clock.quietForMs() >= quietMs) markSettled()
+        }
+    }
 
     /** 前台不是目标 App、也不是它调起的系统页面或系统选择器时,返回当前前台包名及是否由目标 App 打开。 */
     private fun switchedTo(): AppSwitch.Switch? {
@@ -2114,17 +2206,11 @@ class AndroidScreen(
 
     // ---------- 画面 ----------
 
-    /** 预览帧的粗粒度亮度格子;没有画面时为 null。 */
-    private fun frameSignature(): IntArray? {
-        val bmp = display.current?.frames?.value ?: return null
-        return runCatching { FrameMath.lumaGrid(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()
-    }
+    /** 预览帧的粗粒度亮度格子(基于虚拟屏帧序号 O(1) 缓存复用);没有画面时为 null。 */
+    private fun frameSignature(): IntArray? = display.current?.latestSignature()
 
-    /** 画面是否全黑(防截屏窗口在虚拟屏上画成黑色);没有画面时为 null。 */
-    private fun frameBlack(): Boolean? {
-        val bmp = display.current?.frames?.value ?: return null
-        return runCatching { FrameMath.isBlack(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()
-    }
+    /** 画面是否全黑(防截屏窗口在虚拟屏上画成黑色，基于虚拟屏帧序号 O(1) 缓存复用);没有画面时为 null。 */
+    private fun frameBlack(): Boolean? = display.current?.latestIsBlack()
 
     // ---------- 事件时钟 ----------
 
@@ -2132,6 +2218,7 @@ class AndroidScreen(
     private class EventClock {
         private val last = AtomicLong(SystemClock.uptimeMillis())
         fun mark() = last.set(SystemClock.uptimeMillis())
+        fun lastEventAt(): Long = last.get()
         fun quietForMs() = SystemClock.uptimeMillis() - last.get()
 
         /** 等到连续 [quietMs] 没有界面事件;[capMs] 内等到返回 true。 */
@@ -2191,6 +2278,10 @@ class AndroidScreen(
         val IN_USE_BY_OTHER = ActionResult.Failed(APP_IN_USE_BY_OTHER_TASK)
 
         const val QUIET_MS = 150L
+        /** 同一无障碍事件世代下的极短微缓存窗口(供 autoDismissBarriers → capture、probe → verified 之间零 IPC 共享)。 */
+        const val READ_CACHE_TTL_MS = 60L
+        /** 动作刚在端口内部等待过事件安静后，上层 Session 紧接着调用 waitStable 可复用的免等待窗口。 */
+        const val SETTLED_REUSE_TTL_MS = 350L
 
         /** 停留里轻轻滚的那块可滚动内容至少占屏幕这么大。 */
         const val IDLE_MIN_AREA = 0.5

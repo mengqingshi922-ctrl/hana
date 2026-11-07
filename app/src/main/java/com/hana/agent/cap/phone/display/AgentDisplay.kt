@@ -43,6 +43,18 @@ class AgentDisplay(
     private var pending = false
     @Volatile private var released = false
 
+    /** 自增帧版本号与最新帧到达时间戳，供上层 O(1) 缓存亮度指纹、黑屏检测与视觉网格，避免轮询期重复像素采样。 */
+    @Volatile var frameSeq: Long = 0L
+        private set
+    @Volatile var lastFrameUptimeMs: Long = 0L
+        private set
+    private var cachedSigSeq: Long = -1L
+    private var cachedSignature: IntArray? = null
+    private var cachedBlackSeq: Long = -1L
+    private var cachedBlack: Boolean? = null
+    private var cachedGridSeq: Long = -1L
+    private var cachedGrid: com.hana.agent.core.visual.FrameGrid? = null
+
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val previewWidth = minOf(PREVIEW_MAX_WIDTH, width)
     private val previewHeight = maxOf(1, height * previewWidth / width)
@@ -93,6 +105,8 @@ class AgentDisplay(
                 val preview = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
                 Canvas(preview).drawBitmap(bmp, Rect(0, 0, width, height), Rect(0, 0, previewWidth, previewHeight), paint)
                 _frames.value = preview
+                frameSeq++
+                lastFrameUptimeMs = SystemClock.uptimeMillis()
             }
         } finally {
             image.close()
@@ -113,6 +127,36 @@ class AgentDisplay(
     fun latestFrameBitmap(): Bitmap? = synchronized(frameLock) {
         val bmp = fullFrame
         if (!hasFrame || bmp == null) null else Bitmap.createBitmap(bmp, 0, 0, width, height)
+    }
+
+    /** 基于 frameSeq 的 O(1) 记忆化亮度格子签名：同一帧在轮询期间零像素重算。 */
+    fun latestSignature(): IntArray? = synchronized(frameLock) {
+        val bmp = _frames.value ?: return null
+        if (cachedSigSeq == frameSeq && cachedSignature != null) return cachedSignature
+        return runCatching { FrameMath.lumaGrid(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()?.also {
+            cachedSigSeq = frameSeq
+            cachedSignature = it
+        }
+    }
+
+    /** 基于 frameSeq 的 O(1) 记忆化黑屏判定：同一帧不重复采样像素。 */
+    fun latestIsBlack(): Boolean? = synchronized(frameLock) {
+        val bmp = _frames.value ?: return null
+        if (cachedBlackSeq == frameSeq && cachedBlack != null) return cachedBlack
+        return runCatching { FrameMath.isBlack(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()?.also {
+            cachedBlackSeq = frameSeq
+            cachedBlack = it
+        }
+    }
+
+    /** 基于 frameSeq 的 O(1) 记忆化视觉网格：供 probe 与 withEffect 直接复用。 */
+    fun latestFrameGrid(): com.hana.agent.core.visual.FrameGrid? = synchronized(frameLock) {
+        val bmp = _frames.value ?: return null
+        if (cachedGridSeq == frameSeq && cachedGrid != null) return cachedGrid
+        return runCatching { com.hana.agent.core.visual.FrameGrid.sample(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()?.also {
+            cachedGridSeq = frameSeq
+            cachedGrid = it
+        }
     }
 
     fun release() {

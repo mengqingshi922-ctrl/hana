@@ -884,6 +884,7 @@ class TaskRun(
             handoverRef = handover
 
             side.launch {
+                var lastPreviewPublishAtMs = 0L
                 agent.state.collect {
                     if (it == TaskState.Idle) return@collect
                     if (it is TaskState.Running && it.preview != null && (gate?.movedAwayPending == true || gate?.userOnPagePending == true)) return@collect
@@ -891,9 +892,15 @@ class TaskRun(
                     if (it is TaskState.Running && previous != null && previous.preview != it.preview &&
                         previous.copy(preview = it.preview) == it) {
                         // 文字增量只刷新聊天；通知、接管和设备唤醒不需要每个 token 都重跑。
-                        synchronized(publishLock) { if (!ended) setState(it) }
+                        // 帧率对齐节流 (32ms ≈ 30fps)：避免高频 SSE Token 引发 Compose 主线程每毫秒重组掉帧；首字出现或清空时立即刷新。
+                        val nowMs = SystemClock.uptimeMillis()
+                        if (it.preview == null || previous.preview == null || (nowMs - lastPreviewPublishAtMs) >= 32L) {
+                            lastPreviewPublishAtMs = nowMs
+                            synchronized(publishLock) { if (!ended) setState(it) }
+                        }
                         return@collect
                     }
+                    lastPreviewPublishAtMs = 0L
                     handover.onState(it)
                     publish(it)
                     env.evalHooks.answerFor(it)?.let { answer -> agent.answerInput(answer) }
@@ -1057,8 +1064,10 @@ class TaskRun(
     )
     @Volatile private var kit: LearnKit? = null
 
-    /** 停下时正在写的那段字(模型请求已流出的可见文字);收尾前取,收尾后状态就换成终态了。 */
-    fun draftText(): String? = (_state.value as? TaskState.Running)?.preview?.takeIf(String::isNotBlank)
+    /** 停下时正在写的那段字(模型请求已流出的可见文字);优先从主循环实时状态取未节流全文，收尾前取。 */
+    fun draftText(): String? =
+        (loop?.state?.value as? TaskState.Running)?.preview?.takeIf(String::isNotBlank)
+            ?: (_state.value as? TaskState.Running)?.preview?.takeIf(String::isNotBlank)
 
     /** 停止后有没有可交代的:做过至少一件事,或停下时已经写出了字。 */
     fun hasStopMaterial(draft: String?): Boolean = synchronized(activityLog) { activityLog.isNotEmpty() } || !draft.isNullOrBlank()
