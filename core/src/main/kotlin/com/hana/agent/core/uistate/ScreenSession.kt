@@ -401,8 +401,8 @@ internal class ScreenSession(
             limit = LimitNotice.find(probe.before, after)
             effect = judge(after, grid())
             if (effect?.kind == EffectKind.NoEffect) {
-                // 界面可能是异步更新的:再等一会儿重看一次,仍没变才算没效果
-                delay(EffectTuning.RECHECK_MS)
+                // 界面可能是异步更新的:通过事件驱动等待唤醒重评，一旦有界面事件立即响应，避免固定死等满 RECHECK_MS
+                screen.awaitChange(EffectTuning.RECHECK_MS)
                 val again = peek()
                 limit = limit ?: LimitNotice.find(probe.before, again)
                 effect = judge(again, grid())

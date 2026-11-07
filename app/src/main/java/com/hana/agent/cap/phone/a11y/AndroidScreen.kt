@@ -425,7 +425,11 @@ class AndroidScreen(
         if (!hasDisplay) return@withContext true
         val gen = ScreenAccessibility.contentGeneration()
         val now = SystemClock.uptimeMillis()
-        if (gen == lastSettledGen && (now - lastSettledAtMs) in 0..SETTLED_REUSE_TTL_MS) {
+        val settledElapsed = now - lastSettledAtMs
+        // 世代微差容差复用：在动作收尾紧密期（120ms）内且仅发生微弱世代漂移（如系统时钟/无害状态栏刷新，gen差值 <= 2），
+        // 允许直接复用已稳定状态，杜绝 withScreen 触发冗余的二次 150ms~350ms 死等
+        if ((gen == lastSettledGen && settledElapsed in 0..SETTLED_REUSE_TTL_MS) ||
+            (settledElapsed in 0..120L && kotlin.math.abs(gen - lastSettledGen) <= 2L)) {
             return@withContext true
         }
         withEventClock { clock -> clock.awaitQuiet(QUIET_MS, timeoutMs) }.also { quiet ->

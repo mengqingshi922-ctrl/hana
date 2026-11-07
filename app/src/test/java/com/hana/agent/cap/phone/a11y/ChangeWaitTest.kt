@@ -90,4 +90,11 @@ class ChangeWaitTest {
         assertTrue(changed.now >= ChangeWait.CAP_MS)
         assertFalse(Fake(frameAt = { before }, lastEventAt = { it }).run(before))
     }
+
+    @Test fun checkFirstReturnsImmediatelyWhenAlreadyQuietAndTreeChanged() = runTest {
+        // 动作发生时界面事件已处于安静期且控件树已完成变化：零延迟短路，f.now 必须为 0，杜绝首轮强制 sleep(pollMs)
+        val f = Fake(frameAt = { after }, lastEventAt = { -10_000 }, treeChangedAt = 0)
+        assertTrue(f.run(before))
+        org.junit.Assert.assertEquals("Check-first short-circuit returns immediately without sleeping", 0L, f.now)
+    }
 }

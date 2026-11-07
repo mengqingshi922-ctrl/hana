@@ -35,6 +35,7 @@ import com.hana.agent.core.uistate.locatedInfo
 import com.hana.agent.core.uistate.toPx
 import com.hana.agent.core.uistate.lastSnapshot
 import com.hana.agent.core.uistate.screen
+import com.hana.agent.core.uistate.session
 import com.hana.agent.core.uistate.withPortRef
 
 private const val KEYCODE_ENTER = 66
@@ -112,8 +113,12 @@ internal class TypeText(f: ScreenFamily) : ScreenTool(f, "type_text") {
             else -> {
                 val exec = ctx.withPortRef((target as FieldAim.Ref).ref) { ref -> typeInto(ctx, text, enter) { ctx.screen.typeText(ref?.first, ref?.second, text) } }
                 if (exec.content["ok"] == JsonPrimitive(false) && exec.content["error"] == JsonPrimitive("ref_expired")) {
-                    val fallback = typeInto(ctx, text, enter) { ctx.screen.typeText(null, null, text) }
-                    if (fallback.content["ok"] == JsonPrimitive(true)) return fallback
+                    val currentElements = (ctx.lastSnapshot ?: ctx.session.lastSnapshot)?.elements
+                    val hasActiveFocus = currentElements?.any { it.focused && (it.editable || it.role == "EditText" || it.role == "input" || it.role == "textarea") } == true
+                    if (hasActiveFocus) {
+                        val fallback = typeInto(ctx, text, enter) { ctx.screen.typeText(null, null, text) }
+                        if (fallback.content["ok"] == JsonPrimitive(true)) return fallback
+                    }
                 }
                 exec
             }

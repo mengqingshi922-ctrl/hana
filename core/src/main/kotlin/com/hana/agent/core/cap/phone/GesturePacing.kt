@@ -144,6 +144,24 @@ class GesturePacing(private val random: Random?, val limits: Limits = Limits()) 
         fun human(random: Random = Random.Default, limits: Limits = Limits()) = GesturePacing(random, limits)
 
         /**
+         * 快速手势注入上下限:常规按键时长与靠近停顿合理压缩至 30~50ms，
+         * 用于高频调用与自动化基准，为高频调用提供高速物理触摸派发路径。
+         */
+        val FastLimits = Limits(
+            approachMs = 0L..20L,
+            pressMs = 30L..50L,
+            doublePressMs = 30L..50L,
+            doubleGapMs = 40L..80L,
+        )
+
+        /** 快速拟真手势节奏 */
+        fun fast(random: Random = Random.Default, limits: Limits = FastLimits) = GesturePacing(random, limits)
+
+        /** 快速手势节奏实例/别名 */
+        val Fast = fast()
+        val FastPacing = Fast
+
+        /**
          * 时间走到 [u](0..1)时走过的路程比例:三次 Hermite,起步速度 0,收尾速度为平均速度的 [endSpeed] 倍(0..3 之间单调)。
          * [endSpeed] 为 0 时两头慢中间快、停稳再抬手;为 1 时松手速度和匀速一样。
          */
