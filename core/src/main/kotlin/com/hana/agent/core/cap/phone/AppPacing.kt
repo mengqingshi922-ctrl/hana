@@ -32,27 +32,33 @@ class AppPacing(
     /** 时长单位毫秒。 */
     data class Limits(
         /** 同一屏上接着做时的停留范围。 */
-        val sameScreenMs: LongRange = 500L..1_200L,
+        val sameScreenMs: LongRange = 500L..800L,
         /** 换到新的一屏之后的停留范围(不含读的时间)。 */
-        val newScreenMs: LongRange = 900L..2_000L,
+        val newScreenMs: LongRange = 500L..1_000L,
         /** 新的一屏上每个字加多少读的时间;0 为不加。 */
         val readMsPerChar: Long = 0L,
         /** 读的时间的上限。 */
         val maxReadMs: Long = 0L,
         /** 多停一会儿的机会。 */
-        val pauseChance: Double = 0.05,
+        val pauseChance: Double = 0.0,
         /** 多停一会儿时另加的范围。 */
-        val pauseMs: LongRange = 600L..1_500L,
+        val pauseMs: LongRange = 0L..0L,
         /** 一次停留的上限。 */
-        val maxDwellMs: Long = 3_500L,
+        val maxDwellMs: Long = 1_500L,
         /** 新的一屏上停得够久时,停留里可以轻轻滚几下(见 [com.hana.agent.core.uistate.IdleScroll])。 */
         val idleScroll: Boolean = false,
     ) {
         companion object {
-            /** 限制浏览快慢的 App(和「像人」时所有 App):停得更久,按字数读,停留里轻轻滚几下。 */
+            /** 限制浏览快慢的 App：取消字数无限累加死等，适度平滑。 */
             val CAREFUL = Limits(
-                sameScreenMs = 900L..2_200L, newScreenMs = 2_500L..5_000L, readMsPerChar = 15L, maxReadMs = 8_000L,
-                pauseChance = 0.1, pauseMs = 2_000L..5_000L, maxDwellMs = 15_000L, idleScroll = true,
+                sameScreenMs = 900L..2_200L,
+                newScreenMs = 2_500L..4_500L,
+                readMsPerChar = 0L,
+                maxReadMs = 0L,
+                pauseChance = 0.05,
+                pauseMs = 500L..1_000L,
+                maxDwellMs = 5_000L,
+                idleScroll = true,
             )
         }
     }
@@ -123,7 +129,7 @@ class AppPacing(
 
     companion object {
         /** 限制浏览快慢的 App 一个任务里最多换到多少次新的一屏(App 里一屏比网页的一页碎:点开、返回各算一次)。 */
-        const val CAREFUL_SCREEN_CAP = 24
+        const val CAREFUL_SCREEN_CAP = 200
 
         /** 从不等待。 */
         val Off = AppPacing(null)
