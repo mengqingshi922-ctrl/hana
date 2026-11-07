@@ -148,7 +148,7 @@ More answers are in the [FAQ](docs/faq.en.md).
 
 ## Acknowledgments
 
-Hana was inspired by the open-source project [Mika](https://github.com/wangzan101/Mika), originally created by wangzan101. We sincerely appreciate the pioneering exploratory work done by Mika and the open-source community in the field of phone-use agents. Hana builds upon and extensively innovates on top of these foundations — introducing an interactive companion mascot system, zero-latency intent fast-path, hybrid on-device SLM execution, and robust action chaining.
+Hana was inspired by the open-source project [Mika](https://github.com/hana/agent/Mika), originally created by hana-team. We sincerely appreciate the pioneering exploratory work done by Mika and the open-source community in the field of phone-use agents. Hana builds upon and extensively innovates on top of these foundations — introducing an interactive companion mascot system, zero-latency intent fast-path, hybrid on-device SLM execution, and robust action chaining.
 
 ## License
 

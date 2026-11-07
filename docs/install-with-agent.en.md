@@ -24,7 +24,7 @@ If you are the AI agent: read the "Rules" first. Start at step 1 when phone inst
 6. **Before each step, briefly tell the user what you are doing and why, in the user's language.** When a command fails, show the user the exact error, then the likely causes.
 7. The commands below are written for a Unix-style shell (macOS, Linux, or WSL / Git Bash on Windows). In Windows PowerShell, rewrite them to do the same thing.
 
-The package name is `com.wangzan101.hana`.
+The package name is `com.hana.agent`.
 
 ## Step 1: Check the prerequisites
 
@@ -109,7 +109,7 @@ Success: the last line is `Success`.
 Hana uses notifications to show task progress and to ask the user to take over. Skip this step if the SDK level is below 33.
 
 ```
-adb shell pm grant com.wangzan101.hana android.permission.POST_NOTIFICATIONS
+adb shell pm grant com.hana.agent android.permission.POST_NOTIFICATIONS
 ```
 
 Success: no output.
@@ -123,19 +123,19 @@ Hana uses its accessibility service to read the screen and tap. Turn it on by wr
 Hana's accessibility service component (from `HanaAccessibilityService` in `app/src/main/AndroidManifest.xml`):
 
 ```
-com.wangzan101.hana/.a11y.HanaAccessibilityService
+com.hana.agent/.a11y.HanaAccessibilityService
 ```
 
-This is the same component as the long form `com.wangzan101.hana/com.wangzan101.hana.a11y.HanaAccessibilityService`; accept either form when checking whether Hana is already in the list.
+This is the same component as the long form `com.hana.agent/com.hana.agent.a11y.HanaAccessibilityService`; accept either form when checking whether Hana is already in the list.
 
 **Do not remove other accessibility services the user already has on.** Read the current list, append Hana only if it is missing (entries are separated by colons), and write it back:
 
 ```
-ME=com.wangzan101.hana/.a11y.HanaAccessibilityService
+ME=com.hana.agent/.a11y.HanaAccessibilityService
 CUR=$(adb shell settings get secure enabled_accessibility_services | tr -d '\r')
 echo "current: $CUR"
 case ":$CUR:" in
-  *":$ME:"*|*":com.wangzan101.hana/com.wangzan101.hana.a11y.HanaAccessibilityService:"*)
+  *":$ME:"*|*":com.hana.agent/com.hana.agent.a11y.HanaAccessibilityService:"*)
     NEW="$CUR" ;;
   *)
     if [ -z "$CUR" ] || [ "$CUR" = "null" ]; then NEW="$ME"; else NEW="$CUR:$ME"; fi ;;
@@ -154,16 +154,16 @@ Notes: `settings get` prints `null` for a setting that was never written; treat 
 Add Hana to the system's battery-optimization allowlist so background and scheduled tasks are not cut off:
 
 ```
-adb shell cmd deviceidle whitelist +com.wangzan101.hana
+adb shell cmd deviceidle whitelist +com.hana.agent
 ```
 
-Success: it prints `Added: com.wangzan101.hana` (also when it was already there).
-If the phone does not accept `cmd`, use `adb shell dumpsys deviceidle whitelist +com.wangzan101.hana` instead; it does the same.
+Success: it prints `Added: com.hana.agent` (also when it was already there).
+If the phone does not accept `cmd`, use `adb shell dumpsys deviceidle whitelist +com.hana.agent` instead; it does the same.
 
 Check:
 
 ```
-adb shell cmd deviceidle whitelist | grep com.wangzan101.hana
+adb shell cmd deviceidle whitelist | grep com.hana.agent
 ```
 
 ## Step 7: Start Hana's phone helper
@@ -171,10 +171,10 @@ adb shell cmd deviceidle whitelist | grep com.wangzan101.hana
 First, open Hana once (needed for all uses, to initialize the app and connection scripts):
 
 ```
-adb shell am start -n com.wangzan101.hana/.ui.MainActivity
+adb shell am start -n com.hana.agent/.ui.MainActivity
 ```
 
-`adb shell monkey -p com.wangzan101.hana 1` also works. On first launch Hana walks the user through adding a model; they can skip that for now ("Not now" or similar) and do it in step 8.
+`adb shell monkey -p com.hana.agent 1` also works. On first launch Hana walks the user through adding a model; they can skip that for now ("Not now" or similar) and do it in step 8.
 
 On Android 11 or for chat, web and files only, go to step 8 after opening the app. The helper is only needed for phone app control; "Phone control" does not need to be ready in those cases.
 
@@ -207,7 +207,7 @@ You can use B first, then configure A for recovery. This pairing starts Hana's p
 Hana must have been opened at least once, so it can write its start script to the phone. With the cable plugged in, run:
 
 ```
-adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/usb-start.sh
+adb shell sh /sdcard/Android/data/com.hana.agent/files/usb-start.sh
 ```
 
 - If it says the file does not exist: open Hana with the command above, wait a few seconds and try again. If it is still missing, the Hana version on the phone may not have this feature yet; use A instead.
@@ -227,7 +227,7 @@ Tell the user: in Hana, open Settings › Model, add a provider, enter their own
 ## Step 9: Check the result
 
 ```
-adb shell dumpsys package com.wangzan101.hana | grep versionName
+adb shell dumpsys package com.hana.agent | grep versionName
 adb shell settings get secure enabled_accessibility_services
 ```
 
@@ -253,7 +253,7 @@ Keep the phone selected in step 1 for all ADB operations: pass the same `--devic
 1. Turn it on. This also attempts to start the phone helper from step 7 when needed:
 
    ```
-   adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/connect-computer.sh
+   adb shell sh /sdcard/Android/data/com.hana.agent/files/connect-computer.sh
    ```
 
    Success: it ends with "Computer access over USB is on" and prints a JSON object with `url`, `headers` and `token`. If it says the file doesn't exist, open Hana once (step 7), wait a few seconds and try again.
@@ -267,7 +267,7 @@ Keep the phone selected in step 1 for all ADB operations: pass the same `--devic
 3. Read the token again whenever you need it (it is the `token` field):
 
    ```
-   adb shell cat /sdcard/Android/data/com.wangzan101.hana/files/mcp-usb.json
+   adb shell cat /sdcard/Android/data/com.hana.agent/files/mcp-usb.json
    ```
 
 4. Check that it answers (put the token in):
@@ -302,7 +302,7 @@ Tell the user:
 
 - After unplugging and replugging the cable (or after adb restarts), `adb forward tcp:8765 tcp:8765` has to be run again. The token stays the same.
 - After a phone restart USB mode is off. Run the command in 1 again; the token changes then, so the MCP configuration needs the new one.
-- To turn it off: `adb shell sh /sdcard/Android/data/com.wangzan101.hana/files/connect-computer.sh off`, the switch in Hana's Settings › Connect a computer › Advanced settings, or "Turn off" on the notification. The old token stops working at once.
+- To turn it off: `adb shell sh /sdcard/Android/data/com.hana.agent/files/connect-computer.sh off`, the switch in Hana's Settings › Connect a computer › Advanced settings, or "Turn off" on the notification. The old token stops working at once.
 
 ## Troubleshooting
 

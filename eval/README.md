@@ -74,10 +74,10 @@
 
 ```sh
 adb -s <设备> shell am instrument -w \
-  -e class com.wangzan101.hana.eval.EvalRunTest \
+  -e class com.hana.agent.eval.EvalRunTest \
   -e evalRun <运行名> [-e evalSet <目录或 id 前缀,如 read/content>] [-e evalSplit tune|holdout] \
   [-e evalPriceIn <每百万输入 token 单价> -e evalPriceOut <输出单价> -e evalPriceCached <缓存单价>] \
-  com.wangzan101.hana.test/androidx.test.runner.AndroidJUnitRunner
+  com.hana.agent.test/androidx.test.runner.AndroidJUnitRunner
 ```
 
 - 不传 `evalSet` 跑全集(冒烟题、专项题集除外)。`-e evalSplit tune|holdout` 只跑一个池,不传跑两个池(见上「调优池与保留池」)。全集要几个小时,按目录分批跑。

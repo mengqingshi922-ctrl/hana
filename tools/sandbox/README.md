@@ -22,7 +22,7 @@ Hana 只以子进程方式运行它们,不链接它们。
   每个 `.apk` 都要核对:锁文件里的 SHA-256、它自己的 RSA 签名(公钥取自钉住的最小根文件系统)、控制段校验值与 APKINDEX 一致、
   数据段与签过名的 `.PKGINFO` 里的 `datahash` 一致。会在手机上执行的安装脚本与触发器必须逐个列进 `SCRIPTS_NOT_RUN`
   (按内容的 SHA-256 钉住,并写明为什么不跑也正确),否则构建失败。
-  同时生成 `app/src/main/java/com/wangzan101/hana/cap/sandbox/BundledRuntime.kt`(版本、SHA-256、大小)与
+  同时生成 `app/src/main/java/com/hana/agent/cap/sandbox/BundledRuntime.kt`(版本、SHA-256、大小)与
   `app/src/main/assets/runtime/packages.json`(所有软件包、版本、许可证;「开源许可」页从它生成)。
 - 产物逐字节可重现:
 
