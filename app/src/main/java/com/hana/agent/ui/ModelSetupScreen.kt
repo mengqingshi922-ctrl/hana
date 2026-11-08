@@ -1182,7 +1182,7 @@ private fun RoleBentoTile(
 
 /**
  * 阿里 MNN-Pocket-0.3B 端侧神经核 Bento 磁贴卡片：
- * 采用现代 Bento 控制台风格，展示 173MB INT4 进程内引擎运行状态与高阶开关。
+ * 现代紧凑 Bento 控制台设计，排版严密、杜绝文本截断与单字挤压。
  */
 @Composable
 private fun MnnPocketBentoCard() {
@@ -1200,29 +1200,29 @@ private fun MnnPocketBentoCard() {
             .border(0.5.dp, c.edge, shape)
             .clip(shape)
             .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        verticalArrangement = Arrangement.spacedBy(11.dp),
     ) {
-        // 顶栏：图标 + 标题/状态 + 拨动开关
+        // 第一行：左侧[图标 + 标题组] + 右侧[拨动开关]
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Row(
-                Modifier.weight(1f),
+                Modifier.weight(1f, fill = false),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
                     Modifier
-                        .size(32.dp)
+                        .size(36.dp)
                         .background(if (enabled) c.accentSoft else c.fill, RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         MikaIcons.Spark,
                         null,
-                        Modifier.size(17.dp),
+                        Modifier.size(18.dp),
                         tint = if (enabled) c.accent else c.ink3,
                     )
                 }
@@ -1232,18 +1232,17 @@ private fun MnnPocketBentoCard() {
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         Text(
-                            "端侧神经核 · MNN-Pocket",
-                            style = MikaType.BodyStrong.copy(fontSize = 14.5.sp),
+                            "端侧神经核",
+                            style = MikaType.BodyStrong.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
                             color = c.ink,
                         )
-                        if (enabled) {
-                            StatusPill("协同运行中", PillTone.Ok)
-                        } else {
-                            StatusPill("已停用", PillTone.Neutral)
-                        }
+                        StatusPill(
+                            if (enabled) "协同中" else "已停用",
+                            if (enabled) PillTone.Ok else PillTone.Neutral,
+                        )
                     }
                     Text(
-                        "阿里开源 0.3B · 173MB INT4 QAT · 进程内毫秒反射",
+                        "阿里 MNN-Pocket · 173MB INT4 QAT",
                         style = MikaType.Caption.copy(fontSize = 11.5.sp),
                         color = c.ink3,
                     )
@@ -1259,37 +1258,37 @@ private fun MnnPocketBentoCard() {
             )
         }
 
-        // 核心技术特性徽章网格
+        // 第二行：双列高频特性胶囊（精炼文案，杜绝省略号截断）
         Row(
             Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            val badgeModifier = Modifier
-                .background(c.fill, RoundedCornerShape(6.dp))
-                .padding(horizontal = 6.dp, vertical = 3.5.dp)
-
             listOf(
-                "⚡ 12ms 意图秒断",
-                "🛡️ 隐私零出端",
-                "🎯 弹窗指针消解",
-                "🚀 0% GPU 占用",
-            ).forEach { tag ->
-                Box(badgeModifier, contentAlignment = Alignment.Center) {
+                "⚡ 12ms 极速反射" to Modifier.weight(1f),
+                "🛡️ 隐私数据零出端" to Modifier.weight(1f),
+            ).forEach { (tag, mod) ->
+                Box(
+                    mod
+                        .background(c.fill, RoundedCornerShape(7.dp))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Text(
                         tag,
-                        style = MikaType.Caption.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Medium),
+                        style = MikaType.Caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Medium),
                         color = if (enabled) c.ink2 else c.ink3,
+                        maxLines = 1,
                     )
                 }
             }
         }
 
-        // 底部产品说明
+        // 第三行：紧凑说明文案
         Text(
             if (enabled) {
-                "常驻手机本地的动作神经中枢，承担开局意图判定、弹窗闪电反射与敏感数据脱敏；建议常驻开启，关闭后将平滑降级为纯云端判断。"
+                "端侧动作反射神经核，毫秒级开局意图判定与弹窗消解，敏感数据不出手机。"
             } else {
-                "端侧神经核已停用，系统将所有意图分流与弹窗判断全量交给云端主模型（开局可能增加 1~2 秒网络往返）。"
+                "端侧核已停用，意图与弹窗判断全量交由云端主模型（可能略微增加网络耗时）。"
             },
             style = MikaType.Caption.copy(fontSize = 11.sp),
             color = if (enabled) c.ink3 else c.warn,
