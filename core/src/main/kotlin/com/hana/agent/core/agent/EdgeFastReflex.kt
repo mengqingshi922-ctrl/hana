@@ -55,7 +55,7 @@ object EdgeFastReflex {
     data class ReflexResult(val reply: ModelReply, val reason: String)
 
     /**
-     * 检查当前历史中的最新屏幕与执行轨迹，判断是否可以触发端侧闪电反射。
+     * 同步规则检查（供非协程上下文与纯规则场景使用）。
      */
     fun inspect(history: List<Message>, userGoal: String, step: Int): ReflexResult? {
         val userGoalLower = userGoal.lowercase()
@@ -73,15 +73,51 @@ object EdgeFastReflex {
         if (!content.contains("elements") && !content.contains("screen")) return null
 
         val (targetRef, targetCoord, label) = findObstacleElement(content, userGoalLower) ?: return null
+        return buildReflexResult(targetRef, targetCoord, label, "⚡ 端侧闪电直通: 自动关闭阻断弹窗【$label】", "obstacle_popup: $label")
+    }
 
-        // 构造端侧 1ms 闪电直通的物理点击工具调用
+    /**
+     * 协程感知检查（支持规则直通 + MNN-Pocket 端侧指针消歧二级火箭）。
+     */
+    suspend fun inspect(
+        history: List<Message>,
+        userGoal: String,
+        step: Int,
+        edgePort: com.hana.agent.core.edge.EdgeDecisionPort,
+    ): ReflexResult? {
+        // 第一级：1ms 确定性规则反射直通
+        val ruleResult = inspect(history, userGoal, step)
+        if (ruleResult != null) return ruleResult
+
+        // 第二级：端侧 MNN-Pocket-0.3B-Dec 单步非自回归指针消歧
+        if (!edgePort.isReady) return null
+
+        val userGoalLower = userGoal.lowercase()
+        val latestToolResult = history.asReversed().flatMap { m ->
+            m.parts.filterIsInstance<Part.ToolResult>()
+        }.firstOrNull() ?: return null
+
+        val content = latestToolResult.content.orEmpty()
+        if (!content.contains("elements") && !content.contains("screen")) return null
+
+        val (targetRef, targetCoord, label) = findObstacleElementMnn(content, userGoalLower, edgePort) ?: return null
+        return buildReflexResult(targetRef, targetCoord, label, "⚡ 端侧 MNN 指针直通: 自动关闭阻断弹窗【$label】", "mnn_obstacle_popup: $label")
+    }
+
+    private fun buildReflexResult(
+        targetRef: String?,
+        targetCoord: Pair<Int, Int>?,
+        label: String,
+        actionReason: String,
+        resultReason: String,
+    ): ReflexResult {
         val args = buildJsonObject {
             if (targetRef != null) put("ref", targetRef)
             if (targetCoord != null) {
                 put("x", targetCoord.first)
                 put("y", targetCoord.second)
             }
-            put("reason", "⚡ 端侧闪电直通: 自动关闭阻断弹窗【$label】")
+            put("reason", actionReason)
         }
 
         val toolCall = Part.ToolCall(
@@ -92,14 +128,14 @@ object EdgeFastReflex {
 
         val reply = ModelReply(
             parts = listOf(
-                Part.Text("⚡ 端侧直通: 自动关闭干扰弹窗【$label】"),
+                Part.Text(actionReason),
                 toolCall
             ),
             stopReason = StopReason.ToolUse,
             usage = Usage(inputTokens = 0, outputTokens = 0, cachedInputTokens = 0)
         )
 
-        return ReflexResult(reply, "obstacle_popup: $label")
+        return ReflexResult(reply, resultReason)
     }
 
     /**
@@ -227,6 +263,71 @@ object EdgeFastReflex {
                 }
             }
             null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private suspend fun findObstacleElementMnn(
+        content: String,
+        userGoalLower: String,
+        edgePort: com.hana.agent.core.edge.EdgeDecisionPort,
+    ): Triple<String?, Pair<Int, Int>?, String>? {
+        return try {
+            val json = Json.parseToJsonElement(content) as? JsonObject ?: return null
+            val screenObj = json["screen"] as? JsonObject ?: json
+            val elements = (screenObj["elements"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return null
+
+            // 仅在轻量浮层/疑似弹窗（候选 <= 18）中生效，避免在全量业务页面越界
+            if (elements.size > 18) return null
+
+            val allTexts = elements.mapNotNull {
+                (it["name"] as? JsonPrimitive)?.contentOrNull
+                    ?: (it["text"] as? JsonPrimitive)?.contentOrNull
+                    ?: (it["desc"] as? JsonPrimitive)?.contentOrNull
+            }.joinToString(" ")
+
+            val candidates = elements.mapNotNull { elem ->
+                val clickable = (elem["clickable"] as? JsonPrimitive)?.contentOrNull == "true"
+                if (!clickable) return@mapNotNull null
+                val ref = (elem["ref"] as? JsonPrimitive)?.contentOrNull ?: return@mapNotNull null
+                val rawLabel = (elem["name"] as? JsonPrimitive)?.contentOrNull
+                    ?: (elem["text"] as? JsonPrimitive)?.contentOrNull
+                    ?: (elem["desc"] as? JsonPrimitive)?.contentOrNull
+                    ?: (elem["description"] as? JsonPrimitive)?.contentOrNull
+                    ?: ""
+                val cleanLabel = rawLabel.trim()
+                if (cleanLabel.length >= 2 && userGoalLower.contains(cleanLabel.lowercase())) return@mapNotNull null
+                val bounds = (elem["bounds"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.toIntOrNull() }?.toIntArray()
+                if (bounds != null && bounds.size >= 4) {
+                    val w = bounds[2] - bounds[0]
+                    val h = bounds[3] - bounds[1]
+                    if (w > 850 && h > 800) return@mapNotNull null
+                }
+                val role = (elem["role"] as? JsonPrimitive)?.contentOrNull ?: "Button"
+                com.hana.agent.core.edge.EdgeDecisionPort.EdgeCandidate(ref, role, cleanLabel, bounds)
+            }
+
+            if (candidates.isEmpty() || candidates.size > 18) return null
+
+            val pickedRef = edgePort.pickObstacleDismissRef(
+                userGoal = userGoalLower,
+                dialogClues = allTexts.take(300),
+                candidates = candidates,
+                confidenceThreshold = 0.85f,
+            ) ?: return null
+
+            val matchedElem = elements.firstOrNull { (it["ref"] as? JsonPrimitive)?.contentOrNull == pickedRef } ?: return null
+            val rawLabel = (matchedElem["name"] as? JsonPrimitive)?.contentOrNull
+                ?: (matchedElem["text"] as? JsonPrimitive)?.contentOrNull
+                ?: (matchedElem["desc"] as? JsonPrimitive)?.contentOrNull
+                ?: "关闭"
+            val bounds = (matchedElem["bounds"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.toIntOrNull() }
+            val coords = if (bounds != null && bounds.size >= 4) {
+                Pair((bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2)
+            } else null
+
+            Triple(pickedRef, coords, rawLabel.trim())
         } catch (_: Exception) {
             null
         }

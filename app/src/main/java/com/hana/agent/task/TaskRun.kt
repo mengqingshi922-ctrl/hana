@@ -730,7 +730,8 @@ class TaskRun(
                     AgentLoop(model, childTools, PRODUCTION_BASE_PROMPT, maxSteps = childSpec.stepBudget ?: AgentLoop.UNLIMITED_STEPS,
                         // 子任务跟着询问 / 自主;询问时它也过关卡,子任务里花钱的一步一律不做
                         confirmations = runApproval.gate(), approvals = runApproval, autonomous = runApproval.startedAutonomous,
-                        reviewFinalAnswer = false, flags = speed, outwardPacing = OutwardPacing.human())
+                        reviewFinalAnswer = false, flags = speed, outwardPacing = OutwardPacing.human(),
+                        edgePort = env.edgePortFactory(service))
                 },
                 store = (service.application as HanaApp).childRuns,
                 ownerAlive = { job?.isActive == true },
@@ -813,6 +814,7 @@ class TaskRun(
                 userScreens = userScreens,
                 // 同一网站、App 里连着联系别人、提交:两次之间隔一段随机的时间
                 outwardPacing = OutwardPacing.human(),
+                edgePort = env.edgePortFactory(service),
             )
             loop = agent
             liveFeed = agent.events.subscribe(liveEvents)

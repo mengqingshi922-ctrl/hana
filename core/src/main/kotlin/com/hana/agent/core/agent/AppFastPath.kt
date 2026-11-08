@@ -11,7 +11,12 @@ internal object AppFastPath {
         "帮我进入", "去", "到", "在", "帮我在", "请在", "帮我去", "请到", "上", "launch ", "open "
     )
 
-    data class FastMatch(val packageName: String, val appLabel: String, val isPureOpen: Boolean)
+    data class FastMatch(
+        val packageName: String,
+        val appLabel: String,
+        val isPureOpen: Boolean,
+        val searchQuery: String? = null,
+    )
 
     /**
      * 尝试将用户任务匹配到本地已安装的 App:
@@ -39,5 +44,37 @@ internal object AppFastPath {
             }
         }
         return null
+    }
+
+    /**
+     * 尝试将用户任务匹配到本地已安装的 App（支持端侧 MNN-Pocket 别名与口语化槽位识别）。
+     */
+    suspend fun match(
+        task: String,
+        installed: List<Pair<String, String>>,
+        edgePort: com.hana.agent.core.edge.EdgeDecisionPort = com.hana.agent.core.edge.EdgeDecisionPort.NONE,
+    ): FastMatch? {
+        val direct = match(task, installed)
+        if (direct != null) {
+            if (direct.isPureOpen || !edgePort.isReady) return direct
+            val resolved = edgePort.resolveAppFastAction(task, installed)
+            if (resolved != null && resolved.packageName == direct.packageName) {
+                return FastMatch(
+                    packageName = resolved.packageName,
+                    appLabel = resolved.appLabel,
+                    isPureOpen = resolved.isPureOpen,
+                    searchQuery = resolved.searchQuery,
+                )
+            }
+            return direct
+        }
+        if (!edgePort.isReady) return null
+        val resolved = edgePort.resolveAppFastAction(task, installed) ?: return null
+        return FastMatch(
+            packageName = resolved.packageName,
+            appLabel = resolved.appLabel,
+            isPureOpen = resolved.isPureOpen,
+            searchQuery = resolved.searchQuery,
+        )
     }
 }

@@ -1,9 +1,11 @@
 package com.hana.agent.task
 
 import android.content.Context
+import com.hana.agent.core.edge.EdgeDecisionPort
 import com.hana.agent.core.model.ChatModel
 import com.hana.agent.core.model.ModelRole
 import com.hana.agent.core.model.ModelSession
+import com.hana.agent.edge.MnnPocketEngine
 import com.hana.agent.settings.ProviderStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,6 +34,8 @@ class TaskEnvironment {
     @Volatile var lightModelFactory: (Context, ModelSession) -> ChatModel? = defaultLightModelFactory
     /** 视觉模型(核查时看截图);设置里没有能看图的模型时为空。 */
     @Volatile var visionModelFactory: (Context, ModelSession) -> ChatModel? = defaultVisionModelFactory
+    /** 端侧毫秒级非自回归决策与指针端口 (MNN-Pocket-0.3B) */
+    @Volatile var edgePortFactory: (Context) -> EdgeDecisionPort = { c -> MnnPocketEngine.getInstance(c) }
 
     /** 评测跑器用的钩子;产品里全是默认值。 */
     val evalHooks = EvalHooks()

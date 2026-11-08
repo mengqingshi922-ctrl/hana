@@ -38,6 +38,7 @@ internal class RouteReplay(
     private val show: (TaskState.Running) -> Unit,
     private val emit: (RunEvent) -> Unit,
     private val clock: () -> Long,
+    private val edgePort: com.hana.agent.core.edge.EdgeDecisionPort = com.hana.agent.core.edge.EdgeDecisionPort.NONE,
 ) {
     /** 本次任务回放过的路线与结果。 */
     private var replayed: Pair<Route, ReplayOutcome>? = null
@@ -75,6 +76,7 @@ internal class RouteReplay(
                 override fun media(mediaId: Int, png: ByteArray) = Unit
             },
             clock = clock,
+            edgePort = edgePort,
         )
         val out = replayer.run(choice)
         replayed = choice.route to out

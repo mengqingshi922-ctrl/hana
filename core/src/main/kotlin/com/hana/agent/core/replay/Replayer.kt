@@ -47,6 +47,7 @@ class Replayer(
     private val gate: suspend () -> Unit,
     private val sink: RunSink,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val edgePort: com.hana.agent.core.edge.EdgeDecisionPort = com.hana.agent.core.edge.EdgeDecisionPort.NONE,
 ) {
     private var seq = 0
 
@@ -149,8 +150,9 @@ class Replayer(
      * Tier 1: 严格精确匹配 (role + resourceId + name)
      * Tier 2: 动态数字剥离匹配 (应对 "购物车(2)" 匹配记录时的 "购物车")
      * Tier 3: 语义与空间就近匹配 (当 resourceId 发生热更新/混淆变化时，基于 role + name + 屏宽 15% 坐标距离命中)
+     * Tier 4: 端侧 MNN-Pocket 指针语义对齐 (UI 改版文案微调如“结算”变“去买单”)
      */
-    private fun find(s: ScreenSnapshot, sel: Selector, slots: List<String>): UiElement? {
+    private suspend fun find(s: ScreenSnapshot, sel: Selector, slots: List<String>): UiElement? {
         val name = fill(sel.name, slots) ?: return null
         fun near(e: UiElement) = e.bounds.size == 4 && hypot(cx(e.bounds) - cx(sel.bounds), cy(e.bounds) - cy(sel.bounds)) <= NEAR
 
@@ -181,6 +183,41 @@ class Replayer(
             val nearCandidates = sameRoleAndName.filter(::near)
             if (nearCandidates.size == 1) {
                 return nearCandidates.single()
+            }
+        }
+
+        // Tier 4: 端侧 MNN-Pocket 指针语义对齐 (UI 改版文案微调如“结算”变“去买单”)
+        if (edgePort.isReady && name.isNotEmpty()) {
+            val hasRecordedBounds = sel.bounds.size == 4
+            val eligible = s.elements.filter { it.clickable || it.name.trim().isNotEmpty() }
+            val sorted = if (hasRecordedBounds) {
+                eligible.sortedBy { elem ->
+                    if (elem.bounds.size == 4) hypot(cx(elem.bounds) - cx(sel.bounds), cy(elem.bounds) - cy(sel.bounds))
+                    else Double.MAX_VALUE
+                }
+            } else eligible
+
+            val candidates = sorted
+                .take(8)
+                .map {
+                    com.hana.agent.core.edge.EdgeDecisionPort.EdgeCandidate(
+                        ref = it.ref,
+                        role = it.role,
+                        label = it.name.trim(),
+                        bounds = it.bounds.toIntArray(),
+                    )
+                }
+            if (candidates.isNotEmpty()) {
+                val matchedRef = edgePort.matchReplayCandidate(
+                    stepGoal = sel.role,
+                    recordedLabel = name,
+                    candidates = candidates,
+                    confidenceThreshold = 0.88f,
+                )
+                if (matchedRef != null) {
+                    val candidateMatch = s.elements.firstOrNull { it.ref == matchedRef }
+                    if (candidateMatch != null) return candidateMatch
+                }
             }
         }
 

@@ -44,6 +44,7 @@ internal class ModelCaller(
     private val now: () -> Long,
     private val autonomous: Boolean = false,
     private val trace: RunTrace? = null,
+    private val edgePort: com.hana.agent.core.edge.EdgeDecisionPort = com.hana.agent.core.edge.EdgeDecisionPort.NONE,
 ) {
     /** 每个模型一份压缩状态:各自的上下文、各自发出的那份历史,轻量模型那次压缩不连累主模型的请求前缀。 */
     private val compressors = java.util.IdentityHashMap<ChatModel, ContextCompressor>()
@@ -114,7 +115,7 @@ internal class ModelCaller(
         // 【第一道防线：端侧 1ms 规则反射直通引擎】
         // 遇到日常阻断弹窗（允许/跳过广告/知道了/开心收下/残忍拒绝等），直接在端侧 1ms 生成物理点击，0 Token，0 网络延迟
         if (userGoal.isNotBlank()) {
-            val reflex = EdgeFastReflex.inspect(history, userGoal, step)
+            val reflex = EdgeFastReflex.inspect(history, userGoal, step, edgePort)
             if (reflex != null) {
                 emit(RunEvent.State(now(), "edge_fast_reflex", reflex.reason))
                 return RoutedOutcome(reflex.reply, model, startAsked)

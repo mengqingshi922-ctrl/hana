@@ -156,6 +156,7 @@ class AgentLoop(
     /** 同一网站、App 里连着做对外动作(发送、提交)时两次之间的间隔;默认不等。 */
     private val outwardPacing: OutwardPacing = OutwardPacing.Off,
     private val trace: RunTrace? = null,
+    private val edgePort: com.hana.agent.core.edge.EdgeDecisionPort = com.hana.agent.core.edge.EdgeDecisionPort.NONE,
 ) {
     init {
         require(maxSteps > 0) { "maxSteps must be positive" }
@@ -173,8 +174,8 @@ class AgentLoop(
         tools.observer = { record { order.observed(RunEvent.Observed.of(it)) } }
     }
 
-    private val caller = ModelCaller(model, tools, router, flags, retry, ::emit, ::now, autonomous, trace)
-    private val intentGate = intentJudge?.let { IntentGate(it, model.takeUnless { main -> main === it }) }
+    private val caller = ModelCaller(model, tools, router, flags, retry, ::emit, ::now, autonomous, trace, edgePort)
+    private val intentGate = if (intentJudge != null || edgePort != com.hana.agent.core.edge.EdgeDecisionPort.NONE) IntentGate(intentJudge, model.takeUnless { main -> main === intentJudge }, edgePort) else null
     private val routeMatcher = routes
     /** 本任务的上下文生成器(外壳、预算、已给过的参考资料)。 */
     private var ctx = ContextBuilder()
@@ -203,7 +204,7 @@ class AgentLoop(
     private val utterances get() = tools.utterances
 
     private val user = UserExchange(tools, confirmations, confirmTimeoutMs, inputTimeoutMs, { utterances }, { _state.value = it }, ::emit, ::now)
-    private val replay = routes?.let { RouteReplay(it, tools, ::awaitGate, { r -> gateState = r; _state.value = r }, ::emit, clock) }
+    private val replay = routes?.let { RouteReplay(it, tools, ::awaitGate, { r -> gateState = r; _state.value = r }, ::emit, clock, edgePort) }
 
     @Volatile private var job: Job? = null
     /** 锁屏/被拿走关卡等完之后恢复的界面状态(当前这一步、批或回放)。 */
@@ -250,6 +251,7 @@ class AgentLoop(
         subgoals.clear()
         currentSubgoalIndex = 0
         com.hana.agent.core.bus.RegisterBus.clear()
+        com.hana.agent.core.privacy.PocketPrivacyGuard.reset()
         // 从用户长目标中自动识别子目标列表（支持分步 1. 2. 3. 或 -> 分割）
         val goalParts = task.split(Regex("(?:\\n\\s*\\d+[.、]\\s*|\\s*->\\s*|\\s*(?:然后|接着|再去|最后)\\s*)"))
             .map { it.trim() }
@@ -726,7 +728,8 @@ class AgentLoop(
                         (if (verdicts.isEmpty()) emptyMap() else mapOf("guard" to JsonArray(verdicts.map { it.toJson() }))) +
                         (advice?.let { mapOf("advice" to JsonPrimitive(it)) } ?: emptyMap()))
                     val isError = (e.content["ok"] as? JsonPrimitive)?.booleanOrNull == false
-                    history += Message(Role.Tool, listOf(Part.ToolResult(first.id, content.toString(), isError, e.observations.map { it.tag })) + skipped, Author.Mika)
+                    val toolContentStr = com.hana.agent.core.privacy.PocketPrivacyGuard.sanitizeScreenJson(content.toString(), place?.name)
+                    history += Message(Role.Tool, listOf(Part.ToolResult(first.id, toolContentStr, isError, e.observations.map { it.tag })) + skipped, Author.Mika)
                     // 只有端口明确说「不是密码框」才记原文
                     val secret = (e.content["secret"] as? JsonPrimitive)?.booleanOrNull != false
                     if (!waitsForUser) recordReply(Redactor.args(tools.verb(first.name), first.argsJson, secret))
@@ -1220,7 +1223,7 @@ class AgentLoop(
         history: MutableList<Message>,
     ): FastPathOutcome? {
         if (!flags.fastPath || task.trimStart().startsWith(WEB_CHANNEL_PREFIX)) return null
-        val fastMatch = AppFastPath.match(task, installed) ?: return null
+        val fastMatch = AppFastPath.match(task, installed, edgePort) ?: return null
         val call = Part.ToolCall("fast_launch_0", "phone_launch_app", "{\"package\":\"${fastMatch.packageName}\"}")
         val outcome = executor.run(call, Origin.FastPath)
         if (outcome !is ActionOutcome.Ran || outcome.exec.content["ok"] != JsonPrimitive(true)) return null
@@ -1234,8 +1237,15 @@ class AgentLoop(
             FastPathOutcome.Succeeded(endState)
         } else {
             val toolId = "fast_launch_0"
-            history += Message(Role.Assistant, listOf(Part.Text("已极速打开${fastMatch.appLabel}，正在接力执行后续任务..."), Part.ToolCall(toolId, "phone_launch_app", "{\"package\":\"${fastMatch.packageName}\"}")), Author.Mika)
-            history += Message(Role.Tool, listOf(Part.ToolResult(toolId, outcome.exec.content.toString(), isError = false, outcome.exec.observations.map { it.tag })), Author.Mika)
+            val textMsg = if (!fastMatch.searchQuery.isNullOrBlank()) {
+                "已极速打开${fastMatch.appLabel}，正在为你搜索「${fastMatch.searchQuery}」..."
+            } else {
+                "已极速打开${fastMatch.appLabel}，正在接力执行后续任务..."
+            }
+            history += Message(Role.Assistant, listOf(Part.Text(textMsg), Part.ToolCall(toolId, "phone_launch_app", "{\"package\":\"${fastMatch.packageName}\"}")), Author.Mika)
+            val rawContent = outcome.exec.content.toString()
+            val sanitizedContent = com.hana.agent.core.privacy.PocketPrivacyGuard.sanitizeScreenJson(rawContent, fastMatch.packageName)
+            history += Message(Role.Tool, listOf(Part.ToolResult(toolId, sanitizedContent, isError = false, outcome.exec.observations.map { it.tag })), Author.Mika)
             tools.imageNow()?.let { (png, shotId) ->
                 history += Message(Role.User, listOf(Part.Text(Feedback["action_frame_note"]), tools.modelImage(png, shotId)), Author.Mika)
             }

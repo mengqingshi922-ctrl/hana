@@ -14,11 +14,12 @@ import kotlinx.serialization.json.contentOrNull
  * 而是直接将提取/收集的数据写入寄存器 ($reg:id)，在打字、填表或沙箱执行时通过寄存器占位符 0 拷贝展开。
  */
 object RegisterBus {
-    private const val MAX_REGISTERS = 16
+    private const val MAX_REGISTERS = 128
     private const val MAX_CHAR_PER_REGISTER = 12000
     const val PREFIX = "\u0024reg:"
 
     private val registers = LinkedHashMap<String, String>()
+    private val REG_TAG_REGEX = Regex("""<[^>:]+:(\x24reg:[a-zA-Z0-9_-]+)>""")
     private val REG_REF_REGEX = Regex("""\x24reg:([a-zA-Z0-9_-]+)""")
 
     @Synchronized
@@ -50,12 +51,17 @@ object RegisterBus {
 
     /**
      * 解析文本中的所有寄存器引用占位符 (如 "$reg:latest" 或 "标题为: $reg:step2")，
+     * 亦支持形如 "<姓名:$reg:priv_1>" 的语义脱敏标签解析。
      * 若命中则替换为真实内容；若未命中则保留原样。
      */
     @Synchronized
     fun resolve(text: String): String {
         if (!text.contains(PREFIX)) return text
-        return REG_REF_REGEX.replace(text) { matchResult ->
+        val tagResolved = REG_TAG_REGEX.replace(text) { matchResult ->
+            val regKey = matchResult.groupValues[1]
+            registers[regKey] ?: matchResult.value
+        }
+        return REG_REF_REGEX.replace(tagResolved) { matchResult ->
             val regKey = matchResult.value
             registers[regKey] ?: matchResult.value
         }
