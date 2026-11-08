@@ -12,6 +12,7 @@ import com.hana.agent.HanaApp
 import com.hana.agent.voice.SystemSpeech
 import com.hana.agent.settings.ChatGptSignIns
 import com.hana.agent.i18n.tr
+import com.hana.agent.ui.components.MnnPocketBentoCard
 import androidx.compose.ui.res.stringResource
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -1176,123 +1177,6 @@ private fun RoleBentoTile(
             color = c.accent,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-/**
- * 阿里 MNN-Pocket-0.3B 端侧神经核 Bento 磁贴卡片：
- * 现代紧凑 Bento 控制台设计，排版严密、杜绝文本截断与单字挤压。
- */
-@Composable
-private fun MnnPocketBentoCard() {
-    val context = LocalContext.current
-    val c = MikaTheme.colors
-    val shape = RoundedCornerShape(14.dp)
-    val featureFlags = remember { FeatureFlags.get(context) }
-    var enabled by remember { mutableStateOf(featureFlags.edgePocketEnabled()) }
-
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(top = 10.dp)
-            .cardSurface(c, shape)
-            .border(0.5.dp, c.edge, shape)
-            .clip(shape)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(11.dp),
-    ) {
-        // 第一行：左侧[图标 + 标题组] + 右侧[拨动开关]
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                Modifier.weight(1f, fill = false),
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    Modifier
-                        .size(36.dp)
-                        .background(if (enabled) c.accentSoft else c.fill, RoundedCornerShape(10.dp)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        MikaIcons.Spark,
-                        null,
-                        Modifier.size(18.dp),
-                        tint = if (enabled) c.accent else c.ink3,
-                    )
-                }
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            "端侧神经核",
-                            style = MikaType.BodyStrong.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
-                            color = c.ink,
-                        )
-                        StatusPill(
-                            if (enabled) "协同中" else "已停用",
-                            if (enabled) PillTone.Ok else PillTone.Neutral,
-                        )
-                    }
-                    Text(
-                        "阿里 MNN-Pocket · 173MB INT4 QAT",
-                        style = MikaType.Caption.copy(fontSize = 11.5.sp),
-                        color = c.ink3,
-                    )
-                }
-            }
-
-            MikaSwitch(
-                checked = enabled,
-                onCheckedChange = { checked ->
-                    enabled = checked
-                    featureFlags.setEdgePocketEnabled(checked)
-                },
-            )
-        }
-
-        // 第二行：双列高频特性胶囊（精炼文案，杜绝省略号截断）
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf(
-                "⚡ 12ms 极速反射" to Modifier.weight(1f),
-                "🛡️ 隐私数据零出端" to Modifier.weight(1f),
-            ).forEach { (tag, mod) ->
-                Box(
-                    mod
-                        .background(c.fill, RoundedCornerShape(7.dp))
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        tag,
-                        style = MikaType.Caption.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Medium),
-                        color = if (enabled) c.ink2 else c.ink3,
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
-
-        // 第三行：紧凑说明文案
-        Text(
-            if (enabled) {
-                "端侧动作反射神经核，毫秒级开局意图判定与弹窗消解，敏感数据不出手机。"
-            } else {
-                "端侧核已停用，意图与弹窗判断全量交由云端主模型（可能略微增加网络耗时）。"
-            },
-            style = MikaType.Caption.copy(fontSize = 11.sp),
-            color = if (enabled) c.ink3 else c.warn,
-            lineHeight = 15.sp,
         )
     }
 }

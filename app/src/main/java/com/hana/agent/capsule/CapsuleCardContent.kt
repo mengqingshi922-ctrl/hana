@@ -601,9 +601,14 @@ internal fun Pinned(content: CardContent?, key: String, actions: CardActions) {
                 Action(CardCopy.STOP, ButtonKind.Tonal) { actions.stop(key) }
             }
             is CardContent.Confirm -> {
-                Spacer(Modifier.height(0.dp))
-                Action(CardCopy.APPROVE_ONCE_ONLY, ButtonKind.Primary) { actions.approve(key, content.key) }
-                Action(CardCopy.DECLINE, ButtonKind.Tonal) { actions.decline(key, content.key) }
+                Spacer(Modifier.height(4.dp))
+                com.hana.agent.ui.safegate.SlideToAuthorize(
+                    onAuthorized = { actions.approve(key, content.key) },
+                    onRejected = { actions.decline(key, content.key) },
+                    title = content.title.ifEmpty { "安全授权确认" },
+                    riskDescription = content.body,
+                    modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp),
+                )
             }
             is CardContent.Question -> if (content.options.isNotEmpty()) {
                 Spacer(Modifier.height(0.dp))

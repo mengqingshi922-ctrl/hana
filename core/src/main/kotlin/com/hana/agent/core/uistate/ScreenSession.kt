@@ -51,6 +51,8 @@ private const val ISSUED_MEMORY = 256
 private const val LIMIT_TEXT_MAX = 120
 /** 动作前探针复用最近一次读屏快照的安全时间窗口（毫秒）。 */
 private const val PROBE_REUSE_TTL_MS = 1500L
+/** 跨 App 会话栈最大保留应用数量。 */
+private const val MAX_APP_SESSIONS = 5
 
 /** find_visually 找到的一个点:找的是什么、给的原文、视觉模型看到的字;不可逆判定都要看。[unverified]:只靠看图、没有佐证。 */
 internal class Located(val target: String, val text: String?, val seen: String?, val unverified: Boolean = false)
@@ -95,6 +97,47 @@ internal class ScreenSession(
     private val issued = object : LinkedHashMap<String, Unit>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?) = size > ISSUED_MEMORY
     }
+
+    /** 跨 App 多会话拓扑状态栈，支持最多 5 个应用的世代拓扑与稳定编号保持与增量唤醒 */
+    private val appSessions = object : LinkedHashMap<String, AppScreenState>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, AppScreenState>?): Boolean = size > MAX_APP_SESSIONS
+    }
+
+    val appSessionStack: Map<String, AppScreenState> get() = LinkedHashMap(appSessions)
+
+    fun computeSignature(snapshot: ScreenSnapshot): Long {
+        var h = (snapshot.packageName?.hashCode()?.toLong() ?: 0L)
+        h = h * 31L + snapshot.elements.size
+        for (elem in snapshot.elements.take(15)) {
+            h = h * 31L + elem.name.hashCode()
+            h = h * 31L + elem.role.hashCode()
+            h = h * 31L + (elem.resourceId?.hashCode() ?: 0)
+        }
+        return h
+    }
+
+    fun saveAppState(packageName: String, snapshot: ScreenSnapshot?) {
+        val sig = snapshot?.let { computeSignature(it) } ?: 0L
+        val stabState = stabilizer?.exportState()
+        appSessions[packageName] = AppScreenState(packageName, snapshot, stabState, sig, System.currentTimeMillis())
+    }
+
+    fun saveCurrentAppState() {
+        val pkg = lastSnapshot?.packageName ?: return
+        saveAppState(pkg, lastSnapshot)
+    }
+
+    fun restoreAppStateIfAvailable(newPackage: String): Boolean {
+        val saved = appSessions[newPackage] ?: return false
+        // 5 分钟内 (300_000ms) 且可增量唤醒
+        if (System.currentTimeMillis() - saved.timestampMs <= 300_000L) {
+            saved.refStabilizerState?.let { stabilizer?.restoreState(it) }
+            return true
+        }
+        return false
+    }
+
+    fun getAppState(packageName: String): AppScreenState? = appSessions[packageName]
 
     /** find_visually 在这块屏上找到的点(@vN);这块屏上任何写操作后清空。 */
     val located = LocateRegistry()
@@ -146,6 +189,11 @@ internal class ScreenSession(
      * 端口原样的这一屏留作接着那个动作的「动作前」([probe] 用它,不再读一次)。
      */
     suspend fun snapshot(internal: Boolean = false): ScreenSnapshot = screen.snapshot().let { p ->
+        val prevPkg = lastSnapshot?.packageName
+        if (prevPkg != null && p.packageName != null && prevPkg != p.packageName) {
+            saveAppState(prevPkg, lastSnapshot)
+            restoreAppStateIfAvailable(p.packageName)
+        }
         (stabilizer?.next(p)?.screen ?: p).also { primed = if (internal) it.snapshotId to p else null }
     }.also {
         reads++

@@ -284,6 +284,14 @@ class TaskRun(
         }
     }
 
+    fun pause() {
+        val g = gate ?: return
+        g.pause()
+        loop?.state?.value?.takeIf { it is TaskState.Running }?.let {
+            publish(TaskState.Held(TaskGate.paused("user_pause")))
+        }
+    }
+
     fun resume() {
         val g = gate ?: return
         val wasOnPage = g.userOnPagePending

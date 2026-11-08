@@ -9,7 +9,7 @@ import kotlinx.serialization.json.put
 
 /** 给模型看的手机窗口层级;节点完整保留,只省去空字段和默认状态。 */
 object UiTreeJson {
-    fun windows(s: ScreenSnapshot): JsonArray = buildJsonArray {
+    fun windows(s: ScreenSnapshot, prune: Boolean = false): JsonArray = buildJsonArray {
         for (w in s.windows) add(buildJsonObject {
             put("id", w.id)
             put("type", w.type)
@@ -18,9 +18,17 @@ object UiTreeJson {
             w.packageName?.let { put("packageName", it) }
             if (w.active) put("active", true)
             if (w.focused) put("focused", true)
-            put("nodes", JsonArray(w.nodes.map(::node)))
+            val nodes = if (prune && s.width > 0 && s.height > 0) {
+                w.nodes.mapNotNull { UiTreePruner.pruneTree(it, s.width, s.height) }
+            } else {
+                w.nodes
+            }
+            put("nodes", JsonArray(nodes.map(::node)))
         })
     }
+
+    /** 导出经过视口拓扑相交剪枝、单子容器折叠与相对坐标量化的无障碍窗口层级 */
+    fun prunedWindows(s: ScreenSnapshot): JsonArray = windows(s, prune = true)
 
     private fun node(n: UiTreeNode): JsonObject = JsonObject(shallow(n) +
         (if (n.children.isEmpty()) emptyMap() else mapOf("children" to JsonArray(n.children.map(::node)))))

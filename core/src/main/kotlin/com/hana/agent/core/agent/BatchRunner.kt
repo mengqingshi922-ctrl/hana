@@ -35,8 +35,9 @@ private const val MIN_STEPS = 1
 /** 只限制单次调用的资源消耗,不把连续操作的合理长度写成任务规则。 */
 private const val MAX_STEPS = 20
 private const val EXPECT_MAX = 200
-/** 第二步起,判定和执行前等界面稳定的上限(现代旗舰机 250ms 足以稳定渲染完成)。 */
-private const val SETTLE_MS = 250L
+/** 第二步起,判定和执行前等界面平水期的上限(采用 35ms 渲染平水期短路，杜绝 250ms 盲等)。 */
+const val RENDER_SETTLE_WINDOW_MS = 35L
+private const val SETTLE_MS = RENDER_SETTLE_WINDOW_MS
 /** 一步的等待条件(都可不给);expect 是旧写法,意思从「做完看一眼」变成「等到出现」。 */
 private const val EXPECT = "expect"
 private const val EXPECT_GONE = "expect_gone"
@@ -96,8 +97,8 @@ class BatchRunner(
                 stop = skipFrom(i)
                 break
             }
-            // 上一步的界面还在变时判定会读到过渡画面,expect 也会误判
-            if (i > 0) tools.settle(SETTLE_MS)
+            // 采用 35ms 渲染平水期短路，杜绝 250ms 盲等
+            if (i > 0) tools.settle(RENDER_SETTLE_WINDOW_MS)
             val out = executor.run(Part.ToolCall("$callId.${i + 1}", s.tool, s.argsJson), Origin.Batch(step))
             val before = out.before
             note(s, null, before)

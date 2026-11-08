@@ -110,7 +110,7 @@ class CapsuleController(
     private val foreground: AppForeground,
     /** 几个任务共用的接管队列:卡片和那一条上的先后从这里读。 */
     private val takeoverQueue: TakeoverQueue,
-) {
+) : SmartAutoDodgeEngine.DodgeClient {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val model = CapsuleModel(::reasonLabel)
     private val flags = FeatureFlags.get(context)
@@ -388,6 +388,7 @@ class CapsuleController(
         }
         cardW.onBack(::back)
         watchIme(service)
+        SmartAutoDodgeEngine.registerClient(this)
         return ball
     }
 
@@ -409,6 +410,7 @@ class CapsuleController(
     }
 
     private fun hide() {
+        SmartAutoDodgeEngine.unregisterClient(this)
         tapJob?.cancel()
         taps.reset()
         snap?.cancel()
@@ -968,6 +970,7 @@ class CapsuleController(
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     snap = null
                     place()
+                    com.hana.agent.ui.haptic.HapticManager.trigger(context, com.hana.agent.ui.haptic.HapticPattern.ElasticSnap)
                 }
             })
             start()
@@ -979,6 +982,30 @@ class CapsuleController(
         dock = dock.copy(side = if (dock.side == DockSide.Left) DockSide.Right else DockSide.Left)
         flags.setCapsuleDock(dock)
         place()
+    }
+
+    // ---------- SmartAutoDodgeEngine.DodgeClient ----------
+
+    override fun getOverlayBounds(): android.graphics.Rect? {
+        if (!_showing.value) return null
+        val w = if (expanded) (cardWindow ?: window) else window
+        return w?.getBoundsOnScreen()
+    }
+
+    override suspend fun dodgeToOppositeSide(durationMs: Long): Boolean {
+        kotlinx.coroutines.withContext(Dispatchers.Main.immediate) {
+            setTouchable(false)
+            swapSide()
+            com.hana.agent.ui.haptic.HapticManager.trigger(context, com.hana.agent.ui.haptic.HapticPattern.ElasticSnap)
+            delay(durationMs)
+            setTouchable(true)
+        }
+        return true
+    }
+
+    override fun setTouchable(touchable: Boolean) {
+        window?.setTouchable(touchable)
+        cardWindow?.setTouchable(touchable)
     }
 
     // ---------- 长按说话 ----------

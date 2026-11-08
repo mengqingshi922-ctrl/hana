@@ -2,6 +2,7 @@ package com.hana.agent.capsule
 
 import com.hana.agent.i18n.tr
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -9,15 +10,22 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.Path
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -129,6 +137,29 @@ object CapsuleCopy {
  * [holding] 时是长按说话中:胶囊稍微放大、外面一圈蓝边。[onTalk] 给了时读屏软件多一个说话的操作([talkLabel]),代替长按:
  * 点一下开始、再点一下发出。
  */
+/** 状态映射到吉祥物情绪表情编号，接入 4 阶段动力学与自愈表情。 */
+fun mascotEmotionIdForKind(kind: CapsuleKind, phase: AgentTaskPhase = AgentTaskPhase.Idle): String = when {
+    kind == CapsuleKind.Done -> "33" // 撒花完成
+    kind == CapsuleKind.Failed || kind == CapsuleKind.Cancelled -> "34" // 警惕/错误
+    kind.needsYou -> "13"               // 惊讶/需要处理
+    kind == CapsuleKind.Held -> "03"    // 挂起好奇
+    kind == CapsuleKind.Running -> when (phase) {
+        AgentTaskPhase.Starting -> "31"    // 阶段1：活力自旋/接收任务
+        AgentTaskPhase.Exploring -> "40"   // 阶段2：左右张望寻找控件（检索姿态）
+        AgentTaskPhase.Operating -> "16"   // 阶段3：专注微表情
+        AgentTaskPhase.Approaching -> "19" // 阶段4：期待笑脸/满意
+        AgentTaskPhase.Soothing -> "20"    // 阻断自愈：困惑挠头/抱歉合十
+        else -> "30"                       // 默认思考霓虹光环
+    }
+    else -> "02"                        // 待机放空
+}
+
+/**
+ * 悬浮胶囊，支持三态灵动岛与拟人化吉祥物融合：
+ * - [CapsuleState.MINI]：48dp 灵动拟人小球，贴边呼吸与微表情；
+ * - [CapsuleState.PILL]：跨应用动态胶囊，实时动作文本 + [暂停/继续] + [急停] 控制；
+ * - [CapsuleState.EXPANDED]：透视全息舱，小球思考脉冲 + 虚拟屏实时画面 + 一键紧急接管 + 提速模式。
+ */
 @Composable
 fun CapsuleContent(
     view: CapsuleView.Shown,
@@ -145,6 +176,14 @@ fun CapsuleContent(
     holding: Boolean = false,
     onTalk: (() -> Unit)? = null,
     talkLabel: String = "",
+    capsuleState: CapsuleState? = null,
+    onPauseToggle: (() -> Unit)? = null,
+    isPaused: Boolean = false,
+    onTakeOver: (() -> Unit)? = null,
+    onSpeedToggle: ((Boolean) -> Unit)? = null,
+    speedEnabled: Boolean = false,
+    virtualScreenFrame: android.graphics.Bitmap? = null,
+    onStateChange: ((CapsuleState) -> Unit)? = null,
 ) {
     // 淡下去、恢复都慢慢来;关了动画时直接换
     val shown = if (MikaTheme.reduceMotion) alpha else animateFloatAsState(alpha, tween(FADE_MS), label = "fade").value
@@ -155,15 +194,54 @@ fun CapsuleContent(
             onTalk?.let { f -> CustomAccessibilityAction(talkLabel) { f(); true } },
         )
     }
+    val effectiveState = capsuleState ?: if (view.pill) CapsuleState.PILL else CapsuleState.MINI
     Box(modifier.padding(CapsuleShadowRoom)) {
-        if (view.kind == CapsuleKind.HandedOver) TakeoverBar(view, onStop, onHandBack)
-        else Capsule(view, side == DockSide.Right, onTap, tapLabel, a11y, shown, flash, holding)
+        when {
+            view.kind == CapsuleKind.HandedOver -> TakeoverBar(view, onStop, onHandBack)
+            effectiveState == CapsuleState.EXPANDED -> ExpandedCockpit(
+                view = view,
+                onClose = { onStateChange?.invoke(if (view.pill) CapsuleState.PILL else CapsuleState.MINI) },
+                onStop = onStop,
+                onTakeOver = { onTakeOver?.invoke() ?: onHandBack() },
+                onSpeedToggle = onSpeedToggle,
+                speedEnabled = speedEnabled,
+                virtualScreenFrame = virtualScreenFrame,
+            )
+            else -> Capsule(
+                view = view,
+                end = side == DockSide.Right,
+                onTap = onTap,
+                tapLabel = tapLabel,
+                a11y = a11y,
+                alpha = shown,
+                flash = flash,
+                holding = holding,
+                state = effectiveState,
+                onPauseToggle = onPauseToggle,
+                isPaused = isPaused,
+                onStop = onStop,
+            )
+        }
     }
 }
 
 /** 一颗或展开的胶囊:同一块玻璃底,看得见的宽度在两者之间慢慢变(只在画的时候变,见 [Morph]);[end] 时贴右边(图标在右)。 */
 @Composable
-private fun Capsule(view: CapsuleView.Shown, end: Boolean, onTap: () -> Unit, tapLabel: String, a11y: Modifier, alpha: Float, flash: Int, holding: Boolean) {
+private fun Capsule(
+    view: CapsuleView.Shown,
+    end: Boolean,
+    onTap: () -> Unit,
+    tapLabel: String,
+    a11y: Modifier,
+    alpha: Float,
+    flash: Int,
+    holding: Boolean,
+    state: CapsuleState = if (view.pill) CapsuleState.PILL else CapsuleState.MINI,
+    onPauseToggle: (() -> Unit)? = null,
+    isPaused: Boolean = false,
+    onStop: (() -> Unit)? = null,
+) {
+    val isPill = state == CapsuleState.PILL || view.pill
     val c = MikaTheme.colors
     // 长按说话中:放大一点、外面一圈蓝边(画在阴影边里,窗口大小不变)
     val press = if (MikaTheme.reduceMotion) (if (holding) 1f else 0f)
@@ -193,30 +271,42 @@ private fun Capsule(view: CapsuleView.Shown, end: Boolean, onTap: () -> Unit, ta
         }.then(if (holding) Modifier.testTag("capsule-holding") else Modifier),
     ) {
         Box(
-            Modifier.testTag(if (view.pill) "capsule" else "capsule-ball")
+            Modifier.testTag(if (isPill) "capsule" else "capsule-ball")
                 .morphGlass(morph, end, c, need, alpha)
                 .clickable(onClickLabel = tapLabel, role = Role.Button, onClick = onTap)
-                .then(if (view.pill) Modifier else Modifier.semantics { contentDescription = CapsuleCopy.describe(view) })
+                .then(if (isPill) Modifier else Modifier.semantics { contentDescription = CapsuleCopy.describe(view) })
                 .then(a11y)
                 .morphLayout(morph, end),
         ) {
-            if (view.pill) PillRow(view, end, need)
-            else Box(Modifier.size(CapsuleHeight), contentAlignment = Alignment.Center) { CapsuleLogo() }
+            if (isPill) PillRow(view, end, need, onPauseToggle, isPaused, onStop)
+            else Box(Modifier.size(CapsuleHeight), contentAlignment = Alignment.Center) {
+                com.hana.agent.ui.components.mascot.EmotionBallMascot(
+                    size = 32.dp,
+                    emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                )
+            }
             if (glow.value > 0f) Box(Modifier.matchParentSize().background(androidx.compose.ui.graphics.Color.White.copy(alpha = glow.value)))
         }
         // 外圈和角标不随底淡下去;缩回时贴着图标那一边,不跟着还没收完的宽度走
-        if (!view.pill) Box(Modifier.align(if (end) Alignment.CenterEnd else Alignment.CenterStart).size(CapsuleHeight)) {
+        if (!isPill) Box(Modifier.align(if (end) Alignment.CenterEnd else Alignment.CenterStart).size(CapsuleHeight)) {
             Ring(view.kind, need, Modifier.matchParentSize())
             Badge(view, need, Modifier.align(Alignment.TopEnd).offset(3.dp, (-3).dp))
         }
     }
 }
 
-/** 展开的胶囊里那一行:图标、状态标记、字;贴右边时图标在最右,和一颗时的位置一样。 */
+/** 展开的胶囊里那一行:图标、状态标记、字;贴右边时图标在最右,和一颗时的位置一样。支持[暂停/继续]与[急停]按键。 */
 @Composable
-private fun PillRow(view: CapsuleView.Shown, end: Boolean, need: Boolean) {
+private fun PillRow(
+    view: CapsuleView.Shown,
+    end: Boolean,
+    need: Boolean,
+    onPauseToggle: (() -> Unit)? = null,
+    isPaused: Boolean = false,
+    onStop: (() -> Unit)? = null,
+) {
     val c = MikaTheme.colors
-    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.6f).dp
+    val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.72f).dp
     // 同一件事、同一个状态里换句只变宽:记下这一段里最宽的时候
     var widest by remember(view.widthEpoch) { mutableIntStateOf(0) }
     val minWidth = with(LocalDensity.current) { widest.toDp() }
@@ -224,17 +314,255 @@ private fun PillRow(view: CapsuleView.Shown, end: Boolean, need: Boolean) {
         Modifier.widthIn(min = minWidth.coerceAtMost(maxWidth), max = maxWidth)
             .onSizeChanged { if (it.width > widest) widest = it.width }
             .height(CapsuleHeight)
-            .padding(start = if (end) 13.dp else 5.dp, end = if (end) 5.dp else 13.dp),
+            .padding(start = if (end) 10.dp else 4.dp, end = if (end) 4.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp, if (end) Alignment.End else Alignment.Start),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, if (end) Alignment.End else Alignment.Start),
     ) {
-        if (!end) CapsuleLogo()
+        if (!end) {
+            Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+                com.hana.agent.ui.components.mascot.EmotionBallMascot(
+                    size = 24.dp,
+                    emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                )
+            }
+        }
         Leading(view.kind)
         Text(
             view.text, Modifier.weight(1f, fill = false), style = CapsuleText,
             color = if (need) c.warn else c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
-        if (end) CapsuleLogo()
+
+        // Pill 控制按键：暂停/继续 + 急停
+        if (onPauseToggle != null) {
+            Box(
+                Modifier
+                    .size(24.dp)
+                    .clip(MikaShapes.Pill)
+                    .background(c.fill)
+                    .clickable(onClick = onPauseToggle)
+                    .testTag(if (isPaused) "capsule-resume" else "capsule-pause"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (isPaused) "▶" else "⏸",
+                    style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+                    color = c.ink2,
+                )
+            }
+        }
+
+        if (onStop != null) {
+            Box(
+                Modifier
+                    .size(24.dp)
+                    .clip(MikaShapes.Pill)
+                    .background(c.fill)
+                    .clickable(onClick = onStop)
+                    .testTag("capsule-stop"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "⏹",
+                    style = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+                    color = c.warn,
+                )
+            }
+        }
+
+        if (end) {
+            Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+                com.hana.agent.ui.components.mascot.EmotionBallMascot(
+                    size = 24.dp,
+                    emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 透视全息舱 (Expanded Hologram Cockpit)：
+ * - 小球思考脉冲光环
+ * - 虚拟屏实时画面缩略图
+ * - 一键紧急接管
+ * - 提速模式开关与急停
+ */
+@Composable
+fun ExpandedCockpit(
+    view: CapsuleView.Shown,
+    onClose: () -> Unit,
+    onStop: () -> Unit,
+    onTakeOver: () -> Unit,
+    onSpeedToggle: ((Boolean) -> Unit)?,
+    speedEnabled: Boolean,
+    virtualScreenFrame: android.graphics.Bitmap?,
+    modifier: Modifier = Modifier,
+) {
+    val c = MikaTheme.colors
+    val shape = RoundedCornerShape(20.dp)
+    Column(
+        modifier
+            .testTag("capsule-expanded")
+            .widthIn(min = 280.dp, max = 340.dp)
+            .shadow(12.dp, shape)
+            .background(c.surface, shape)
+            .border(1.dp, c.edge, shape)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        // 顶部控制行：标题 + 关闭缩回按钮
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .background(c.accent, MikaShapes.Pill),
+                )
+                Text(
+                    "透视全息舱",
+                    style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                    color = c.ink,
+                )
+            }
+            Box(
+                Modifier
+                    .size(24.dp)
+                    .clip(MikaShapes.Pill)
+                    .background(c.fill)
+                    .clickable(onClick = onClose)
+                    .testTag("capsule-collapse"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("✕", style = TextStyle(fontSize = 11.sp), color = c.ink3)
+            }
+        }
+
+        // 中间行：左侧拟人小球思考脉冲 + 右侧虚拟屏实时画面
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f),
+            ) {
+                Box(
+                    Modifier.size(64.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    com.hana.agent.ui.components.mascot.EmotionBallMascot(
+                        size = 56.dp,
+                        emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                    )
+                }
+                Text(
+                    view.text.ifEmpty { "智能体正在运行..." },
+                    style = TextStyle(fontSize = 12.sp, lineHeight = 16.sp),
+                    color = if (view.kind.needsYou) c.warn else c.ink2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            // 虚拟屏实时画面
+            Box(
+                Modifier
+                    .size(width = 110.dp, height = 150.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(androidx.compose.ui.graphics.Color.Black)
+                    .border(0.5.dp, c.edge, RoundedCornerShape(10.dp))
+                    .testTag("capsule-virtual-screen"),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (virtualScreenFrame != null) {
+                    Image(
+                        bitmap = virtualScreenFrame.asImageBitmap(),
+                        contentDescription = "虚拟屏实时画面",
+                        modifier = Modifier.matchParentSize(),
+                        contentScale = ContentScale.Fit,
+                    )
+                } else {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text("📺", style = TextStyle(fontSize = 20.sp))
+                        Text(
+                            "虚拟屏就绪",
+                            style = TextStyle(fontSize = 10.sp),
+                            color = androidx.compose.ui.graphics.Color.LightGray,
+                        )
+                    }
+                }
+            }
+        }
+
+        // 底部动作行：一键紧急接管 + 提速模式 + 急停
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(c.warnSoft)
+                    .clickable(onClick = onTakeOver)
+                    .padding(vertical = 8.dp)
+                    .testTag("capsule-takeover"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "一键紧急接管",
+                    style = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                    color = c.warn,
+                )
+            }
+
+            if (onSpeedToggle != null) {
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (speedEnabled) c.accentSoft else c.fill)
+                        .clickable { onSpeedToggle(!speedEnabled) }
+                        .padding(horizontal = 8.dp, vertical = 8.dp)
+                        .testTag("capsule-speed-toggle"),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (speedEnabled) "提速开" else "提速关",
+                        style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                        color = if (speedEnabled) c.accent else c.ink3,
+                    )
+                }
+            }
+
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(c.fill)
+                    .clickable(onClick = onStop)
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+                    .testTag("capsule-expanded-stop"),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "急停 ⏹",
+                    style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                    color = c.ink2,
+                )
+            }
+        }
     }
 }
 
@@ -350,6 +678,8 @@ private class Morph {
     var hold by mutableIntStateOf(0)
 }
 
+private val FluidSpringEasing = CubicBezierEasing(0.34f, 1.56f, 0.64f, 1.0f)
+
 @Composable
 private fun rememberMorph(animate: Boolean): Morph {
     val m = remember { Morph() }
@@ -359,7 +689,7 @@ private fun rememberMorph(animate: Boolean): Morph {
         if (!animate || m.width.value == 0f) m.width.snapTo(t.toFloat())
         else {
             m.hold = maxOf(ceil(m.width.value).toInt(), t)
-            m.width.animateTo(t.toFloat(), tween(MORPH_MS))
+            m.width.animateTo(t.toFloat(), tween(MORPH_MS, easing = FluidSpringEasing))
         }
         m.hold = t
     }
@@ -375,6 +705,106 @@ private fun Modifier.morphLayout(m: Morph, end: Boolean): Modifier = layout { me
 }
 
 /**
+ * 三次贝塞尔流体拉伸水滴 Shape (Fluid Metaball Morphing)：
+ * 从小球（半径 R）展开为药丸时，在腰部两侧引入三次贝塞尔收腰与液体表面张力拉伸，
+ * 并配合 CubicBezierEasing 弹性超调，消除普通矩形展开的生硬感。
+ */
+class FluidMetaballShape(
+    private val width: Float,
+    private val end: Boolean,
+    private val inset: Float = 0f,
+    private val targetWidth: Float = 0f,
+) : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val w = if (width > 0f) width.coerceAtMost(size.width) else size.width
+        val h = size.height
+        val r = (h / 2f) - inset
+        val left = if (end) size.width - w else 0f
+        val right = left + w
+
+        val initialDiameter = h
+        if (w <= initialDiameter + 2f || targetWidth <= initialDiameter) {
+            return Outline.Rounded(RoundRect(left + inset, inset, right - inset, h - inset, CornerRadius(r, r)))
+        }
+
+        val span = (targetWidth - initialDiameter).coerceAtLeast(1f)
+        val progress = ((w - initialDiameter) / span).coerceIn(0f, 1f)
+        val pinchRatio = 0.12f * kotlin.math.sin(kotlin.math.PI.toFloat() * progress)
+        val waistYOffset = r * pinchRatio
+
+        val path = Path().apply {
+            val top = inset
+            val bottom = h - inset
+
+            if (!end) {
+                val leftCenterX = left + inset + r
+                val rightCenterX = (right - inset - r).coerceAtLeast(leftCenterX)
+
+                moveTo(leftCenterX, top)
+                val cp1X = leftCenterX + (rightCenterX - leftCenterX) * 0.35f
+                val cp1Y = top + waistYOffset
+                val cp2X = leftCenterX + (rightCenterX - leftCenterX) * 0.65f
+                val cp2Y = top + waistYOffset
+                cubicTo(cp1X, cp1Y, cp2X, cp2Y, rightCenterX, top)
+
+                arcTo(
+                    rect = Rect(rightCenterX - r, top, rightCenterX + r, bottom),
+                    startAngleDegrees = -90f,
+                    sweepAngleDegrees = 180f,
+                    forceMoveTo = false,
+                )
+
+                val bcp1X = leftCenterX + (rightCenterX - leftCenterX) * 0.65f
+                val bcp1Y = bottom - waistYOffset
+                val bcp2X = leftCenterX + (rightCenterX - leftCenterX) * 0.35f
+                val bcp2Y = bottom - waistYOffset
+                cubicTo(bcp1X, bcp1Y, bcp2X, bcp2Y, leftCenterX, bottom)
+
+                arcTo(
+                    rect = Rect(leftCenterX - r, top, leftCenterX + r, bottom),
+                    startAngleDegrees = 90f,
+                    sweepAngleDegrees = 180f,
+                    forceMoveTo = false,
+                )
+                close()
+            } else {
+                val leftCenterX = left + inset + r
+                val rightCenterX = (right - inset - r).coerceAtLeast(leftCenterX)
+
+                moveTo(rightCenterX, top)
+                val cp1X = rightCenterX - (rightCenterX - leftCenterX) * 0.35f
+                val cp1Y = top + waistYOffset
+                val cp2X = rightCenterX - (rightCenterX - leftCenterX) * 0.65f
+                val cp2Y = top + waistYOffset
+                cubicTo(cp1X, cp1Y, cp2X, cp2Y, leftCenterX, top)
+
+                arcTo(
+                    rect = Rect(leftCenterX - r, top, leftCenterX + r, bottom),
+                    startAngleDegrees = -90f,
+                    sweepAngleDegrees = -180f,
+                    forceMoveTo = false,
+                )
+
+                val bcp1X = rightCenterX - (rightCenterX - leftCenterX) * 0.65f
+                val bcp1Y = bottom - waistYOffset
+                val bcp2X = rightCenterX - (rightCenterX - leftCenterX) * 0.35f
+                val bcp2Y = bottom - waistYOffset
+                cubicTo(bcp1X, bcp1Y, bcp2X, bcp2Y, rightCenterX, bottom)
+
+                arcTo(
+                    rect = Rect(rightCenterX - r, top, rightCenterX + r, bottom),
+                    startAngleDegrees = 90f,
+                    sweepAngleDegrees = -180f,
+                    forceMoveTo = false,
+                )
+                close()
+            }
+        }
+        return Outline.Generic(path)
+    }
+}
+
+/**
  * 玻璃底(同 [glass]),只画看得见的那一段宽、贴着停靠的那一边:阴影、裁切、底色和描边都按它,宽度变时只重画图层。
  * [alpha] 淡底和里面的图标。
  */
@@ -384,16 +814,17 @@ private fun Modifier.morphGlass(m: Morph, end: Boolean, c: MikaColors, need: Boo
         shadowElevation = 8.dp.toPx()
         ambientShadowColor = c.floatShadow.copy(alpha = 0.25f)
         spotShadowColor = c.floatShadow.copy(alpha = 0.3f)
-        shape = EdgePill(m.width.value, end)
+        shape = FluidMetaballShape(m.width.value, end, targetWidth = m.target.toFloat())
         clip = true
     }.drawWithContent {
-        val pill = EdgePill(m.width.value, end)
-        val o = pill.createOutline(size, layoutDirection, this)
+        val fluidShape = FluidMetaballShape(m.width.value, end, targetWidth = m.target.toFloat())
+        val o = fluidShape.createOutline(size, layoutDirection, this)
         drawOutline(o, c.surface.copy(alpha = 0.95f))
         if (need) drawOutline(o, c.warnSoft)
         drawContent()
         val stroke = (if (need) 1.dp else 0.5.dp).toPx()
-        drawOutline(EdgePill(m.width.value, end, inset = stroke / 2).createOutline(size, layoutDirection, this),
+        val borderShape = FluidMetaballShape(m.width.value, end, inset = stroke / 2, targetWidth = m.target.toFloat())
+        drawOutline(borderShape.createOutline(size, layoutDirection, this),
             if (need) c.warnSolid.copy(alpha = 0.5f) else c.glassEdge, style = Stroke(stroke))
     }
 

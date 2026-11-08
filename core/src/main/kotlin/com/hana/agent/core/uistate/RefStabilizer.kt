@@ -87,6 +87,17 @@ class RefStabilizer(private val prefix: String = "s") {
         return ModelSnapshot("$prefix$n", port, elements, toPort).also { latest = it }
     }
 
+    fun exportState(): RefStabilizerState = RefStabilizerState(count, born, latest, LinkedHashMap(centers), nextRef)
+
+    fun restoreState(state: RefStabilizerState) {
+        count = state.count
+        born = state.born
+        latest = state.latest
+        centers.clear()
+        centers.putAll(state.centers)
+        nextRef = state.nextRef
+    }
+
     fun resolve(ref: String, snapshotId: String): Resolved {
         val cur = latest ?: return Resolved.Stale
         val n = snapshotId.removePrefix(prefix).takeIf { snapshotId.startsWith(prefix) }?.toIntOrNull() ?: return Resolved.Stale

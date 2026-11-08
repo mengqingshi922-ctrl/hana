@@ -145,6 +145,7 @@ fun GrokBotAvatar(
     shape: GrokBotShape? = null,
     mood: GrokBotMood? = null,
     isWorking: Boolean = false,
+    phase: com.hana.agent.capsule.AgentTaskPhase = com.hana.agent.capsule.AgentTaskPhase.Idle,
     bodyColor: Color? = null,
     enableClickToggle: Boolean = true,
     onClick: (() -> Unit)? = null,
@@ -160,7 +161,7 @@ fun GrokBotAvatar(
     }
     com.hana.agent.ui.components.mascot.EmotionBallMascot(
         size = size,
-        emotionId = com.hana.agent.ui.components.mascot.mascotEmotionId(activeMood, isWorking),
+        emotionId = com.hana.agent.ui.components.mascot.mascotEmotionId(activeMood, isWorking, phase),
         modifier = modifier,
         shapeKey = com.hana.agent.ui.components.mascot.shapeKeyFor(activeShape),
         onTap = tap,

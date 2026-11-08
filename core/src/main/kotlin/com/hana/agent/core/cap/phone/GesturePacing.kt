@@ -45,8 +45,15 @@ class GesturePacing(private val random: Random?, val limits: Limits = Limits()) 
         val flingEndSpeed: ClosedFloatingPointRange<Double> = 0.9..1.0,
     )
 
-    /** 一笔里的一个点:相对落下时刻 [t] 毫秒时手指在([x],[y])。 */
-    data class Point(val x: Double, val y: Double, val t: Long)
+    /** 一笔里的一个点:相对落下时刻 [t] 毫秒时手指在([x],[y])，以及拟人触控压力与接触面面积。 */
+    data class Point(
+        val x: Double,
+        val y: Double,
+        val t: Long,
+        val pressure: Float = 0.8f,
+        val touchMajor: Float = 12f,
+        val touchMinor: Float = 10f,
+    )
 
     /** 一笔:从按下到抬起的点(第一个 t 为 0,最后一个是抬起的时刻和位置)。 */
     data class Stroke(val points: List<Point>) {
@@ -130,7 +137,147 @@ class GesturePacing(private val random: Random?, val limits: Limits = Limits()) 
         return Stroke(if (bounds == null) points else points.map { it.copy(x = it.x.coerceIn(0.0, bounds.first - 1.0), y = it.y.coerceIn(0.0, bounds.second - 1.0)) })
     }
 
+    /**
+     * 三阶非均匀 B 样条拟人动力学轨迹生成：
+     * 控制点规划：起点 P0、初速度引导 P1、巡航曲率 P2、终端过冲回正控制点 P3（Δd ≈ 2 ~ 4px）。
+     * 采样点叠加 σ = 1.2px 高斯微抖动（Jitter）与动态触控压力 Profile（按下 0.2->0.8，抬起前夕急剧衰减至 0.1）。
+     */
+    fun strokeCubicBSpline(
+        start: Pair<Double, Double>,
+        end: Pair<Double, Double>,
+        durationMs: Long,
+        bounds: Pair<Int, Int>? = null,
+        overshootPx: Double = 3.0,
+        jitterSigma: Double = 1.2,
+    ): Stroke {
+        val total = durationMs.coerceAtLeast(1)
+        val r = random ?: return Stroke(uniform(listOf(start, end), total))
+        val dist = hypot(end.first - start.first, end.second - start.second)
+        if (dist < limits.stillPx) {
+            val hold = (total * (1 + r.nextDouble(0.0, limits.holdStretch))).roundToLong()
+            val p0 = Point(start.first, start.second, 0, pressure = 0.2f, touchMajor = calculateTouchMajor(0.2f), touchMinor = calculateTouchMinor(0.2f))
+            val p1 = Point(end.first, end.second, hold, pressure = 0.1f, touchMajor = calculateTouchMajor(0.1f), touchMinor = calculateTouchMinor(0.1f))
+            return Stroke(listOf(p0, p1))
+        }
+
+        val t = (total * (1 + r.nextDouble(-limits.durationJitter, limits.durationJitter))).roundToLong().coerceAtLeast(1)
+        val ux = (end.first - start.first) / dist
+        val uy = (end.second - start.second) / dist
+        val nx = -uy
+        val ny = ux
+
+        val bow = Pace.bow(r, dist, limits.bowFraction, limits.maxBowPx)
+        val p0 = start
+        val p1 = (start.first + 0.35 * (end.first - start.first) + nx * bow * 0.8) to
+                 (start.second + 0.35 * (end.second - start.second) + ny * bow * 0.8)
+        val actualOvershoot = overshootPx.coerceIn(2.0, 4.0)
+        val p3 = (end.first + ux * actualOvershoot) to (end.second + uy * actualOvershoot)
+        val p2Dist = (dist * 0.04).coerceIn(6.0, 16.0)
+        val p2 = (p3.first - ux * p2Dist + nx * bow * 0.3) to
+                 (p3.second - uy * p2Dist + ny * bow * 0.3)
+
+        val step = Pace.pick(r, limits.sampleMs).coerceAtLeast(1)
+        val n = ceil(t.toDouble() / step).toInt().coerceIn(1, limits.maxPoints - 1)
+        val avgSpeed = dist / t.toDouble()
+
+        val settleSteps = when {
+            n >= 8 -> 3
+            n >= 5 -> 2
+            else -> 1
+        }
+        val nMain = n - settleSteps
+
+        val points = mutableListOf<Point>()
+        for (i in 0..n) {
+            val u = i.toDouble() / n
+            val tm = if (i == n) t else (t * u).roundToLong()
+            val (baseX, baseY) = when {
+                i == 0 -> start
+                i == n -> end
+                i > nMain -> {
+                    val stepFromEnd = n - i
+                    val frac = when (settleSteps) {
+                        3 -> if (stepFromEnd == 1) 0.25 else 0.70
+                        2 -> if (stepFromEnd == 1) 0.35 else 0.70
+                        else -> 0.0
+                    }
+                    val bx = end.first + ux * actualOvershoot * frac
+                    val by = end.second + uy * actualOvershoot * frac
+                    if (jitterSigma > 0.0) {
+                        applyGaussianJitter(r, bx, by, jitterSigma)
+                    } else bx to by
+                }
+                else -> {
+                    val uMain = i.toDouble() / nMain
+                    val inv = 1.0 - uMain
+                    val bx = inv * inv * inv * p0.first + 3 * inv * inv * uMain * p1.first + 3 * inv * uMain * uMain * p2.first + uMain * uMain * uMain * p3.first
+                    val by = inv * inv * inv * p0.second + 3 * inv * inv * uMain * p1.second + 3 * inv * uMain * uMain * p2.second + uMain * uMain * uMain * p3.second
+                    if (jitterSigma > 0.0) {
+                        applyGaussianJitter(r, bx, by, jitterSigma)
+                    } else bx to by
+                }
+            }
+            val clampedX = if (bounds != null) baseX.coerceIn(0.0, bounds.first - 1.0) else baseX
+            val clampedY = if (bounds != null) baseY.coerceIn(0.0, bounds.second - 1.0) else baseY
+
+            val instSpeed = if (points.isEmpty()) avgSpeed * 0.3 else {
+                val last = points.last()
+                val dt = (tm - last.t).coerceAtLeast(1)
+                hypot(clampedX - last.x, clampedY - last.y) / dt
+            }
+
+            val pressure = calculatePressure(tm, t, instSpeed, avgSpeed)
+            val touchMajor = calculateTouchMajor(pressure)
+            val touchMinor = calculateTouchMinor(pressure)
+
+            points += Point(clampedX, clampedY, tm, pressure, touchMajor, touchMinor)
+        }
+        return Stroke(points)
+    }
+
     companion object {
+        /**
+         * 动态触控压力 Profile 计算:
+         * 1. 按下瞬间 (Down, 0..15ms): 压力从 0.2 快速爬升至 0.8;
+         * 2. 滑动中 (距抬手 > 20ms): 依瞬时速度与均速比值反比微调 (0.65f ~ 0.85f);
+         * 3. 抬起前夕 (Up, 最后 20ms 内): 急剧衰减至 0.1f。
+         */
+        fun calculatePressure(t: Long, durationMs: Long, speed: Double = 0.0, avgSpeed: Double = 0.0): Float {
+            if (durationMs <= 0L) return 0.8f
+            val remain = durationMs - t
+            return when {
+                t <= 15L -> {
+                    val progress = (t.toDouble() / 15.0).coerceIn(0.0, 1.0)
+                    (0.2 + 0.6 * progress).toFloat()
+                }
+                remain <= 20L -> {
+                    val progress = (remain.toDouble() / 20.0).coerceIn(0.0, 1.0)
+                    (0.1 + 0.7 * progress).toFloat()
+                }
+                else -> {
+                    if (avgSpeed > 0.0) {
+                        val ratio = (speed / avgSpeed).coerceIn(0.5, 2.0)
+                        (0.8 - (ratio - 1.0) * 0.1).toFloat().coerceIn(0.65f, 0.85f)
+                    } else 0.8f
+                }
+            }
+        }
+
+        fun calculateTouchMajor(pressure: Float): Float = 10f + pressure * 2.5f
+        fun calculateTouchMinor(pressure: Float): Float = 8f + pressure * 2.5f
+
+        /**
+         * 采样点叠加白噪声高斯微抖动 (Gaussian Hand Jitter, \sigma = 1.2px)
+         */
+        fun applyGaussianJitter(r: Random, x: Double, y: Double, sigma: Double = 1.2): Pair<Double, Double> {
+            val u1 = r.nextDouble().coerceAtLeast(1e-7)
+            val u2 = r.nextDouble()
+            val mag = kotlin.math.sqrt(-2.0 * kotlin.math.ln(u1)) * sigma
+            val dx = mag * kotlin.math.cos(2.0 * Math.PI * u2)
+            val dy = mag * kotlin.math.sin(2.0 * Math.PI * u2)
+            return (x + dx) to (y + dy)
+        }
+
         /** 不加节奏时点按按住的时长。 */
         const val TAP_MS = 50L
 
@@ -144,11 +291,28 @@ class GesturePacing(private val random: Random?, val limits: Limits = Limits()) 
         fun human(random: Random = Random.Default, limits: Limits = Limits()) = GesturePacing(random, limits)
 
         /**
-         * 快速手势注入上下限:常规按键时长与靠近停顿合理压缩至 30~50ms，
-         * 用于高频调用与自动化基准，为高频调用提供高速物理触摸派发路径。
+         * 极速手势物理注入标定常量:
+         * 靠近停顿标定 15ms，按住时长标定 20ms，单次物理点击注入总耗时标定为 35ms。
+         */
+        const val FAST_APPROACH_MS = 15L
+        const val FAST_PRESS_MS = 20L
+        const val FAST_CLICK_TOTAL_MS = 35L
+
+        /** 标定 35ms 极速手势上下限 (靠近 15ms、按住 20ms) */
+        val Click35msLimits = Limits(
+            approachMs = 15L..15L,
+            pressMs = 20L..20L,
+            doublePressMs = 20L..20L,
+            doubleGapMs = 35L..50L,
+        )
+
+        /**
+         * 快速手势注入上下限:常规按键时长与靠近停顿标定为：
+         * 靠近停顿 15ms（10~20ms）、按键时长（30~50ms，典型/极速路径 20ms），
+         * 为高频调用提供高速物理触摸派发路径。
          */
         val FastLimits = Limits(
-            approachMs = 0L..20L,
+            approachMs = 10L..20L,
             pressMs = 30L..50L,
             doublePressMs = 30L..50L,
             doubleGapMs = 40L..80L,

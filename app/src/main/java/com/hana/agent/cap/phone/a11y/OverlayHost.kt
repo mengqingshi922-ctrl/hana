@@ -153,6 +153,11 @@ class OverlayHost internal constructor(private val service: ScreenAccessibility)
             wm().addView(frame, params)
             windows += window
             window
+        } catch (e: WindowManager.BadTokenException) {
+            Log.w(TAG, "BadTokenException encountered, launching fallback transparent activity", e)
+            owners.destroy()
+            TransparentOverlayFallbackActivity.launch(service)
+            null
         } catch (e: RuntimeException) {
             // 服务刚断开时窗口令牌已失效,或系统不允许这类窗口:当作没有浮层
             Log.w(TAG, "overlay unavailable", e)
@@ -276,6 +281,37 @@ class OverlayWindow internal constructor(
         if (flags == params.flags) return
         params.flags = flags
         update()
+    }
+
+    /** 获取窗口当前在屏幕中的绝对几何区域（支持 SmartAutoDodge 视口碰撞检测） */
+    fun getBoundsOnScreen(): android.graphics.Rect {
+        if (!isOpen) return android.graphics.Rect()
+        val loc = IntArray(2)
+        frame.getLocationOnScreen(loc)
+        val w = if (frame.width > 0) frame.width else params.width.coerceAtLeast(0)
+        val h = if (frame.height > 0) frame.height else params.height.coerceAtLeast(0)
+        return android.graphics.Rect(loc[0], loc[1], loc[0] + w, loc[1] + h)
+    }
+
+    /**
+     * Android 12+ Untrusted Touch 防御护盾：
+     * 在自动化手势注入期间，将浮窗透明度锁定在安全水位 (alpha <= 0.08f) 并追加 FLAG_NOT_TOUCHABLE，
+     * 防止 Android 12+ 系统吞噬底层触摸事件。
+     */
+    fun untrustedTouchShield(): AutoCloseable {
+        if (!isOpen) return AutoCloseable {}
+        val prevFlags = params.flags
+        val prevAlpha = params.alpha
+        params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        params.alpha = 0.05f
+        update()
+        return AutoCloseable {
+            if (isOpen) {
+                params.flags = prevFlags
+                params.alpha = prevAlpha
+                update()
+            }
+        }
     }
 
     /** 能接收键盘时(见 [setFocusable])用户按了返回键;输入法开着时返回键先收起输入法,不到这里。 */

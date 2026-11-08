@@ -75,6 +75,11 @@ enum class CapsuleKind {
     val active: Boolean get() = this != Done && this != Failed && this != Cancelled && this != KeptPage && this != Idle
 }
 
+/** 智能体任务动力学阶段：用于驱动吉祥物微表情与灵动岛状态 */
+enum class AgentTaskPhase {
+    Idle, Starting, Exploring, Operating, Approaching, Soothing, Done, Failed
+}
+
 sealed interface CapsuleView {
     data object Hidden : CapsuleView
 
@@ -95,6 +100,7 @@ sealed interface CapsuleView {
         val conversationId: String? = null,
         val pill: Boolean = false,
         val widthEpoch: Int = 0,
+        val phase: AgentTaskPhase = AgentTaskPhase.Idle,
     ) : CapsuleView
 }
 
@@ -216,7 +222,14 @@ class CapsuleModel(private val reasonLabel: (String) -> String? = { null }) {
         }
         // 有还没在卡片里看过的要你处理:展开成胶囊,一直停着
         val pill = line.kind.needsYou && described.any { (r, l) -> l.kind.needsYou && r.mark() !in seen }
-        return CapsuleView.Shown(line.kind, text, detail, count, needCount, top.key, top.conversationId, pill = pill)
+        val phase = when (val s = top.state) {
+            is TaskState.Running -> inferPhase(s)
+            is TaskState.Held -> AgentTaskPhase.Soothing
+            is TaskState.Succeeded -> AgentTaskPhase.Done
+            is TaskState.Failed -> AgentTaskPhase.Failed
+            else -> AgentTaskPhase.Idle
+        }
+        return CapsuleView.Shown(line.kind, text, detail, count, needCount, top.key, top.conversationId, pill = pill, phase = phase)
     }
 
     /** 最近结束的那件:先展开成胶囊,再缩回一颗带着结果角标;在卡片里看过的直接是一颗;卡片展开着时停表。 */
@@ -226,7 +239,19 @@ class CapsuleModel(private val reasonLabel: (String) -> String? = { null }) {
         val pill = age < PILL_MS && last.run.mark() !in seen
         if (frozenSince == null) later(last.at + if (pill) PILL_MS else LINGER_MS)
         val (kind, text) = endedLine(last.run.state)
-        return CapsuleView.Shown(kind, text, runKey = last.run.key, conversationId = last.run.conversationId, pill = pill)
+        val phase = if (kind == CapsuleKind.Done) AgentTaskPhase.Done else AgentTaskPhase.Failed
+        return CapsuleView.Shown(kind, text, runKey = last.run.key, conversationId = last.run.conversationId, pill = pill, phase = phase)
+    }
+
+    private fun inferPhase(s: TaskState.Running): AgentTaskPhase = when {
+        s.reason?.contains("自愈") == true || s.narration?.contains("自愈") == true || s.note.contains("retry") || s.note.contains("重试") -> AgentTaskPhase.Soothing
+        s.step == 0 -> AgentTaskPhase.Starting
+        s.tool?.let { t -> t.contains("read") || t.contains("find") || t.contains("see") || t.contains("inspect") || t.contains("search") } == true -> AgentTaskPhase.Exploring
+        s.tool?.let { t -> t.contains("tap") || t.contains("click") || t.contains("type") || t.contains("drag") || t.contains("press") || t.contains("do_steps") } == true -> AgentTaskPhase.Operating
+        s.step in 1..2 -> AgentTaskPhase.Exploring
+        s.step in 3..5 -> AgentTaskPhase.Operating
+        s.step > 5 -> AgentTaskPhase.Approaching
+        else -> AgentTaskPhase.Starting
     }
 
     private fun endedLine(s: TaskState): Pair<CapsuleKind, String> = when (s) {

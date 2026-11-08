@@ -196,6 +196,19 @@
                 android:value="Keeps sign-in alive while the user finishes account login in the external browser, for a loopback callback or device-code polling" />
         </service>
 
+        <!-- 端侧推理独立子进程服务 -->
+        <service
+            android:name=".edge.EdgeInferenceService"
+            android:process=":edge_inference"
+            android:exported="false" />
+
+        <!-- 定制 ROM 浮窗降级兜底透明 Activity -->
+        <activity
+            android:name=".cap.phone.a11y.TransparentOverlayFallbackActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:exported="false"
+            android:excludeFromRecents="true" />
+
         <!-- 后台准备运行环境(解出随 APK 自带的根文件系统),只在准备期间运行 -->
         <service
             android:name=".sandbox.SandboxService"

@@ -223,6 +223,14 @@ class AgentLoop(
     private val workingMemory = LinkedHashMap<String, String>()
     private val subgoals = mutableListOf<String>()
     private var currentSubgoalIndex = 0
+    private val checkpointManager = com.hana.agent.core.subgoal.SubgoalCheckpointManager()
+    private val goalTracker = com.hana.agent.core.subgoal.GoalLifecycleTracker(checkpointManager)
+    private val watchdog = com.hana.agent.core.watchdog.StateEntropyWatchdog()
+    private var taskStartTimeMs: Long = 0L
+
+    val tracker: com.hana.agent.core.subgoal.GoalLifecycleTracker get() = goalTracker
+    val checkpoints: com.hana.agent.core.subgoal.SubgoalCheckpointManager get() = checkpointManager
+    val stateWatchdog: com.hana.agent.core.watchdog.StateEntropyWatchdog get() = watchdog
     /** 本任务的回答已因核对没对上退回过一次;再没对上就标成未确认交出,不再退回。 */
     private var gapsNudged = false
     private var provenance = RunProvenance()
@@ -252,6 +260,8 @@ class AgentLoop(
         currentSubgoalIndex = 0
         com.hana.agent.core.bus.RegisterBus.clear()
         com.hana.agent.core.privacy.PocketPrivacyGuard.reset()
+        goalTracker.initialize(task)
+        watchdog.reset()
         // 从用户长目标中自动识别子目标列表（支持分步 1. 2. 3. 或 -> 分割）
         val goalParts = task.split(Regex("(?:\\n\\s*\\d+[.、]\\s*|\\s*->\\s*|\\s*(?:然后|接着|再去|最后)\\s*)"))
             .map { it.trim() }
@@ -348,6 +358,10 @@ class AgentLoop(
         val opening = shots.render(raw)
         val task = opening?.said ?: raw
         taskText = task
+        taskStartTimeMs = now()
+        goalTracker.initialize(task)
+        watchdog.reset()
+        var consecutiveWatchdogFailures = 0
         latestWords = ownWords(raw, opening)
         val priorTurns = shots.collapse(rawPrior)
         earlierGoals = priorTurns.map { it.userText }
@@ -638,6 +652,7 @@ class AgentLoop(
             }
             SUBGOAL_DONE_REGEX.find(text)?.let { m ->
                 val specified = m.groupValues.getOrNull(1)?.toIntOrNull()
+                goalTracker.advanceManual(specified)
                 if (specified != null) {
                     currentSubgoalIndex = specified.coerceIn(0, subgoals.size)
                 } else {
@@ -768,6 +783,18 @@ class AgentLoop(
             exec.place?.let { place = it }
             track.after(tools.verb(first.name), !isError, ran.verdicts.isNotEmpty() || advice != null, exec.changed, false, exec.place?.name)
             com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
+            goalTracker.onActionExecuted(exec, place?.name)
+            val screenDigest = exec.content["screen"]?.toString() ?: exec.content.toString()
+            val frameFingerprint = (place?.name.orEmpty()) + ":" + screenDigest.hashCode()
+            watchdog.recordFrame(frameFingerprint)
+            val verdict = watchdog.evaluate()
+            if (verdict != com.hana.agent.core.watchdog.WatchdogVerdict.HEALTHY) {
+                consecutiveWatchdogFailures++
+                val healingTier = watchdog.recommendHealing(consecutiveWatchdogFailures)
+                emit(RunEvent.State(now(), "watchdog_healing", "${verdict.name}:${healingTier.name}"))
+            } else {
+                consecutiveWatchdogFailures = 0
+            }
             if (advice != null && exec.changed == true && place?.name != null) {
                 com.hana.agent.core.knowledge.AppTipsStore.recordTip(place?.name, "曾在此界面遇阻，换用其他动作或等待刷新可脱困")
             }
@@ -832,11 +859,14 @@ class AgentLoop(
      */
     private suspend fun appendRuntimeState(history: MutableList<Message>, place: Place?, labels: Map<String, String>, step: Int) {
         val mode = if (place?.kind == PlaceKind.Site) tools.placeMode() else null
-        val baseState = ctx.runtimeState(place, place?.name?.let(labels::get), mode, step, maxSteps, now(), latestWords)
-        val state = if (workingMemory.isNotEmpty() || subgoals.isNotEmpty()) {
+        val baseState = ctx.runtimeState(place, place?.name?.let(labels::get), mode, step, maxSteps, taskStartTimeMs.takeIf { it > 0L } ?: now(), latestWords)
+        val state = if (workingMemory.isNotEmpty() || subgoals.isNotEmpty() || goalTracker.trackedCount > 0) {
             val memoryBlock = buildString {
                 append("\n[Working Memory Pad]")
-                if (subgoals.isNotEmpty()) {
+                if (goalTracker.trackedCount > 0) {
+                    append("\nSubgoals: ")
+                    append(goalTracker.formatProgressTree())
+                } else if (subgoals.isNotEmpty()) {
                     append("\nSubgoals: ")
                     append(subgoals.mapIndexed { i, sg ->
                         val marker = when {

@@ -110,7 +110,7 @@ class AndroidScreen(
     /** App 此刻在用户手上(接管中):这时主屏上开出什么都是用户的事,不去挪。 */
     private val handedOver: () -> Boolean = { false },
     /** 手势的节奏:落指前的停顿、按住时长、落点偏差、滑动的弧线和快慢(见 [GesturePacing])。 */
-    private val pacing: GesturePacing = GesturePacing.human(),
+    private val pacing: GesturePacing = GesturePacing.fast(),
     /** 在这个包名的 App 里打字的节奏(见 [TypingPacing]);默认一次写入全文。 */
     private val typing: (String?) -> TypingPacing = { TypingPacing.Instant },
     /** 发出启动之前:要开的是 [packageName](装在 [user] 那份用户里的;null 为本来那份)。任务服务据此先静上,开头就没声。 */
@@ -2094,6 +2094,8 @@ class AndroidScreen(
     /** 在这一点上点一下:先停一会儿再落指,按住随机的一小会儿。引入拟人化截断高斯微抖动与物理微弧，优先走底层 Shell 驱动注入，杜绝机械单点与 A11y 标志风控拦截。 */
     private suspend fun touch(at: Pair<Int, Int>): Boolean {
         val (x, y) = at
+        val targetRect = android.graphics.Rect(x - 24, y - 24, x + 24, y + 24)
+        com.hana.agent.capsule.SmartAutoDodgeEngine.notifyTargetAndAwaitDodge(targetRect)
         delay(pacing.approach())
         val press = pacing.press()
         val microDx = gaussianJitter(0.6, 1.2)
@@ -2114,6 +2116,10 @@ class AndroidScreen(
      * 助手注不了时退回无障碍手势沿同一条弧线走(系统按路径匀速走,只少了快慢)。不加节奏时和以前一样:无障碍手势按给定时长匀速走折线。
      */
     private suspend fun drag(points: List<Pair<Int, Int>>, durationMs: Long, bow: Boolean): Boolean {
+        points.firstOrNull()?.let { (x, y) ->
+            val targetRect = android.graphics.Rect(x - 24, y - 24, x + 24, y + 24)
+            com.hana.agent.capsule.SmartAutoDodgeEngine.notifyTargetAndAwaitDodge(targetRect)
+        }
         if (!pacing.paced) return a11y.gesture(displayId, pathOf(points), durationMs)
         delay(pacing.approach())
         val stroke = pacing.stroke(points.map { it.first.toDouble() to it.second.toDouble() }, durationMs, bow, display.width to display.height)

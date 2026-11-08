@@ -3,6 +3,8 @@ package com.hana.agent.core.cap.phone
 import com.hana.agent.core.uistate.ScreenFamily
 import com.hana.agent.core.uistate.tools.ScreenTool
 import com.hana.agent.core.tool.AgentTool
+import com.hana.agent.core.bus.RegisterStoreTool
+import com.hana.agent.core.bus.RegisterResolveTool
 
 /** 手机能力的 id,也是手机那一套工具名字的前缀。 */
 const val PHONE = "phone"
@@ -29,4 +31,12 @@ internal object PhoneGroup {
         PhoneDialog, PhoneGesture, SetWheel, PhoneRun, PhoneCommand, ListApps, LaunchApp, AppAfterTask, ShareText, OpenLink,
         SetAlarm, SetTimer, ShowAlarms, AddCalendarEvent,
     )
+
+    /** 注册扩展投机与寄存器工具：RegisterStoreTool, RegisterResolveTool, ActionChainTool */
+    val registeredTools: List<AgentTool> = listOf(
+        RegisterStoreTool, RegisterResolveTool, ActionChainTool,
+    )
+
+    val speculativeTools: List<AgentTool> = registeredTools
+    val allPhoneTools: List<AgentTool> = tools + registeredTools
 }

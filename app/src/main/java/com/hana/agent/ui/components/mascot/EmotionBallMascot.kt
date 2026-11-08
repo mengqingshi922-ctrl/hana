@@ -428,9 +428,20 @@ fun shapeKeyFor(shape: GrokBotShape): String = when (shape) {
     GrokBotShape.Diamond -> "gem"
 }
 
-/** Mika 的工作状态映射到开源表情库里的 32 个 id 之一。 */
-fun mascotEmotionId(mood: GrokBotMood, working: Boolean): String = when {
-    working && mood == GrokBotMood.Thinking -> "30" // 思考中：头顶常驻彩带环
+/** Mika 的工作状态映射到开源表情库里的 32 个 id 之一，打通 4 阶段动力学与自愈表情。 */
+fun mascotEmotionId(
+    mood: GrokBotMood,
+    working: Boolean,
+    phase: com.hana.agent.capsule.AgentTaskPhase = com.hana.agent.capsule.AgentTaskPhase.Idle,
+): String = when {
+    working && mood == GrokBotMood.Thinking -> when (phase) {
+        com.hana.agent.capsule.AgentTaskPhase.Starting -> "31"    // 阶段1：活力自旋/接收任务
+        com.hana.agent.capsule.AgentTaskPhase.Exploring -> "40"   // 阶段2：左右张望寻找控件
+        com.hana.agent.capsule.AgentTaskPhase.Operating -> "16"   // 阶段3：专注微表情
+        com.hana.agent.capsule.AgentTaskPhase.Approaching -> "19" // 阶段4：期待笑脸/满意
+        com.hana.agent.capsule.AgentTaskPhase.Soothing -> "20"    // 阻断自愈：困惑挠头/抱歉合十
+        else -> "30"                                             // 思考中：头顶常驻彩带环
+    }
     mood == GrokBotMood.Happy -> "33"              // 任务完成：撒花
     mood == GrokBotMood.Wink -> "14"               // 戳一戳：害羞（身体渐变成粉）
     mood == GrokBotMood.Thinking -> "32"           // 忙碌

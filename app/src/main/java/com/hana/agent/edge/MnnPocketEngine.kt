@@ -49,6 +49,29 @@ class MnnPocketEngine(
         }
     }
 
+    @Volatile
+    private var sessionPtr: Long = 0L
+
+    // ==================== JNI Native 接口契约 ====================
+    private external fun nativeInit(modelPath: String, threadNum: Int): Long
+    private external fun nativeClassifyIntent(sessionPtr: Long, task: String): Int
+    private external fun nativePickObstaclePointer(sessionPtr: Long, clues: String, candidateTexts: Array<String>): Int
+    private external fun nativeMatchReplayPointer(sessionPtr: Long, recordedText: String, candidateTexts: Array<String>): Int
+    private external fun nativeRelease(sessionPtr: Long)
+
+    private fun ensureNativeSession(): Long {
+        if (!nativeLoaded || !store.isReady()) return 0L
+        if (sessionPtr != 0L) return sessionPtr
+        synchronized(this) {
+            if (sessionPtr == 0L) {
+                sessionPtr = runCatching {
+                    nativeInit(store.decModelFile.absolutePath, 3)
+                }.getOrDefault(0L)
+            }
+        }
+        return sessionPtr
+    }
+
     /**
      * 1. 单步非自回归意图分类（MNN-Pocket-0.3B-Dec，单次前向，硬熔断 80ms）。
      */
@@ -60,6 +83,17 @@ class MnnPocketEngine(
         if (!isReady) return@withTimeoutOrNull null
         withContext(dispatcher) {
             if (simulatedDelayMsForTesting > 0) kotlinx.coroutines.delay(simulatedDelayMsForTesting)
+            val ptr = ensureNativeSession()
+            if (ptr != 0L) {
+                val nativeRes = runCatching { nativeClassifyIntent(ptr, task) }.getOrNull()
+                if (nativeRes != null) {
+                    when (nativeRes) {
+                        0 -> return@withContext IntentGate.Intent.Act
+                        1 -> return@withContext IntentGate.Intent.Read
+                        2 -> return@withContext IntentGate.Intent.Discuss
+                    }
+                }
+            }
             evaluateIntent(task, recentContextSummary, confidenceThreshold)
         }
     }
@@ -76,6 +110,14 @@ class MnnPocketEngine(
         if (!isReady || candidates.isEmpty() || candidates.size > 18) return@withTimeoutOrNull null
         withContext(dispatcher) {
             if (simulatedDelayMsForTesting > 0) kotlinx.coroutines.delay(simulatedDelayMsForTesting)
+            val ptr = ensureNativeSession()
+            if (ptr != 0L) {
+                val texts = candidates.map { it.label }.toTypedArray()
+                val nativeIdx = runCatching { nativePickObstaclePointer(ptr, dialogClues, texts) }.getOrDefault(-1)
+                if (nativeIdx in candidates.indices) {
+                    return@withContext candidates[nativeIdx].ref
+                }
+            }
             evaluateObstaclePointer(userGoal, dialogClues, candidates, confidenceThreshold)
         }
     }
@@ -92,6 +134,14 @@ class MnnPocketEngine(
         if (!isReady || candidates.isEmpty()) return@withTimeoutOrNull null
         withContext(dispatcher) {
             if (simulatedDelayMsForTesting > 0) kotlinx.coroutines.delay(simulatedDelayMsForTesting)
+            val ptr = ensureNativeSession()
+            if (ptr != 0L) {
+                val texts = candidates.map { it.label }.toTypedArray()
+                val nativeIdx = runCatching { nativeMatchReplayPointer(ptr, recordedLabel, texts) }.getOrDefault(-1)
+                if (nativeIdx in candidates.indices) {
+                    return@withContext candidates[nativeIdx].ref
+                }
+            }
             evaluateReplayPointer(stepGoal, recordedLabel, candidates, confidenceThreshold)
         }
     }
@@ -362,13 +412,29 @@ class MnnPocketEngine(
 
     override fun onConfigurationChanged(newConfig: Configuration) = Unit
 
-    private fun purgeActiveSessions() {
-        // 释放 Native Session 与堆外分配
+    fun purgeActiveSessions() {
+        val ptr = sessionPtr
+        if (ptr != 0L) {
+            sessionPtr = 0L
+            runCatching { nativeRelease(ptr) }
+        }
     }
 
     companion object {
         private const val TAG = "MnnPocketEngine"
         private const val HARD_TIMEOUT_MS = 80L
+
+        private var nativeLoaded = false
+        val isNativeLoaded: Boolean get() = nativeLoaded
+
+        init {
+            try {
+                System.loadLibrary("mnn_pocket")
+                nativeLoaded = true
+            } catch (_: Throwable) {
+                nativeLoaded = false
+            }
+        }
 
         @Volatile
         private var instance: MnnPocketEngine? = null

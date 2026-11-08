@@ -27,6 +27,7 @@ class TaskGate(
 ) {
     private val movedAway = MutableStateFlow(false)
     private val userOnPage = MutableStateFlow(false)
+    private val manuallyPaused = MutableStateFlow(false)
     private val resumes = MutableStateFlow(0)
     /** 发现被挪走那一刻的点击计数:之后点的「继续」都算数,哪怕 Agent 还没走到 gate。 */
     @Volatile private var resumesAtMove = 0
@@ -48,16 +49,29 @@ class TaskGate(
     /** 用户在借出的页面上操作、还没点「继续」。 */
     val userOnPagePending: Boolean get() = userOnPage.value
 
+    /** 是否处于手动暂停状态。 */
+    val isManuallyPaused: Boolean get() = manuallyPaused.value
+
+    /** 手动挂起暂停。 */
+    fun pause() {
+        manuallyPaused.value = true
+    }
+
     /** 用户点了「继续」。只对点击之后才开始的、或正在进行的暂停有效;用户在页面上操作的那种暂停当场解除。 */
     fun resume() {
         resumes.update { it + 1 }
         userOnPage.value = false
+        manuallyPaused.value = false
     }
 
     suspend fun pass(phone: () -> Boolean = { true }, setWaiting: (TaskState?) -> Unit) {
         while (true) {
             val onPhone = phone()
             when {
+                manuallyPaused.value -> {
+                    setWaiting(TaskState.Held(paused("user_pause")))
+                    manuallyPaused.first { !it }
+                }
                 userOnPage.value -> {
                     setWaiting(TaskState.Held(paused(USER_ON_PAGE)))
                     userOnPage.first { !it }

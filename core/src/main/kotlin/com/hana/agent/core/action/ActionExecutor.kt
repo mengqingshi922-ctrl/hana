@@ -31,6 +31,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import com.hana.agent.core.tool.SubActions
@@ -315,5 +316,215 @@ class ActionExecutor(
             recorder.result(origin.step, call.name, tools.verb(call.name), content, tools.portRecord(call.name, args), null, null, 0, origin.policy.source, call.id)
         }
         return ActionOutcome.Refused(code, content, before, hit)
+    }
+
+    /**
+     * 投机式宏动作链快速执行流水线:
+     * 步骤前置断言全部通过时，连续 0ms 停顿直通下发；
+     * 遇到任一步骤断言不符或执行失败时，即刻短路并回退。
+     */
+    suspend fun executeChain(
+        chain: MacroActionChain,
+        origin: Origin = Origin.Batch(0),
+        predicateChecker: (suspend (MacroStep) -> Boolean)? = null,
+    ): MacroChainResult {
+        if (chain.steps.isEmpty()) {
+            return MacroChainResult(completedSteps = 0, totalSteps = 0, success = true)
+        }
+        if (chain.steps.size > MAX_CHAIN_STEPS) {
+            return MacroChainResult(
+                completedSteps = 0,
+                totalSteps = chain.steps.size,
+                success = false,
+                failedStepIndex = 0,
+                failureReason = "chain_exceeds_max_steps_$MAX_CHAIN_STEPS",
+                shortCircuited = true,
+            )
+        }
+        val total = chain.steps.size
+        var lastVisible: List<String>? = null
+        var priorSnapshot: com.hana.agent.core.uistate.ScreenSnapshot? = runCatching { tools.interfaces.peek() }.getOrNull()
+
+        for ((index, step) in chain.steps.withIndex()) {
+            // 0. 子步间 35ms 渲染平水期 (排空 SurfaceFlinger 与 Ripple 脏队列)
+            if (index > 0) {
+                kotlinx.coroutines.delay(RENDER_SETTLE_WINDOW_MS)
+                priorSnapshot = runCatching { tools.interfaces.peek() }.getOrNull() ?: priorSnapshot
+            }
+
+            // 1. 顶层窗口 Z-Order 模态拦截检查
+            if (checkModalOverlayInterception(priorSnapshot)) {
+                return MacroChainResult(
+                    completedSteps = index,
+                    totalSteps = total,
+                    success = false,
+                    failedStepIndex = index,
+                    failureReason = "modal_overlay_intercepted",
+                    shortCircuited = true,
+                )
+            }
+
+            // 2. 原子前置断言检查 (Pre-assertion check with timeoutMs polling)
+            val predicatePassed = if (predicateChecker != null) {
+                predicateChecker(step)
+            } else {
+                val timeout = step.timeoutMs.coerceAtLeast(0L)
+                val pollInterval = 40L
+                val startTime = System.currentTimeMillis()
+                var passed = false
+
+                while (true) {
+                    passed = evaluateStepPredicate(step, lastVisible, priorSnapshot)
+                    if (passed) break
+
+                    val elapsed = System.currentTimeMillis() - startTime
+                    if (elapsed >= timeout) break
+
+                    val waitTime = minOf(pollInterval, timeout - elapsed)
+                    if (waitTime <= 0) break
+                    kotlinx.coroutines.delay(waitTime)
+                    lastVisible = runCatching { tools.visibleText() }.getOrNull()
+                }
+                passed
+            }
+
+            if (!predicatePassed) {
+                // 反向物理补偿：注入 Back 键以恢复状态消除未预期弹出层
+                if (index > 0 && (chain.fallbackStrategy == "backtrack" || chain.fallbackStrategy == "stop_and_query")) {
+                    runCatching { run(Part.ToolCall("undo_back", "phone_back", "{}"), origin) }
+                }
+                return MacroChainResult(
+                    completedSteps = index,
+                    totalSteps = total,
+                    success = false,
+                    failedStepIndex = index,
+                    failureReason = "Predicate unmet: ${step.predicate}" + (step.expectText?.let { " ($it)" } ?: ""),
+                    shortCircuited = true,
+                )
+            }
+
+            // 2. 0ms 直通下发执行该步骤 (流水线无额外强制 sleep)
+            val toolName = when (step.tool) {
+                "phone_type", "type" -> "phone_type_text"
+                "phone_enter", "enter" -> "phone_press_key"
+                else -> step.tool
+            }
+            val call = Part.ToolCall("chain_step_${index + 1}", toolName, step.args.toString())
+            val outcome = run(call, origin)
+            when (outcome) {
+                is ActionOutcome.Ran -> {
+                    val content = outcome.exec.content
+                    val ok = (content["ok"] as? JsonPrimitive)?.booleanOrNull ?: true
+                    if (!ok) {
+                        val error = (content["error"] as? JsonPrimitive)?.contentOrNull ?: "step_failed"
+                        return MacroChainResult(
+                            completedSteps = index,
+                            totalSteps = total,
+                            success = false,
+                            failedStepIndex = index,
+                            failureReason = error,
+                            shortCircuited = true,
+                        )
+                    }
+                    // 记录最近一次执行后的观察文本与屏幕快照（供后续步骤断言校验）
+                    lastVisible = runCatching { tools.visibleText() }.getOrNull()
+                    priorSnapshot = runCatching { tools.interfaces.peek() }.getOrNull() ?: priorSnapshot
+                }
+                is ActionOutcome.Refused -> {
+                    return MacroChainResult(
+                        completedSteps = index,
+                        totalSteps = total,
+                        success = false,
+                        failedStepIndex = index,
+                        failureReason = "refused_${outcome.code}",
+                        shortCircuited = true,
+                    )
+                }
+                is ActionOutcome.Cancelled -> {
+                    return MacroChainResult(
+                        completedSteps = index,
+                        totalSteps = total,
+                        success = false,
+                        failedStepIndex = index,
+                        failureReason = "cancelled",
+                        shortCircuited = true,
+                    )
+                }
+            }
+        }
+        return MacroChainResult(
+            completedSteps = total,
+            totalSteps = total,
+            success = true,
+            shortCircuited = false,
+        )
+    }
+
+    private suspend fun evaluateStepPredicate(
+        step: MacroStep,
+        lastVisible: List<String>?,
+        priorSnapshot: com.hana.agent.core.uistate.ScreenSnapshot?,
+    ): Boolean {
+        return when (step.predicate) {
+            ChainPredicateKind.NONE -> true
+            ChainPredicateKind.FOCUSED -> {
+                val elements = runCatching { tools.interfaces.peek()?.elements }.getOrNull() ?: return false
+                val targetRef = (step.args["ref"] as? JsonPrimitive)?.contentOrNull
+                if (targetRef != null) {
+                    elements.find { it.ref == targetRef }?.focused == true
+                } else {
+                    val expect = step.expectText
+                    if (expect != null) {
+                        elements.find { it.name.contains(expect, ignoreCase = true) }?.focused == true
+                    } else {
+                        false
+                    }
+                }
+            }
+            ChainPredicateKind.TEXT_UPDATED -> {
+                val expect = step.expectText ?: return true
+                val visible = lastVisible ?: runCatching { tools.visibleText() }.getOrNull().orEmpty()
+                visible.any { it.contains(expect, ignoreCase = true) }
+            }
+            ChainPredicateKind.PAGE_NAVIGATED -> {
+                val current = runCatching { tools.interfaces.peek() }.getOrNull() ?: return false
+                val prior = priorSnapshot ?: return false
+                val navigated = current.snapshotId != prior.snapshotId ||
+                    (current.packageName != prior.packageName && current.packageName != null) ||
+                    current.elements != prior.elements
+                if (!navigated) return false
+                val expect = step.expectText ?: return true
+                current.packageName?.contains(expect, ignoreCase = true) == true ||
+                    current.elements.any { it.name.contains(expect, ignoreCase = true) }
+            }
+            ChainPredicateKind.ELEMENT_APPEARED -> {
+                val expect = step.expectText ?: return true
+                val visible = lastVisible ?: runCatching { tools.visibleText() }.getOrNull().orEmpty()
+                visible.any { it.contains(expect, ignoreCase = true) }
+            }
+            ChainPredicateKind.ELEMENT_GONE -> {
+                val expect = step.expectText ?: return true
+                val visible = lastVisible ?: runCatching { tools.visibleText() }.getOrNull().orEmpty()
+                visible.none { it.contains(expect, ignoreCase = true) }
+            }
+        }
+    }
+
+    private fun checkModalOverlayInterception(snapshot: com.hana.agent.core.uistate.ScreenSnapshot?): Boolean {
+        if (snapshot == null) return false
+        val windows = snapshot.windows
+        if (windows.size <= 1) return false
+        return windows.any { w ->
+            val type = w.type.lowercase()
+            val title = (w.title ?: "").lowercase()
+            (type.contains("dialog") || type.contains("modal") || type.contains("alert") || type.contains("system_alert") ||
+             title.contains("权限") || title.contains("更新") || title.contains("提示") || title.contains("permission")) &&
+             (w.layer > 0 || w.focused || w.active)
+        }
+    }
+
+    companion object {
+        const val RENDER_SETTLE_WINDOW_MS = 35L
+        const val MAX_CHAIN_STEPS = 3
     }
 }

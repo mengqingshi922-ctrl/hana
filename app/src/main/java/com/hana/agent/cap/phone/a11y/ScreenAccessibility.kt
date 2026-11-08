@@ -162,8 +162,7 @@ open class ScreenAccessibility : AccessibilityService() {
             override fun onSuccess(result: ScreenshotResult) {
                 val shot = runCatching {
                     result.hardwareBuffer.use { buffer ->
-                        val hw = Bitmap.wrapHardwareBuffer(buffer, result.colorSpace) ?: return@runCatching null
-                        hw.copy(Bitmap.Config.ARGB_8888, false).also { hw.recycle() }
+                        Bitmap.wrapHardwareBuffer(buffer, result.colorSpace)
                     }
                 }.getOrNull()
                 if (cont.isActive) cont.resume(shot?.let(MainShot::Ok) ?: MainShot.Failed(ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR))

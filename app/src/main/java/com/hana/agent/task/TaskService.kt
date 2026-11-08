@@ -61,6 +61,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicInteger
 import com.hana.agent.core.cap.web.KeptPageClose
 
@@ -232,8 +235,18 @@ class TaskService : Service() {
             }
             ACTION_CANCEL_MCP -> intent.getStringExtra(EXTRA_MCP_ID)?.let { id -> center.runs().firstOrNull { it.mcpExternalId == id } }
                 ?.let { r -> if (center.cancelIfQueued(r)) cancelQueued(r) else r.cancel() }
-            ACTION_CANCEL -> if (run != null && center.cancelIfQueued(run)) cancelQueued(run) else run?.cancel()
-            ACTION_RESUME -> run?.resume()
+            ACTION_CANCEL -> {
+                _isPaused.value = false
+                if (run != null && center.cancelIfQueued(run)) cancelQueued(run) else run?.cancel()
+            }
+            ACTION_PAUSE -> {
+                _isPaused.value = true
+                run?.pause()
+            }
+            ACTION_RESUME -> {
+                _isPaused.value = false
+                run?.resume()
+            }
             ACTION_TAKE_OVER -> run?.takeOver(waitKeyOf(intent))
             ACTION_HAND_BACK -> run?.handBack(waitKeyOf(intent))
             ACTION_FINISHED_MYSELF -> run?.finishedMyself(waitKeyOf(intent))
@@ -864,6 +877,7 @@ class TaskService : Service() {
         const val ACTION_START_CHANNEL = "com.hana.agent.task.START_CHANNEL"
         const val ACTION_CANCEL_MCP = "com.hana.agent.task.CANCEL_MCP"
         const val ACTION_CANCEL = "com.hana.agent.task.CANCEL"
+        const val ACTION_PAUSE = "com.hana.agent.task.PAUSE"
         const val ACTION_RESUME = "com.hana.agent.task.RESUME"
         const val ACTION_TAKE_OVER = "com.hana.agent.task.TAKE_OVER"
         const val ACTION_HAND_BACK = "com.hana.agent.task.HAND_BACK"
@@ -967,8 +981,16 @@ class TaskService : Service() {
                 .putExtra(EXTRA_MCP_ID, externalId))
         }
 
+        private val _isPaused = MutableStateFlow(false)
+
+        /** 智能体全局暂停状态流。 */
+        val isPaused: StateFlow<Boolean> = _isPaused.asStateFlow()
+
         /** [runKey] 见 [send];应用内的按钮带着屏上那个对话的任务编号,不会落到别的任务上。 */
         fun cancel(context: Context, runKey: String? = null) = send(context, ACTION_CANCEL, runKey = runKey)
+
+        /** 用户点了「暂停」:挂起智能体执行流。 */
+        fun pause(context: Context, runKey: String? = null) = send(context, ACTION_PAUSE, runKey = runKey)
 
         /** 用户点了「继续」:被挪走的 App 会被挪回 Mika 的屏幕。 */
         fun resume(context: Context, runKey: String? = null) = send(context, ACTION_RESUME, runKey = runKey)
