@@ -112,6 +112,13 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }.distinctUntilChanged()
 
+    /** 阿里 MNN-Pocket 端侧神经核 (0.3B) 开关：默认开（毫秒级意图分流与弹窗反射），用户可随时关闭降级为纯云端模式。 */
+    fun edgePocketEnabled(): Boolean = prefs.getBoolean(EDGE_POCKET_ENABLED, true)
+
+    fun setEdgePocketEnabled(on: Boolean) {
+        prefs.edit().putBoolean(EDGE_POCKET_ENABLED, on).apply()
+    }
+
     /** 胶囊停在哪:左边还是右边、高度占可摆范围的比例;没拖过时在右上角。 */
     fun capsuleDock(): CapsuleDock = CapsuleDock(
         if (prefs.getString(CAPSULE_SIDE, null) == DockSide.Left.name) DockSide.Left else DockSide.Right,
@@ -149,6 +156,7 @@ class FeatureFlags(private val prefs: SharedPreferences) {
             "speed_defaults_applied_v7" to { f -> f.copy(deepLinks = true, batchSteps = true) },
         )
         private const val PARALLEL_MAX = "parallel_max"
+        private const val EDGE_POCKET_ENABLED = "edge_pocket_enabled"
         private const val RUN_IN_BACKGROUND = "run_in_background"
         private const val KEEP_SCREEN_ON = "keep_screen_on"
         private const val MUTE_TARGET = "mute_target"

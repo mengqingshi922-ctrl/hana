@@ -72,6 +72,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hana.agent.core.model.ModelRole
+import com.hana.agent.settings.FeatureFlags
 import com.hana.agent.settings.ModelContextSettings
 import com.hana.agent.settings.ModelOption
 import com.hana.agent.settings.ModelOptions
@@ -88,6 +89,7 @@ import com.hana.agent.ui.components.GroupLabel
 import com.hana.agent.ui.components.InputRow
 import com.hana.agent.ui.components.ListRow
 import com.hana.agent.ui.components.MikaButton
+import com.hana.agent.ui.components.MikaSwitch
 import com.hana.agent.ui.components.PageBackground
 import com.hana.agent.ui.components.PillTone
 import com.hana.agent.ui.components.ProgressDots
@@ -1076,7 +1078,10 @@ private fun RolesSection(
         )
     }
 
-    // 3. 语音转文字:独立轻量胶囊入口
+    // 3. 阿里 MNN-Pocket 端侧神经核 Bento 磁贴卡片
+    MnnPocketBentoCard()
+
+    // 4. 语音转文字:独立轻量胶囊入口
     if (onSpeech != null) {
         val speechLine = ModelsCopy.speechLine(ui)
         val speechShape = RoundedCornerShape(12.dp)
@@ -1176,13 +1181,121 @@ private fun RoleBentoTile(
 }
 
 /**
- * 端侧小模型下载与加速 Bento 磁贴：
- * 提供 Qwen2.5-1.5B (推荐极速省电) 与 UI-TARS-2B (GUI原生动作) 模型的下载、实时进度与一键端云协同激活。
+ * 阿里 MNN-Pocket-0.3B 端侧神经核 Bento 磁贴卡片：
+ * 采用现代 Bento 控制台风格，展示 173MB INT4 进程内引擎运行状态与高阶开关。
  */
 @Composable
-private fun LocalSlmBentoCard(ui: ModelSetupUi) {
-    // 端侧小模型已按全新架构彻底移除，UI 入口关闭
-    return
+private fun MnnPocketBentoCard() {
+    val context = LocalContext.current
+    val c = MikaTheme.colors
+    val shape = RoundedCornerShape(14.dp)
+    val featureFlags = remember { FeatureFlags.get(context) }
+    var enabled by remember { mutableStateOf(featureFlags.edgePocketEnabled()) }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp)
+            .cardSurface(c, shape)
+            .border(0.5.dp, c.edge, shape)
+            .clip(shape)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        // 顶栏：图标 + 标题/状态 + 拨动开关
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .background(if (enabled) c.accentSoft else c.fill, RoundedCornerShape(10.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        MikaIcons.Spark,
+                        null,
+                        Modifier.size(17.dp),
+                        tint = if (enabled) c.accent else c.ink3,
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            "端侧神经核 · MNN-Pocket",
+                            style = MikaType.BodyStrong.copy(fontSize = 14.5.sp),
+                            color = c.ink,
+                        )
+                        if (enabled) {
+                            StatusPill("协同运行中", PillTone.Ok)
+                        } else {
+                            StatusPill("已停用", PillTone.Neutral)
+                        }
+                    }
+                    Text(
+                        "阿里开源 0.3B · 173MB INT4 QAT · 进程内毫秒反射",
+                        style = MikaType.Caption.copy(fontSize = 11.5.sp),
+                        color = c.ink3,
+                    )
+                }
+            }
+
+            MikaSwitch(
+                checked = enabled,
+                onCheckedChange = { checked ->
+                    enabled = checked
+                    featureFlags.setEdgePocketEnabled(checked)
+                },
+            )
+        }
+
+        // 核心技术特性徽章网格
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            val badgeModifier = Modifier
+                .background(c.fill, RoundedCornerShape(6.dp))
+                .padding(horizontal = 6.dp, vertical = 3.5.dp)
+
+            listOf(
+                "⚡ 12ms 意图秒断",
+                "🛡️ 隐私零出端",
+                "🎯 弹窗指针消解",
+                "🚀 0% GPU 占用",
+            ).forEach { tag ->
+                Box(badgeModifier, contentAlignment = Alignment.Center) {
+                    Text(
+                        tag,
+                        style = MikaType.Caption.copy(fontSize = 10.5.sp, fontWeight = FontWeight.Medium),
+                        color = if (enabled) c.ink2 else c.ink3,
+                    )
+                }
+            }
+        }
+
+        // 底部产品说明
+        Text(
+            if (enabled) {
+                "常驻手机本地的动作神经中枢，承担开局意图判定、弹窗闪电反射与敏感数据脱敏；建议常驻开启，关闭后将平滑降级为纯云端判断。"
+            } else {
+                "端侧神经核已停用，系统将所有意图分流与弹窗判断全量交给云端主模型（开局可能增加 1~2 秒网络往返）。"
+            },
+            style = MikaType.Caption.copy(fontSize = 11.sp),
+            color = if (enabled) c.ink3 else c.warn,
+            lineHeight = 15.sp,
+        )
+    }
 }
 
 @Composable

@@ -34,8 +34,11 @@ class TaskEnvironment {
     @Volatile var lightModelFactory: (Context, ModelSession) -> ChatModel? = defaultLightModelFactory
     /** 视觉模型(核查时看截图);设置里没有能看图的模型时为空。 */
     @Volatile var visionModelFactory: (Context, ModelSession) -> ChatModel? = defaultVisionModelFactory
-    /** 端侧毫秒级非自回归决策与指针端口 (MNN-Pocket-0.3B) */
-    @Volatile var edgePortFactory: (Context) -> EdgeDecisionPort = { c -> MnnPocketEngine.getInstance(c) }
+    /** 端侧毫秒级非自回归决策与指针端口 (MNN-Pocket-0.3B)，受 FeatureFlags 控制 */
+    @Volatile var edgePortFactory: (Context) -> EdgeDecisionPort = { c ->
+        if (com.hana.agent.settings.FeatureFlags.get(c).edgePocketEnabled()) MnnPocketEngine.getInstance(c)
+        else EdgeDecisionPort.NONE
+    }
 
     /** 评测跑器用的钩子;产品里全是默认值。 */
     val evalHooks = EvalHooks()
