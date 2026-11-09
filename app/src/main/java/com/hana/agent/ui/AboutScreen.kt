@@ -114,6 +114,7 @@ fun AboutScreen(
         GroupCard {
             ListRow(MikaIcons.Code, AboutCopy.REPO, AboutCopy.REPO_SUB, first = true, onClick = { onOpenUrl(HanaLinks.REPO) }) { ExternalMark() }
             ListRow(MikaIcons.Book, AboutCopy.GUIDE, AboutCopy.GUIDE_SUB, onClick = { onOpenUrl(HanaLinks.README) }) { ExternalMark() }
+            ListRow(MikaIcons.Chats, AboutCopy.GROUP, AboutCopy.GROUP_SUB, onClick = { sheet = AboutSheet.Group }) { RowChevron() }
             ListRow(MikaIcons.Bug, AboutCopy.FEEDBACK, AboutCopy.FEEDBACK_SUB, onClick = { sheet = AboutSheet.Feedback }) { RowChevron() }
         }
 
@@ -145,6 +146,7 @@ fun AboutScreen(
         AboutSheet.Changelog -> ChangelogSheet(onDismiss = close)
         AboutSheet.Feedback -> FeedbackSheet(
             onGitHub = { close(); onOpenUrl(issueUrl) },
+            onGroup = { sheet = AboutSheet.Group },
             onDiagnostics = { sheet = AboutSheet.Diagnostics },
             onDismiss = close,
         )
@@ -467,10 +469,11 @@ private fun ChangelogSheet(onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun FeedbackSheet(onGitHub: () -> Unit, onDiagnostics: () -> Unit, onDismiss: () -> Unit) {
+private fun FeedbackSheet(onGitHub: () -> Unit, onGroup: () -> Unit, onDiagnostics: () -> Unit, onDismiss: () -> Unit) {
     AboutSheetFrame(AboutCopy.FEEDBACK, AboutCopy.FEEDBACK_SHEET_SUB, "feedback-sheet", onDismiss) {
         Column(Modifier.padding(top = 6.dp)) {
             FeedbackOption(MikaIcons.Code, AboutCopy.FEEDBACK_GITHUB, AboutCopy.FEEDBACK_GITHUB_SUB, first = true, onGitHub)
+            FeedbackOption(MikaIcons.Chats, AboutCopy.FEEDBACK_GROUP, AboutCopy.GROUP_SUB, first = false, onGroup)
             FeedbackOption(MikaIcons.Copy, AboutCopy.DIAGNOSTICS, AboutCopy.DIAGNOSTICS_SUB, first = false, onDiagnostics)
         }
     }
