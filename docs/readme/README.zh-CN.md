@@ -1,29 +1,33 @@
 <!-- translated-from: README.md @ 55937e9d15fd -->
 <div align="center">
 
-<img src="../media/logo.png" alt="Hana" width="88" />
+<img src="../media/logo.png" alt="Hana Logo" width="108" />
 
-# Hana
+# 🌸 Hana
 
-**陪伴型全自主手机操作智能体（Autonomous Phone-Operating Agent）**
+### 灵动陪伴型全自主手机操作智能体
+**Autonomous Mobile GUI Agent with Emotional Mascot & Silent Dual-Display Execution**
 
-说一句话，它替你自动规划、精准感知、操控 App 与浏览网页，把复杂繁琐的操作变成一次交付。  
-独创静默后台虚拟屏技术与灵动小精灵交互体系，它在后台替你忙碌，你照常刷手机。
+<p align="center">
+  <b>说一句话，它替你自动规划、精准感知、操控 App 与浏览网页，把复杂繁琐的多步操作变成一次交付。</b><br/>
+  独创静默后台虚拟双屏技术与灵动小精灵交互体系 —— 它在后台替你忙碌，你照常前台刷手机，互不干扰、零抢焦。
+</p>
 
-<a href="https://github.com/mengqingshi922-ctrl/hana/releases/latest"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20APK-%E5%AE%89%E5%8D%93%2011%2B-2ea043?style=for-the-badge&logo=android&logoColor=white" alt="下载 APK" /></a>
+[![Download APK](https://img.shields.io/badge/立即下载_APK-Android_11%2B-00F2FE?style=for-the-badge&logo=android&logoColor=white&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/releases/latest)
+[![Version](https://img.shields.io/github/v/release/mengqingshi922-ctrl/hana?include_prereleases&label=Release&color=7BD5FF&style=for-the-badge&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/releases/latest)
+[![Stars](https://img.shields.io/github/stars/mengqingshi922-ctrl/hana?style=for-the-badge&logo=github&label=Stars&color=FF8FC7&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/stargazers)
+[![Downloads](https://img.shields.io/github/downloads/mengqingshi922-ctrl/hana/total?label=Downloads&color=00F5A0&style=for-the-badge&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/releases)
+[![License](https://img.shields.io/badge/License-Apache_2.0-B68CFF?style=for-the-badge&labelColor=12151D)](../../LICENSE)
 
-<a href="https://github.com/mengqingshi922-ctrl/hana/stargazers"><img src="https://img.shields.io/github/stars/mengqingshi922-ctrl/hana?style=flat&logo=github&label=Star&color=1f6feb" alt="stars" /></a>
-<a href="https://github.com/mengqingshi922-ctrl/hana/releases"><img src="https://img.shields.io/github/downloads/mengqingshi922-ctrl/hana/total?label=%E4%B8%8B%E8%BD%BD&color=2ea043" alt="downloads" /></a>
-<a href="https://github.com/mengqingshi922-ctrl/hana/releases/latest"><img src="https://img.shields.io/github/v/release/mengqingshi922-ctrl/hana?include_prereleases&label=%E7%89%88%E6%9C%AC" alt="version" /></a>
-<a href="../../LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-lightgrey" alt="license" /></a>
-
-[English](../../README.md) · 简体中文 · [繁體中文](README.zh-Hant.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
+[English](../../README.md) · **简体中文** · [繁體中文](README.zh-Hant.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
 <br/>
 
-<img src="../media/hana_showcase.png" alt="Hana 陪伴型全自主手机操作智能体真机界面与灵动小精灵" width="680" />
+<a href="https://github.com/mengqingshi922-ctrl/hana">
+  <img src="../media/hana_showcase.png" alt="Hana 全自主手机操作与灵动陪伴智能体旗舰全景" width="840" />
+</a>
 
-<sub>Hana 沉浸式真机界面：置顶常驻灵动小精灵（Mascot）、多工作状态胶囊与意图极速分流直通引擎</sub>
+<sub>✨ 置顶常驻灵动小精灵（32态情绪流转）· 毫秒级端云极速直通 Fast-Path · 静默独立虚拟双屏 · 视觉隐私脱敏与停滞自愈</sub>
 
 </div>
 

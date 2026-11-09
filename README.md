@@ -1,28 +1,32 @@
 <div align="center">
 
-<img src="docs/media/logo.png" alt="Hana" width="88" />
+<img src="docs/media/logo.png" alt="Hana Logo" width="108" />
 
-# Hana
+# 🌸 Hana
 
-**Autonomous Phone-Operating Agent with Mascot Presence**
+### 灵动陪伴型全自主手机操作智能体
+**Autonomous Mobile GUI Agent with Emotional Mascot & Silent Dual-Display Execution**
 
-Say what you need, and Hana automatically plans, perceives, operates apps, and browses the web until your task is done.  
-Engineered with background virtual-display execution and an interactive companion mascot — it works silently in the background while you keep using your phone uninterrupted.
+<p align="center">
+  <b>说一句话，它替你自动规划、精准感知、操控 App 与浏览网页，把复杂繁琐的多步操作变成一次交付。</b><br/>
+  独创静默后台虚拟双屏技术与灵动小精灵交互体系 —— 它在后台替你忙碌，你照常前台刷手机，互不干扰、零抢焦。
+</p>
 
-<a href="https://github.com/mengqingshi922-ctrl/hana/releases/latest"><img src="https://img.shields.io/badge/Download%20APK-Android%2011%2B-2ea043?style=for-the-badge&logo=android&logoColor=white" alt="Download APK" /></a>
-
-<a href="https://github.com/mengqingshi922-ctrl/hana/stargazers"><img src="https://img.shields.io/github/stars/mengqingshi922-ctrl/hana?style=flat&logo=github&label=Star&color=1f6feb" alt="stars" /></a>
-<a href="https://github.com/mengqingshi922-ctrl/hana/releases"><img src="https://img.shields.io/github/downloads/mengqingshi922-ctrl/hana/total?label=downloads&color=2ea043" alt="downloads" /></a>
-<a href="https://github.com/mengqingshi922-ctrl/hana/releases/latest"><img src="https://img.shields.io/github/v/release/mengqingshi922-ctrl/hana?include_prereleases&label=version" alt="version" /></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-lightgrey" alt="license" /></a>
+[![Download APK](https://img.shields.io/badge/立即下载_APK-Android_11%2B-00F2FE?style=for-the-badge&logo=android&logoColor=white&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/releases/latest)
+[![Version](https://img.shields.io/github/v/release/mengqingshi922-ctrl/hana?include_prereleases&label=Release&color=7BD5FF&style=for-the-badge&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/releases/latest)
+[![Stars](https://img.shields.io/github/stars/mengqingshi922-ctrl/hana?style=for-the-badge&logo=github&label=Stars&color=FF8FC7&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/stargazers)
+[![Downloads](https://img.shields.io/github/downloads/mengqingshi922-ctrl/hana/total?label=Downloads&color=00F5A0&style=for-the-badge&labelColor=12151D)](https://github.com/mengqingshi922-ctrl/hana/releases)
+[![License](https://img.shields.io/badge/License-Apache_2.0-B68CFF?style=for-the-badge&labelColor=12151D)](LICENSE)
 
 English · [简体中文](docs/readme/README.zh-CN.md) · [繁體中文](docs/readme/README.zh-Hant.md) · [日本語](docs/readme/README.ja.md) · [한국어](docs/readme/README.ko.md) · [Español](docs/readme/README.es.md)
 
 <br/>
 
-<img src="docs/media/hana_showcase.png" alt="Hana Autonomous Phone-Operating Agent Interface with Mascot Presence" width="680" />
+<a href="https://github.com/mengqingshi922-ctrl/hana">
+  <img src="docs/media/hana_showcase.png" alt="Hana Autonomous Phone-Operating Agent Interface with Mascot Presence" width="840" />
+</a>
 
-<sub>Hana's refined Jetpack Compose UI featuring the persistent top mascot avatar, dynamic state pill, and zero-latency autonomous action engine</sub>
+<sub>✨ 置顶常驻灵动小精灵（32态情绪流转）· 毫秒级端云极速直通 Fast-Path · 静默独立虚拟双屏 · 视觉隐私脱敏与停滞自愈</sub>
 
 </div>
 
