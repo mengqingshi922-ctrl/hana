@@ -112,8 +112,8 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
     }.distinctUntilChanged()
 
-    /** 阿里 MNN-Pocket 端侧神经核 (0.3B) 开关：默认开（毫秒级意图分流与弹窗反射），用户可随时关闭降级为纯云端模式。 */
-    fun edgePocketEnabled(): Boolean = prefs.getBoolean(EDGE_POCKET_ENABLED, true)
+    /** 阿里 MNN-Pocket 端侧神经核 (0.3B) 开关：默认关（仅在有需要时启用），优先采用极速纯规则与云端主模型。 */
+    fun edgePocketEnabled(): Boolean = prefs.getBoolean(EDGE_POCKET_ENABLED, false)
 
     fun setEdgePocketEnabled(on: Boolean) {
         prefs.edit().putBoolean(EDGE_POCKET_ENABLED, on).apply()

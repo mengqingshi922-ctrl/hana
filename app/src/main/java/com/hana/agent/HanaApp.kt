@@ -351,7 +351,9 @@ class HanaApp : Application(), WebOwner, SandboxOwner, TaskEnvironment.Owner, Ph
         scope.launch(Dispatchers.Default) {
             runCatching { com.hana.agent.cap.phone.a11y.PhoneOcr.warmUp() }
         }
-        // 初始化 MNN-Pocket 端侧神经引擎与内存水位监听
-        com.hana.agent.edge.MnnPocketEngine.init(this)
+        // 初始化 MNN-Pocket 端侧神经引擎与内存水位监听 (仅在特性启用时加载)
+        if (com.hana.agent.settings.FeatureFlags.get(this).edgePocketEnabled()) {
+            com.hana.agent.edge.MnnPocketEngine.init(this)
+        }
     }
 }

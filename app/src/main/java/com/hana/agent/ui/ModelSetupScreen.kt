@@ -12,7 +12,6 @@ import com.hana.agent.HanaApp
 import com.hana.agent.voice.SystemSpeech
 import com.hana.agent.settings.ChatGptSignIns
 import com.hana.agent.i18n.tr
-import com.hana.agent.ui.components.MnnPocketBentoCard
 import androidx.compose.ui.res.stringResource
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -1079,8 +1078,6 @@ private fun RolesSection(
         )
     }
 
-    // 3. 阿里 MNN-Pocket 端侧神经核 Bento 磁贴卡片
-    MnnPocketBentoCard()
 
     // 4. 语音转文字:独立轻量胶囊入口
     if (onSpeech != null) {
