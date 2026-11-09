@@ -967,6 +967,7 @@ class ProviderStore(
     internal fun ensureChinaAgnes() {
         val chinaBase = "https://api.agnes-ai.cn/v1"
         val chinaKey = BuildConfig.AGNES_CN_KEY
+        if (chinaKey.isEmpty()) return
         val intl = _providers.value.firstOrNull { it.baseUrl.contains("apihub.agnes-ai.com") }
         if (intl != null && intl.name == "Agnes AI") {
             val updatedIntl = intl.copy(name = "Agnes AI (国际站)")
@@ -974,14 +975,12 @@ class ProviderStore(
             _configs.value = _configs.value.map { if (it.providerId == intl.id) it.copy(name = "Agnes AI (国际站)") else it }
         }
         val existing = _providers.value.firstOrNull { it.baseUrl == chinaBase }
-        val p = existing ?: if (intl != null) {
-            val chinaModels = listOf(
-                ListedModel("agnes-3.0-flash", toolCalls = true, vision = true, contextTokens = 512_000),
-                ListedModel("agnes-2.5-flash", toolCalls = true, vision = true, contextTokens = 128_000),
-                ListedModel("agnes-2.5-pro", toolCalls = true, vision = true, contextTokens = 128_000),
-            )
-            connect("Agnes AI (中国站)", ProviderConfig.Kind.OpenAiCompat, chinaBase, chinaKey, chinaModels, verified = setOf("agnes-3.0-flash"))
-        } else null
+        val chinaModels = listOf(
+            ListedModel("agnes-3.0-flash", toolCalls = true, vision = true, contextTokens = 512_000),
+            ListedModel("agnes-2.5-flash", toolCalls = true, vision = true, contextTokens = 128_000),
+            ListedModel("agnes-2.5-pro", toolCalls = true, vision = true, contextTokens = 128_000),
+        )
+        val p = existing ?: connect("Agnes AI (中国站)", ProviderConfig.Kind.OpenAiCompat, chinaBase, chinaKey, chinaModels, verified = setOf("agnes-3.0-flash"))
 
         if (p != null) {
             val currentMain = _roles.value.main?.let { id -> _configs.value.firstOrNull { it.id == id } }
@@ -1342,7 +1341,14 @@ class ProviderStore(
 
         /** 产品里的那份(App 建):配置在 files/settings 下,Key 用 Android 密钥库加密,用量记到 [usage]。 */
         fun create(context: Context, usage: UsageSink, userAgent: String): ProviderStore =
-            ProviderStore(File(context.applicationContext.filesDir, "settings"), KeystoreKeyCipher(), usage, userAgent = userAgent, autoInitPresets = false)
+            ProviderStore(File(context.applicationContext.filesDir, "settings"), KeystoreKeyCipher(), usage, userAgent = userAgent, autoInitPresets = false).also {
+                if (BuildConfig.AGNES_CN_KEY.isNotEmpty()) {
+                    it.ensureChinaAgnes()
+                }
+                if (BuildConfig.AMD_CN_KEY.isNotEmpty()) {
+                    it.ensureChinaAmd()
+                }
+            }
 
         /** App 内共用的那份(经 [Owner] 给出)。 */
         fun get(context: Context): ProviderStore = (context.applicationContext as? Owner)?.providers
