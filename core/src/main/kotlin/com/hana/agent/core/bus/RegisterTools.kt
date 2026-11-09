@@ -19,6 +19,7 @@ internal object RegisterStoreTool : AgentTool {
     override val verb: Verb = Verb.Collect
     override val risk: Risk = Risk.Read
     override val name: String = "register_store"
+    override fun offered(ctx: ToolContext): Boolean = false
     override val def: ToolDef = ToolDef(
         name = "register_store",
         description = "Store text into a zero-copy semantic register (\$reg:key) for cross-app reuse.",
@@ -55,6 +56,7 @@ internal object RegisterResolveTool : AgentTool {
     override val verb: Verb = Verb.Query
     override val risk: Risk = Risk.Read
     override val name: String = "register_resolve"
+    override fun offered(ctx: ToolContext): Boolean = false
     override val def: ToolDef = ToolDef(
         name = "register_resolve",
         description = "Resolve content stored in a zero-copy semantic register.",

@@ -46,6 +46,6 @@ internal class ToolRegistry(private val ctx: ToolContext, all: List<AgentTool>, 
     /** 能放进 do_steps 的工具名(本任务没提供的也列),按登记的顺序。 */
     fun batchable(): List<String> = declared.values.filter { it.batchable }.map { it.name }
 
-    /** 「未知工具」的说明里列出的名字:随时可用的那些(不动屏幕的一组看运行环境就绪,不列)。 */
-    fun listedNames(): List<String> = tools.values.filter { !it.offScreen }.map { it.name }
+    /** 「未知工具」的说明里列出的名字:随时可用的那些(不动屏幕的一组看运行环境就绪,不列)。内部与未向模型开放的扩展工具不列入。 */
+    fun listedNames(): List<String> = tools.values.filter { !it.offScreen && it.offered(ctx) }.map { it.name }
 }

@@ -5,6 +5,7 @@ import com.hana.agent.core.agent.DO_STEPS_TOOL
 import com.hana.agent.core.cap.phone.AppPacing
 import com.hana.agent.core.cap.phone.PHONE
 import com.hana.agent.core.cap.phone.PhoneCapability
+import com.hana.agent.core.cap.phone.PhoneGroup
 import com.hana.agent.core.cap.sandbox.SandboxCapability
 import com.hana.agent.core.cap.sandbox.SANDBOX
 import com.hana.agent.core.cap.sandbox.SandboxGroup
@@ -177,10 +178,14 @@ fun recordedTools(): ToolIndex = legacyNames().let { legacy -> ToolIndex(allTool
 
 /** Mika 所有可能提供的工具,按发给模型的顺序。 */
 internal fun allTools(): List<AgentTool> =
-    GeneralGroup.tools + PhoneCapability.allPhoneTools() + WebGroup.tools + SandboxGroup.tools
+    GeneralGroup.tools + PhoneCapability.tools() + WebGroup.tools + SandboxGroup.tools
+
+/** 包含所有发给模型的工具以及内部/投机/扩展工具（供全局声明索引与名称解析）。 */
+internal fun allKnownTools(): List<AgentTool> =
+    allTools() + PhoneGroup.speculativeTools
 
 /** Mika 所有可能提供的工具的声明。 */
-fun knownTools(): ToolIndex = ToolIndex(allTools())
+fun knownTools(): ToolIndex = ToolIndex(allKnownTools())
 
 /** Mika 所有可能提供的工具名(技能文档里提到的工具名据此校验)。 */
 fun knownToolNames(): Set<String> = knownTools().names + DO_STEPS_TOOL

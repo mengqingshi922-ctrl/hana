@@ -238,11 +238,16 @@ class ToolAssemblyRegistrationTest {
     fun actionChainBacktracksOnExecutionFailure() = runTest {
         val screen = object : ScreenPort by FakeScreen() {
             val actions = mutableListOf<String>()
-            override suspend fun peek() = ScreenSnapshot("p1", "com.test.app", emptyList(), 1080, 2400)
+            private val elements = listOf(
+                UiElement("@e1", "button", "立即搜索", 100, 100, listOf(50, 50, 150, 150), null, true, false, false, focused = true),
+                UiElement("@e2", "button", "缺失项", 200, 200, listOf(150, 150, 250, 250), null, true, false, false, focused = true)
+            )
+            override suspend fun snapshot() = ScreenSnapshot("p1", "com.test.app", elements, 1080, 2400)
+            override suspend fun peek() = snapshot()
             override suspend fun tapRef(ref: String, snapshotId: String): ActionResult {
                 actions += "tap:$ref"
                 return if (ref == "@e1") ActionResult.Ok(changed = true)
-                else ActionResult.Error("tap_failed", "element missing")
+                else ActionResult.Failed("tap_failed", "element missing")
             }
             override suspend fun back(): ActionResult {
                 actions += "back"
@@ -267,7 +272,7 @@ class ToolAssemblyRegistrationTest {
                 })
                 add(buildJsonObject {
                     put("tool", "phone_tap")
-                    put("args", buildJsonObject { put("ref", "@e2_missing"); put("snapshotId", "p1") })
+                    put("args", buildJsonObject { put("ref", "@e2"); put("snapshotId", "p1") })
                 })
             })
             put("fallbackStrategy", "backtrack")
@@ -276,7 +281,7 @@ class ToolAssemblyRegistrationTest {
         val res = ActionChainTool.execute(chainArgs, tools.ctx)
         assertFalse("步2执行失败时整个 chain 必须失败", res.content["ok"]?.jsonPrimitive?.content?.toBoolean() == true)
         // 验证执行了步1 (@e1)，接着步2失败触发了反向 back 补偿
-        assertEquals(listOf("tap:@e1", "tap:@e2_missing", "back"), screen.actions)
+        assertEquals(listOf("tap:@e1", "tap:@e2", "back"), screen.actions)
     }
 
     @Test

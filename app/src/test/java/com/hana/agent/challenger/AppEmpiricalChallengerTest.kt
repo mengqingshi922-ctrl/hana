@@ -253,7 +253,8 @@ class AppEmpiricalChallengerTest {
 
         // 无论何种异常环境，triggerClickThump 绝不能发生任何未捕获异常抛出
         SafeGateHaptics.triggerClickThump(mockContext)
-        assertTrue(true)
+        assertFalse("空环境/无系统服务下不能误判为具备线性马达", com.hana.agent.ui.haptic.HapticManager.isLinearActuator(mockContext))
+        assertNotNull("SafeGateHaptics 单例必须正常就绪", SafeGateHaptics)
     }
 
     // ==========================================
@@ -265,6 +266,9 @@ class AppEmpiricalChallengerTest {
         val testPayloadPart1 = "0123456789" // 10 字节
         val testPayloadPart2 = "ABCDEFGHIJ" // 10 字节
         val fullPayload = testPayloadPart1 + testPayloadPart2
+        val expectedSha = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(fullPayload.toByteArray())
+            .joinToString("") { "%02x".format(it) }
 
         val store = MnnPocketModelStore(
             baseDir = rootDir,
@@ -283,8 +287,8 @@ class AppEmpiricalChallengerTest {
                 .setBody(testPayloadPart2)
         )
 
-        // 发起续传下载
-        store.startDownload(mirrorUrl = server.url("/resume.mnn").toString())
+        // 发起续传下载并传入匹配的预期 SHA-256
+        store.startDownload(mirrorUrl = server.url("/resume.mnn").toString(), expectedSha256 = expectedSha)
 
         // 验证请求头带有 Range
         val recordedRequest = server.takeRequest()
