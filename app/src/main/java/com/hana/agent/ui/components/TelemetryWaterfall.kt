@@ -165,6 +165,7 @@ fun TelemetryWaterfall(
 fun EdgePulseChart(
     historyLatenciesMs: List<Float>,
     isReady: Boolean,
+    isNativeLoaded: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     val c = MikaTheme.colors
@@ -182,11 +183,17 @@ fun EdgePulseChart(
         label = "ledAlpha",
     )
 
-    // 默认基准波动序列 (10ms ~ 18ms)
-    val points = if (historyLatenciesMs.isNotEmpty()) historyLatenciesMs else listOf(12f, 14.5f, 11f, 15.2f, 13f, 16.8f, 12.4f)
+    val points = if (historyLatenciesMs.isNotEmpty()) {
+        historyLatenciesMs
+    } else if (!isNativeLoaded) {
+        listOf(0.8f, 0.9f, 0.7f, 1.0f, 0.8f)
+    } else {
+        listOf(12f, 14.5f, 11f, 15.2f, 13f, 16.8f, 12.4f)
+    }
     val latestMs = points.lastOrNull() ?: 12f
     val activeColor = Color(0xFF10B981) // 翡翠绿
     val standbyColor = Color(0xFF6B7280) // 待机灰
+    val effectiveActive = isReady && isNativeLoaded
 
     Column(
         modifier = modifier
@@ -214,20 +221,24 @@ fun EdgePulseChart(
                         .size(8.dp)
                         .clip(CircleShape)
                         .background(
-                            if (isReady) activeColor.copy(alpha = ledAlpha) else standbyColor,
+                            if (effectiveActive) activeColor.copy(alpha = ledAlpha) else standbyColor,
                         ),
                 )
                 Text(
-                    if (isReady) "端侧神经核反射 ⚡" else "端侧待机中 (云端兜底)",
+                    when {
+                        !isNativeLoaded -> "纯规则引擎兜底 (< 1ms)"
+                        isReady -> "端侧神经核反射 ⚡"
+                        else -> "端侧待机中 (云端兜底)"
+                    },
                     style = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.Medium),
-                    color = if (isReady) c.ink else c.ink3,
+                    color = if (effectiveActive) c.ink else c.ink3,
                 )
             }
 
             Text(
-                "%.1f ms".format(latestMs),
+                if (!isNativeLoaded) "< 1.0 ms (规则)" else "%.1f ms".format(latestMs),
                 style = TextStyle(fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold),
-                color = if (isReady) activeColor else standbyColor,
+                color = if (effectiveActive) activeColor else standbyColor,
             )
         }
 

@@ -177,7 +177,7 @@ fun recordedTools(): ToolIndex = legacyNames().let { legacy -> ToolIndex(allTool
 
 /** Mika 所有可能提供的工具,按发给模型的顺序。 */
 internal fun allTools(): List<AgentTool> =
-    GeneralGroup.tools + PhoneCapability.tools() + WebGroup.tools + SandboxGroup.tools
+    GeneralGroup.tools + PhoneCapability.allPhoneTools() + WebGroup.tools + SandboxGroup.tools
 
 /** Mika 所有可能提供的工具的声明。 */
 fun knownTools(): ToolIndex = ToolIndex(allTools())

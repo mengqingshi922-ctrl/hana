@@ -41,7 +41,8 @@ internal class PhoneCapability(
     val dwell = AppDwell(pacing, appPace, idle)
 
     override val id = PHONE
-    private val tools = PhoneGroup.tools
+    val allPhoneTools: List<AgentTool> = PhoneGroup.allPhoneTools
+    private val tools = PhoneGroup.allPhoneTools
 
     override val folds = true
 
@@ -59,7 +60,7 @@ internal class PhoneCapability(
 
     override fun status(): CapabilityStatus = CapabilityStatus.Available
 
-    override fun tools(): List<AgentTool> = tools
+    override fun tools(): List<AgentTool> = allPhoneTools
 
     override val family = PHONE_FAMILY
 
@@ -145,8 +146,11 @@ internal class PhoneCapability(
         internal fun textChars(s: ScreenSnapshot): Int =
             s.elements.filter { !it.editable && !it.hint }.sumOf { it.name.codePointCount(0, it.name.length) }
 
-        /** 手机一组可能提供的全部工具。 */
-        fun tools(): List<AgentTool> = PhoneGroup.tools
+        /** 手机一组可能提供的全部工具。包含 action_chain、register_store、register_resolve 扩展套件。 */
+        fun tools(): List<AgentTool> = PhoneGroup.allPhoneTools
+
+        /** 手机一组扩展的完整工具集（包含 action_chain、register_store、register_resolve）。 */
+        fun allPhoneTools(): List<AgentTool> = PhoneGroup.allPhoneTools
 
         private val PHONE_TASK_RE = Regex(
             """(?i)""" +

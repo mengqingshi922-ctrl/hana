@@ -87,7 +87,7 @@ class MnnPocketModelStoreTest {
 
         // 触发下载
         val downloadUrl = server.url("/mnn_pocket_0.3b_dec.mnn").toString()
-        store.startDownload(mirrorUrl = downloadUrl)
+        store.startDownload(mirrorUrl = downloadUrl, expectedSha256 = expectedSha256)
 
         // 验证下载成功且就绪
         assertEquals(DownloadState.Ready, store.downloadState.value)
@@ -129,5 +129,61 @@ class MnnPocketModelStoreTest {
         val state = store.downloadState.value
         assertTrue("HTTP 500 时状态必须置为 DownloadState.Error", state is DownloadState.Error)
         assertTrue((state as DownloadState.Error).canRetry)
+    }
+
+    @Test
+    fun downloadPipelineRejectsMismatchedSha256() = runTest {
+        val testPayload = "TAMPERED_OR_CORRUPTED_PAYLOAD"
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(testPayload)
+        )
+
+        val store = MnnPocketModelStore(
+            baseDir = rootDir,
+            httpClient = OkHttpClient(),
+        )
+
+        val downloadUrl = server.url("/corrupted.mnn").toString()
+        store.startDownload(mirrorUrl = downloadUrl, expectedSha256 = MnnPocketModelStore.EXPECTED_SHA256)
+
+        val state = store.downloadState.value
+        assertTrue("SHA-256 不匹配时必须进入 Error 状态", state is DownloadState.Error)
+        assertTrue((state as DownloadState.Error).message.contains("SHA-256 完整性校验失败"))
+        assertFalse("校验失败后模型绝不能标记为就绪", store.isReady())
+        assertFalse("损坏的临时分片必须已被物理删除", store.partFile.exists())
+    }
+
+    @Test
+    fun existingCorruptedDecModelFileIsDetectedAndPurged() = runTest {
+        val testPayload = "VALID_FIXED_WEIGHTS_CONTENT"
+        val expectedSha256 = MessageDigest.getInstance("SHA-256")
+            .digest(testPayload.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+
+        val store = MnnPocketModelStore(
+            baseDir = rootDir,
+            httpClient = OkHttpClient(),
+        )
+
+        // 模拟磁盘上已存在一个损坏的 1 字节伪造模型文件
+        store.decModelFile.writeText("X")
+        assertTrue(store.isReady())
+
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody(testPayload)
+        )
+
+        val downloadUrl = server.url("/fixed.mnn").toString()
+        store.startDownload(mirrorUrl = downloadUrl, expectedSha256 = expectedSha256)
+
+        // 验证损坏文件被自动检测并重新下载为有效文件
+        assertEquals(DownloadState.Ready, store.downloadState.value)
+        assertTrue(store.isReady())
+        assertEquals(testPayload, store.decModelFile.readText())
+        assertTrue(store.verifyChecksum(store.decModelFile, expectedSha256))
     }
 }

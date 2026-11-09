@@ -31,10 +31,15 @@ android {
             val f = rootProject.file("local.properties")
             if (f.exists()) f.inputStream().use { load(it) }
         }
-        fun key(name: String) = (localProps.getProperty(name) ?: "").trim()
+        fun key(name: String) = (
+            localProps.getProperty(name)
+                ?: System.getenv(name)
+                ?: (project.findProperty(name) as? String)
+                ?: ""
+        ).trim()
         buildConfigField("String", "AGNES_CN_KEY", "\"${key("AGNES_CN_KEY")}\"")
         buildConfigField("String", "AGNES_INTL_KEY", "\"${key("AGNES_INTL_KEY")}\"")
-        buildConfigField("String", "AMD_CN_KEY", "\"${key("AMD_CN_KEY").ifEmpty { "REDACTED_AMD_CN_KEY" }}\"")
+        buildConfigField("String", "AMD_CN_KEY", "\"${key("AMD_CN_KEY")}\"")
     }
 
     // 沙箱程序只有 arm64 版本(jniLibs/arm64-v8a);APK 不限 ABI,别的设备照常安装、显示「此设备不支持沙箱」。

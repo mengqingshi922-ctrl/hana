@@ -1001,7 +1001,7 @@ class ProviderStore(
 
     internal fun ensureChinaAmd() {
         val amdBase = "https://developer.amd.com.cn/radeon/api/v1"
-        val amdKey = BuildConfig.AMD_CN_KEY.ifEmpty { "REDACTED_AMD_CN_KEY" }
+        val amdKey = BuildConfig.AMD_CN_KEY
         if (amdKey.isEmpty()) return
 
         val amdModels = listOf(

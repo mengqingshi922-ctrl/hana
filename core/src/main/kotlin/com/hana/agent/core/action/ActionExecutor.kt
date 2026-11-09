@@ -65,6 +65,12 @@ class ActionExecutor(
     private val decision = ConfirmDecision(tools, confirmations, approvals, recorder = recorder, provenance = provenance, selfPackage = selfPackage, autonomous = autonomous)
     private val pass = ActionPass()
 
+    init {
+        tools.ctx.chainExecutor = { chain ->
+            executeChain(chain, Origin.Script(tools.ctx.currentStep))
+        }
+    }
+
     /** 配了确认关卡(付款能经用户同意后做)。 */
     val confirms: Boolean = confirmations != null
 
@@ -354,6 +360,9 @@ class ActionExecutor(
 
             // 1. 顶层窗口 Z-Order 模态拦截检查
             if (checkModalOverlayInterception(priorSnapshot)) {
+                if (index > 0 && (chain.fallbackStrategy == "backtrack" || chain.fallbackStrategy == "stop_and_query")) {
+                    runCatching { run(Part.ToolCall("undo_back", "phone_back", "{}"), origin) }
+                }
                 return MacroChainResult(
                     completedSteps = index,
                     totalSteps = total,
@@ -403,19 +412,40 @@ class ActionExecutor(
                 )
             }
 
-            // 2. 0ms 直通下发执行该步骤 (流水线无额外强制 sleep)
+            // 3. 0ms 直通下发执行该步骤 (流水线无额外强制 sleep)
             val toolName = when (step.tool) {
                 "phone_type", "type" -> "phone_type_text"
                 "phone_enter", "enter" -> "phone_press_key"
-                else -> step.tool
+                else -> {
+                    if (tools.declared(step.tool) != null) step.tool
+                    else if (tools.declared("phone_${step.tool}") != null) "phone_${step.tool}"
+                    else step.tool
+                }
             }
             val call = Part.ToolCall("chain_step_${index + 1}", toolName, step.args.toString())
-            val outcome = run(call, origin)
+            val outcome = try {
+                run(call, origin)
+            } catch (e: Exception) {
+                if (index > 0 && (chain.fallbackStrategy == "backtrack" || chain.fallbackStrategy == "stop_and_query")) {
+                    runCatching { run(Part.ToolCall("undo_back", "phone_back", "{}"), origin) }
+                }
+                return MacroChainResult(
+                    completedSteps = index,
+                    totalSteps = total,
+                    success = false,
+                    failedStepIndex = index,
+                    failureReason = "exception: ${e.message}",
+                    shortCircuited = true,
+                )
+            }
             when (outcome) {
                 is ActionOutcome.Ran -> {
                     val content = outcome.exec.content
                     val ok = (content["ok"] as? JsonPrimitive)?.booleanOrNull ?: true
                     if (!ok) {
+                        if (index > 0 && (chain.fallbackStrategy == "backtrack" || chain.fallbackStrategy == "stop_and_query")) {
+                            runCatching { run(Part.ToolCall("undo_back", "phone_back", "{}"), origin) }
+                        }
                         val error = (content["error"] as? JsonPrimitive)?.contentOrNull ?: "step_failed"
                         return MacroChainResult(
                             completedSteps = index,
@@ -431,6 +461,9 @@ class ActionExecutor(
                     priorSnapshot = runCatching { tools.interfaces.peek() }.getOrNull() ?: priorSnapshot
                 }
                 is ActionOutcome.Refused -> {
+                    if (index > 0 && (chain.fallbackStrategy == "backtrack" || chain.fallbackStrategy == "stop_and_query")) {
+                        runCatching { run(Part.ToolCall("undo_back", "phone_back", "{}"), origin) }
+                    }
                     return MacroChainResult(
                         completedSteps = index,
                         totalSteps = total,
@@ -441,6 +474,9 @@ class ActionExecutor(
                     )
                 }
                 is ActionOutcome.Cancelled -> {
+                    if (index > 0 && (chain.fallbackStrategy == "backtrack" || chain.fallbackStrategy == "stop_and_query")) {
+                        runCatching { run(Part.ToolCall("undo_back", "phone_back", "{}"), origin) }
+                    }
                     return MacroChainResult(
                         completedSteps = index,
                         totalSteps = total,

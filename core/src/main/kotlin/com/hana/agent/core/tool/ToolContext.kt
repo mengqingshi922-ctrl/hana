@@ -75,6 +75,8 @@ internal class ToolContext(
     var callId = ""
     /** 自己不动界面的工具(页面脚本)里的动作经它回到执行入口;只读调用、测试里不给时里面的动作一律不做。 */
     var sub: SubActions? = null
+    /** 宏动作链执行器; 由 ActionExecutor 初始化并在有执行入口时提供。 */
+    var chainExecutor: (suspend (com.hana.agent.core.action.MacroActionChain) -> com.hana.agent.core.action.MacroChainResult)? = null
     /** 本次调用所在的轮次(循环的「第 N 步」)。 */
     var currentStep: Int
         get() = shots.step

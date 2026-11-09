@@ -92,10 +92,15 @@ class MnnPocketModelStore(
      * 启动 HTTP Range 分片断点续传下载管线。
      * 支持 ModelScope 官方源及加速镜像源。
      */
-    suspend fun startDownload(mirrorUrl: String? = null) = withContext(Dispatchers.IO) {
+    suspend fun startDownload(mirrorUrl: String? = null, expectedSha256: String = EXPECTED_SHA256) = withContext(Dispatchers.IO) {
         if (isReady()) {
-            _downloadState.value = DownloadState.Ready
-            return@withContext
+            if (verifyChecksum(decModelFile, expectedSha256)) {
+                _downloadState.value = DownloadState.Ready
+                return@withContext
+            } else {
+                // 已存在文件损坏或 SHA-256 不匹配，物理删除并重新下载
+                decModelFile.delete()
+            }
         }
 
         val urlsToTry = if (mirrorUrl != null) {
@@ -113,7 +118,7 @@ class MnnPocketModelStore(
                 return@withContext
             }
 
-            val success = tryDownloadFromUrl(targetUrl) { err -> lastErrorMessage = err }
+            val success = tryDownloadFromUrl(targetUrl, expectedSha256) { err -> lastErrorMessage = err }
             if (success) {
                 return@withContext
             }
@@ -126,7 +131,7 @@ class MnnPocketModelStore(
         }
     }
 
-    private fun tryDownloadFromUrl(targetUrl: String, onError: (String) -> Unit): Boolean {
+    private fun tryDownloadFromUrl(targetUrl: String, expectedSha256: String, onError: (String) -> Unit): Boolean {
         try {
             var existingBytes = if (partFile.exists()) partFile.length() else 0L
             var requestBuilder = Request.Builder()
@@ -211,7 +216,14 @@ class MnnPocketModelStore(
 
             // 下载完成，进入校验阶段
             _downloadState.value = DownloadState.Verifying("SHA-256 校验中...")
-            computeSha256(partFile)
+            val computed = computeSha256(partFile)
+            if (computed == null || !computed.equals(expectedSha256, ignoreCase = true)) {
+                val err = "SHA-256 完整性校验失败: 预期 $expectedSha256, 实际 $computed"
+                onError(err)
+                partFile.delete()
+                _downloadState.value = DownloadState.Error(err, canRetry = true)
+                return false
+            }
 
             // 重命名至最终模型文件
             if (partFile.renameTo(decModelFile)) {
@@ -249,15 +261,11 @@ class MnnPocketModelStore(
     /**
      * 校验文件 SHA-256 哈希完整性。
      */
-    suspend fun verifyChecksum(file: File? = null, expectedSha256: String? = null): Boolean = withContext(Dispatchers.IO) {
+    suspend fun verifyChecksum(file: File? = null, expectedSha256: String = EXPECTED_SHA256): Boolean = withContext(Dispatchers.IO) {
         val target = file ?: decModelFile
         if (!target.exists()) return@withContext false
         val computed = computeSha256(target) ?: return@withContext false
-        if (expectedSha256 != null) {
-            computed.equals(expectedSha256, ignoreCase = true)
-        } else {
-            computed.isNotBlank()
-        }
+        computed.equals(expectedSha256, ignoreCase = true)
     }
 
     /**

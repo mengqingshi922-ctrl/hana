@@ -62,6 +62,8 @@ fun MnnPocketBentoCard(
     val store = activeEngine.store
     val downloadState by store.downloadState.collectAsState()
     val isReady = store.isReady()
+    val isNativeLoaded = MnnPocketEngine.isNativeLoaded
+    val isEngineReady = isReady && isNativeLoaded && enabled
 
     Column(
         modifier
@@ -112,14 +114,16 @@ fun MnnPocketBentoCard(
                             !enabled -> "已停用" to PillTone.Neutral
                             downloadState is DownloadState.Downloading -> "下载中" to PillTone.Accent
                             downloadState is DownloadState.Verifying -> "校验中" to PillTone.Accent
-                            isReady -> "协同中" to PillTone.Ok
+                            isReady && !isNativeLoaded -> "规则兜底" to PillTone.Neutral
+                            isReady && isNativeLoaded -> "协同中" to PillTone.Ok
                             downloadState is DownloadState.Error -> "异常" to PillTone.Warn
                             else -> "未下载" to PillTone.Neutral
                         }
                         StatusPill(pillStatus.first, pillStatus.second)
                     }
                     Text(
-                        "阿里 MNN-Pocket · 173MB INT4 QAT",
+                        if (isNativeLoaded) "阿里 MNN-Pocket · 173MB INT4 QAT"
+                        else "纯规则兜底模式 · 原生 MNN 库未载入",
                         style = MikaType.Caption.copy(fontSize = 11.5.sp),
                         color = c.ink3,
                     )
@@ -268,26 +272,38 @@ fun MnnPocketBentoCard(
 
         // 第三行：神经核反射脉冲指示器
         EdgePulseChart(
-            historyLatenciesMs = emptyList(),
-            isReady = enabled && isReady,
+            historyLatenciesMs = if (isEngineReady) emptyList() else listOf(0.8f, 0.9f, 0.7f, 1.0f, 0.8f),
+            isReady = isEngineReady,
+            isNativeLoaded = isNativeLoaded,
             modifier = Modifier.fillMaxWidth(),
         )
 
         // 第四行：时序瀑布流预览 (Perceive -> Edge Filter -> Cloud TTFT -> Inject)
-        TelemetryWaterfall(
-            stages = listOf(
+        val stages = if (isEngineReady) {
+            listOf(
                 TelemetryStage("Perceive 感知", 35L, 0xFF3B82F6),
                 TelemetryStage("Edge Filter 神经反射", 12L, 0xFF10B981),
                 TelemetryStage("Cloud TTFT 云端", 160L, 0xFFF59E0B),
                 TelemetryStage("Inject 动作注入", 45L, 0xFF8B5CF6),
-            ),
+            )
+        } else {
+            listOf(
+                TelemetryStage("Perceive 感知", 35L, 0xFF3B82F6),
+                TelemetryStage("Rule Filter 规则兜底", 1L, 0xFF6B7280),
+                TelemetryStage("Cloud TTFT 云端", 160L, 0xFFF59E0B),
+                TelemetryStage("Inject 动作注入", 45L, 0xFF8B5CF6),
+            )
+        }
+        TelemetryWaterfall(
+            stages = stages,
             modifier = Modifier.fillMaxWidth(),
         )
 
         // 底部说明文案
         Text(
             if (enabled) {
-                if (isReady) "端侧动作反射神经核已激活，12ms 极速开局判定与弹窗消解，敏感数据零出端。"
+                if (isEngineReady) "端侧动作反射神经核已激活，12ms 极速开局判定与弹窗消解，敏感数据零出端。"
+                else if (isReady && !isNativeLoaded) "MNN 原生库未加载，已自动切换至高精度纯规则引擎兜底模式（时延 < 1ms）。"
                 else "端侧模型未就绪，系统已自动无感降级至高精度纯规则兜底或云端全量推理。"
             } else {
                 "端侧核已停用，意图与弹窗判断全量交由云端主模型（可能略微增加网络耗时）。"

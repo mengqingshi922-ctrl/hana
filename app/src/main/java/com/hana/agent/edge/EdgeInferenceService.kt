@@ -112,11 +112,26 @@ class EdgeInferenceService : Service() {
     private val binder = object : IEdgeInference.Stub() {
         override fun isAvailable(): Boolean {
             val profile = HardwareProbe.probeSystem(this@EdgeInferenceService)
-            return HardwareProbe.evaluateTier(profile) != HardwareProbe.ModelTier.CloudOnly
+            if (HardwareProbe.evaluateTier(profile) == HardwareProbe.ModelTier.CloudOnly) return false
+            val engine = runCatching { MnnPocketEngine.getInstance(this@EdgeInferenceService) }.getOrNull()
+            return engine?.isReady == true || HardwareProbe.canRun15bVlm(profile)
         }
 
         override fun classifyIntent(task: String?): String {
             if (task.isNullOrBlank()) return "general"
+            val engine = runCatching { MnnPocketEngine.getInstance(this@EdgeInferenceService) }.getOrNull()
+            if (engine != null) {
+                val intent = runCatching {
+                    kotlinx.coroutines.runBlocking { engine.classifyIntent(task) }
+                }.getOrNull()
+                if (intent != null) {
+                    return when (intent) {
+                        com.hana.agent.core.agent.IntentGate.Intent.Act -> "act"
+                        com.hana.agent.core.agent.IntentGate.Intent.Read -> "read"
+                        com.hana.agent.core.agent.IntentGate.Intent.Discuss -> "discuss"
+                    }
+                }
+            }
             return if (task.contains("支付") || task.contains("买") || task.contains("转账")) "transaction"
             else "navigation"
         }
@@ -126,9 +141,14 @@ class EdgeInferenceService : Service() {
         }
 
         override fun runInference(input: Bundle?): Bundle {
+            val action = input?.getString("action") ?: "health_check"
+            val engine = runCatching { MnnPocketEngine.getInstance(this@EdgeInferenceService) }.getOrNull()
             return Bundle().apply {
                 putBoolean("success", true)
                 putString("result", "ok")
+                putString("action", action)
+                putBoolean("in_process_engine_available", engine != null)
+                putBoolean("engine_ready", engine?.isReady == true)
             }
         }
     }

@@ -784,16 +784,68 @@ class AgentLoop(
             track.after(tools.verb(first.name), !isError, ran.verdicts.isNotEmpty() || advice != null, exec.changed, false, exec.place?.name)
             com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
             goalTracker.onActionExecuted(exec, place?.name)
-            val screenDigest = exec.content["screen"]?.toString() ?: exec.content.toString()
-            val frameFingerprint = (place?.name.orEmpty()) + ":" + screenDigest.hashCode()
-            watchdog.recordFrame(frameFingerprint)
-            val verdict = watchdog.evaluate()
-            if (verdict != com.hana.agent.core.watchdog.WatchdogVerdict.HEALTHY) {
-                consecutiveWatchdogFailures++
-                val healingTier = watchdog.recommendHealing(consecutiveWatchdogFailures)
-                emit(RunEvent.State(now(), "watchdog_healing", "${verdict.name}:${healingTier.name}"))
-            } else {
-                consecutiveWatchdogFailures = 0
+            val stopNow = guards.stop ?: executor.offScreenStop
+            if (!offScreen && stopNow == null && verb != Verb.TypeText && verb != Verb.ClearText) {
+                if (exec.changed == true) {
+                    watchdog.reset()
+                    consecutiveWatchdogFailures = 0
+                } else {
+                    val screenDigest = exec.content["screen"]?.toString() ?: exec.content.toString()
+                    val frameFingerprint = (place?.name.orEmpty()) + ":" + screenDigest.hashCode()
+                    watchdog.recordFrame(frameFingerprint)
+                    val verdict = watchdog.evaluate()
+                    if (verdict != com.hana.agent.core.watchdog.WatchdogVerdict.HEALTHY) {
+                        consecutiveWatchdogFailures++
+                        val healingTier = watchdog.recommendHealing(consecutiveWatchdogFailures)
+                        emit(RunEvent.State(now(), "watchdog_healing", "${verdict.name}:${healingTier.name}"))
+                        when (healingTier) {
+                            com.hana.agent.core.watchdog.SelfHealingTier.TIER_1_DISMISS_OBSTACLE,
+                            com.hana.agent.core.watchdog.SelfHealingTier.TIER_2_SAFETY_BACK -> {
+                                if (tools.declared("phone_back") != null) {
+                                    val healCall = Part.ToolCall("watchdog_heal_${step}", "phone_back", "{}")
+                                    val healOutcome = runCatching { executor.run(healCall, Origin.Script(step)) }.getOrNull()
+                                    if (healOutcome is ActionOutcome.Ran) {
+                                        val changed = healOutcome.exec.changed
+                                        track.after(tools.verb("phone_back"), ok = true, guard = false, changed = changed, recovery = true, app = place?.name)
+                                        if (changed == true) {
+                                            watchdog.reset()
+                                            consecutiveWatchdogFailures = 0
+                                        }
+                                    }
+                                }
+                            }
+                            com.hana.agent.core.watchdog.SelfHealingTier.TIER_3_RESTART_APP -> {
+                                val pkg = place?.name
+                                if (!pkg.isNullOrBlank() && tools.declared("phone_launch_app") != null) {
+                                    val restartArgs = buildJsonObject { put("package", pkg); put("cold", true) }.toString()
+                                    val healCall = Part.ToolCall("watchdog_heal_${step}", "phone_launch_app", restartArgs)
+                                    val healOutcome = runCatching { executor.run(healCall, Origin.Script(step)) }.getOrNull()
+                                    if (healOutcome is ActionOutcome.Ran) {
+                                        val changed = healOutcome.exec.changed
+                                        track.after(tools.verb("phone_launch_app"), ok = true, guard = false, changed = changed, recovery = true, app = pkg)
+                                        if (changed == true) {
+                                            watchdog.reset()
+                                            consecutiveWatchdogFailures = 0
+                                        }
+                                    }
+                                } else if (tools.declared("phone_back") != null) {
+                                    val healCall = Part.ToolCall("watchdog_heal_${step}", "phone_back", "{}")
+                                    val healOutcome = runCatching { executor.run(healCall, Origin.Script(step)) }.getOrNull()
+                                    if (healOutcome is ActionOutcome.Ran) {
+                                        val changed = healOutcome.exec.changed
+                                        track.after(tools.verb("phone_back"), ok = true, guard = false, changed = changed, recovery = true, app = place?.name)
+                                        if (changed == true) {
+                                            watchdog.reset()
+                                            consecutiveWatchdogFailures = 0
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        consecutiveWatchdogFailures = 0
+                    }
+                }
             }
             if (advice != null && exec.changed == true && place?.name != null) {
                 com.hana.agent.core.knowledge.AppTipsStore.recordTip(place?.name, "曾在此界面遇阻，换用其他动作或等待刷新可脱困")
@@ -806,7 +858,6 @@ class AgentLoop(
                 emit(RunEvent.Media(now(), shotId, step, RunEvent.placeLabel(place)))
             }
 
-            val stopNow = guards.stop ?: executor.offScreenStop
             val end = StopRules.afterAction(exec.outcome, stopNow)
             if (end != null) {
                 // 模型自己说做不成(end_not_done)时用户刚补了话:不收尾,带着这句话接着做;守卫叫停照样结束
