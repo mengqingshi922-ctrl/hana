@@ -1,4 +1,4 @@
-<!-- translated-from: README.md @ 55937e9d15fd -->
+<!-- translated-from: README.md @ 310df315112f -->
 <div align="center">
 
 <img src="../media/logo.png" alt="Hana" width="88" />

@@ -337,7 +337,7 @@ class ProviderStore(
     init {
         dir.mkdirs()
         load()
-        if (autoInitPresets && _providers.value.isEmpty()) {
+        if (autoInitPresets && _providers.value.isEmpty() && BuildConfig.AGNES_CN_KEY.isNotEmpty()) {
             val preset = ProviderPresets.all.first()
             val modelName = "agnes-3.0-flash"
             val p = connect(
@@ -999,9 +999,9 @@ class ProviderStore(
         }
     }
 
-    internal fun ensureChinaAmd() {
+    internal fun ensureChinaAmd(overrideKey: String? = null) {
         val amdBase = "https://developer.amd.com.cn/radeon/api/v1"
-        val amdKey = BuildConfig.AMD_CN_KEY
+        val amdKey = overrideKey ?: BuildConfig.AMD_CN_KEY
         if (amdKey.isEmpty()) return
 
         val amdModels = listOf(
@@ -1342,10 +1342,7 @@ class ProviderStore(
 
         /** 产品里的那份(App 建):配置在 files/settings 下,Key 用 Android 密钥库加密,用量记到 [usage]。 */
         fun create(context: Context, usage: UsageSink, userAgent: String): ProviderStore =
-            ProviderStore(File(context.applicationContext.filesDir, "settings"), KeystoreKeyCipher(), usage, userAgent = userAgent, autoInitPresets = true).also {
-                it.ensureChinaAgnes()
-                it.ensureChinaAmd()
-            }
+            ProviderStore(File(context.applicationContext.filesDir, "settings"), KeystoreKeyCipher(), usage, userAgent = userAgent, autoInitPresets = false)
 
         /** App 内共用的那份(经 [Owner] 给出)。 */
         fun get(context: Context): ProviderStore = (context.applicationContext as? Owner)?.providers

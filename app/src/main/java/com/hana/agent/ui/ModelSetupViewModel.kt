@@ -185,12 +185,7 @@ data class AddForm(
     companion object {
         fun of(p: ProviderPreset) = AddForm(
             p.label, p.kind, p.baseUrl,
-            when (p.label) {
-                "Agnes AI (中国站)" -> BuildConfig.AGNES_CN_KEY
-                "Agnes AI (国际站)", "Agnes AI" -> BuildConfig.AGNES_INTL_KEY
-                "AMD (中国站)" -> BuildConfig.AMD_CN_KEY
-                else -> ""
-            }
+            ""
         )
         fun presetFor(label: String): ProviderPreset = ProviderPresets.all.firstOrNull { it.label == label } ?: ProviderPresets.custom
     }

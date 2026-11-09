@@ -27,19 +27,9 @@ android {
         // 关于页版本号后的 Beta 标记;出正式版时改成 false
         buildConfigField("boolean", "BETA", "true")
         // 预置的 Agnes Key 从 local.properties 读（不入库）；缺失时为空串，App 里手动填
-        val localProps = Properties().apply {
-            val f = rootProject.file("local.properties")
-            if (f.exists()) f.inputStream().use { load(it) }
-        }
-        fun key(name: String) = (
-            localProps.getProperty(name)
-                ?: System.getenv(name)
-                ?: (project.findProperty(name) as? String)
-                ?: ""
-        ).trim()
-        buildConfigField("String", "AGNES_CN_KEY", "\"${key("AGNES_CN_KEY")}\"")
-        buildConfigField("String", "AGNES_INTL_KEY", "\"${key("AGNES_INTL_KEY")}\"")
-        buildConfigField("String", "AMD_CN_KEY", "\"${key("AMD_CN_KEY")}\"")
+        buildConfigField("String", "AGNES_CN_KEY", "\"\"")
+        buildConfigField("String", "AGNES_INTL_KEY", "\"\"")
+        buildConfigField("String", "AMD_CN_KEY", "\"\"")
     }
 
     // 沙箱程序只有 arm64 版本(jniLibs/arm64-v8a);APK 不限 ABI,别的设备照常安装、显示「此设备不支持沙箱」。

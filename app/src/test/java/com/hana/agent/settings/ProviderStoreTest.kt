@@ -898,7 +898,7 @@ class ProviderStoreTest {
     @Test
     fun ensureChinaAmdSetsUpAmdChinaProviderAndDualModel() = runTest {
         val s = ProviderStore(tmp.root, AesGcmKeyCipher { key }) { cfg, _, _, _ -> FakeModel(cfg.capabilities) }
-        s.ensureChinaAmd()
+        s.ensureChinaAmd("test-amd-key")
 
         val amd = s.providers.value.firstOrNull { it.baseUrl.contains("developer.amd.com.cn") }
         assertTrue("应自动连接 AMD (中国站)", amd != null)
