@@ -36,11 +36,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import com.hana.agent.ui.components.GrokBotTheme
+import com.hana.agent.ui.components.mascot.shapeKeyFor
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -243,6 +246,9 @@ private fun Capsule(
 ) {
     val isPill = state == CapsuleState.PILL || view.pill
     val c = MikaTheme.colors
+    val activeBotShape by GrokBotTheme.currentShape.collectAsState()
+    val botShapeKey = remember(activeBotShape) { shapeKeyFor(activeBotShape) }
+    val isWorking = view.kind == CapsuleKind.Running
     // 长按说话中:放大一点、外面一圈蓝边(画在阴影边里,窗口大小不变)
     val press = if (MikaTheme.reduceMotion) (if (holding) 1f else 0f)
         else animateFloatAsState(if (holding) 1f else 0f, tween(HOLD_MS), label = "hold").value
@@ -283,6 +289,8 @@ private fun Capsule(
                 com.hana.agent.ui.components.mascot.EmotionBallMascot(
                     size = 32.dp,
                     emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                    shapeKey = botShapeKey,
+                    isWorking = isWorking,
                 )
             }
             if (glow.value > 0f) Box(Modifier.matchParentSize().background(androidx.compose.ui.graphics.Color.White.copy(alpha = glow.value)))
@@ -306,6 +314,9 @@ private fun PillRow(
     onStop: (() -> Unit)? = null,
 ) {
     val c = MikaTheme.colors
+    val activeBotShape by GrokBotTheme.currentShape.collectAsState()
+    val botShapeKey = remember(activeBotShape) { shapeKeyFor(activeBotShape) }
+    val isWorking = view.kind == CapsuleKind.Running
     val maxWidth = (LocalConfiguration.current.screenWidthDp * 0.72f).dp
     // 同一件事、同一个状态里换句只变宽:记下这一段里最宽的时候
     var widest by remember(view.widthEpoch) { mutableIntStateOf(0) }
@@ -323,6 +334,8 @@ private fun PillRow(
                 com.hana.agent.ui.components.mascot.EmotionBallMascot(
                     size = 24.dp,
                     emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                    shapeKey = botShapeKey,
+                    isWorking = isWorking,
                 )
             }
         }
@@ -374,6 +387,8 @@ private fun PillRow(
                 com.hana.agent.ui.components.mascot.EmotionBallMascot(
                     size = 24.dp,
                     emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                    shapeKey = botShapeKey,
+                    isWorking = isWorking,
                 )
             }
         }
@@ -399,6 +414,9 @@ fun ExpandedCockpit(
     modifier: Modifier = Modifier,
 ) {
     val c = MikaTheme.colors
+    val activeBotShape by GrokBotTheme.currentShape.collectAsState()
+    val botShapeKey = remember(activeBotShape) { shapeKeyFor(activeBotShape) }
+    val isWorking = view.kind == CapsuleKind.Running
     val shape = RoundedCornerShape(20.dp)
     Column(
         modifier
@@ -462,6 +480,8 @@ fun ExpandedCockpit(
                     com.hana.agent.ui.components.mascot.EmotionBallMascot(
                         size = 56.dp,
                         emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                        shapeKey = botShapeKey,
+                        isWorking = isWorking,
                     )
                 }
                 Text(

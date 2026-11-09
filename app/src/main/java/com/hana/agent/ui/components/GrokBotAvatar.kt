@@ -164,6 +164,7 @@ fun GrokBotAvatar(
         emotionId = com.hana.agent.ui.components.mascot.mascotEmotionId(activeMood, isWorking, phase),
         modifier = modifier,
         shapeKey = com.hana.agent.ui.components.mascot.shapeKeyFor(activeShape),
+        isWorking = isWorking,
         onTap = tap,
     )
 }
@@ -265,21 +266,54 @@ private fun LegacyGrokBotAvatar(
             val radius = w * 0.40f
 
             scale(scaleX = bounceScaleX.value, scaleY = bounceScaleY.value, pivot = center) {
-                // === A. 工作模式: 环绕旋转彩色光圈 (Orbit 彩带) ===
+                // === A. 工作模式: 环绕旋转彩色光圈 (自适应三角/方块/圆球/菱星几何形态) ===
                 if (isWorking || activeMood == GrokBotMood.Thinking) {
-                    rotate(degrees = orbitAngle, pivot = center) {
-                        val ringColors = listOf(
-                            Color(0xFF6366F1), // 极光靛蓝
-                            Color(0xFFA855F7), // 赛博亮紫
-                            Color(0xFFEC4899), // 灵动粉红
-                            Color(0xFF06B6D4)  // 荧光青蓝
-                        )
-                        drawCircle(
-                            brush = Brush.sweepGradient(ringColors, center),
-                            radius = radius * 1.25f,
-                            center = center,
-                            style = Stroke(width = (w * 0.05f).coerceAtLeast(2f), cap = StrokeCap.Round)
-                        )
+                    val ringColors = listOf(
+                        Color(0xFF6366F1), // 极光靛蓝
+                        Color(0xFFA855F7), // 赛博亮紫
+                        Color(0xFFFF52A8), // 灵动粉红
+                        Color(0xFF06B6D4), // 荧光青蓝
+                        Color(0xFF6366F1), // 回环
+                    )
+                    val ringBrush = Brush.sweepGradient(ringColors, center)
+                    val ringStroke = Stroke(width = (w * 0.055f).coerceAtLeast(2.2f), cap = StrokeCap.Round)
+                    when (activeShape) {
+                        GrokBotShape.Circle -> {
+                            rotate(degrees = orbitAngle, pivot = center) {
+                                drawCircle(brush = ringBrush, radius = radius * 1.25f, center = center, style = ringStroke)
+                            }
+                        }
+                        GrokBotShape.Triangle -> {
+                            val r = radius * 1.32f
+                            val path = Path()
+                            val pTop = Offset(center.x, center.y - r * 0.95f)
+                            val pRight = Offset(center.x + r * cos(Math.toRadians(30.0)).toFloat(), center.y + r * sin(Math.toRadians(30.0)).toFloat() * 0.9f)
+                            val pLeft = Offset(center.x - r * cos(Math.toRadians(30.0)).toFloat(), center.y + r * sin(Math.toRadians(30.0)).toFloat() * 0.9f)
+                            val corner = r * 0.28f
+                            path.moveTo(pTop.x, pTop.y + corner)
+                            path.lineTo(pRight.x - corner * 0.866f, pRight.y - corner * 0.5f)
+                            path.quadraticTo(pRight.x, pRight.y, pRight.x - corner, pRight.y)
+                            path.lineTo(pLeft.x + corner, pLeft.y)
+                            path.quadraticTo(pLeft.x, pLeft.y, pLeft.x + corner * 0.866f, pLeft.y - corner * 0.5f)
+                            path.lineTo(pTop.x - corner * 0.5f, pTop.y + corner * 0.866f)
+                            path.quadraticTo(pTop.x, pTop.y, pTop.x, pTop.y + corner)
+                            path.close()
+                            drawPath(path = path, brush = ringBrush, style = ringStroke)
+                        }
+                        GrokBotShape.Square -> {
+                            val side = radius * 2.22f
+                            val topLeft = Offset(center.x - side / 2f, center.y - side / 2f)
+                            val cornerRadius = CornerRadius(side * 0.32f, side * 0.32f)
+                            drawRoundRect(brush = ringBrush, topLeft = topLeft, size = Size(side, side), cornerRadius = cornerRadius, style = ringStroke)
+                        }
+                        GrokBotShape.Diamond -> {
+                            rotate(degrees = 45f, pivot = center) {
+                                val side = radius * 1.95f
+                                val topLeft = Offset(center.x - side / 2f, center.y - side / 2f)
+                                val cornerRadius = CornerRadius(side * 0.28f, side * 0.28f)
+                                drawRoundRect(brush = ringBrush, topLeft = topLeft, size = Size(side, side), cornerRadius = cornerRadius, style = ringStroke)
+                            }
+                        }
                     }
                 }
 

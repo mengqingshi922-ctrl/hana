@@ -34,8 +34,9 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.util.lerp as lerpF
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.util.lerp as lerpF
 import com.hana.agent.ui.components.GrokBotMood
 import com.hana.agent.ui.components.GrokBotShape
 import com.hana.agent.ui.theme.MikaTheme
@@ -44,6 +45,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.floor
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
@@ -64,6 +66,7 @@ fun EmotionBallMascot(
     emotionId: String,
     modifier: Modifier = Modifier,
     shapeKey: String = "blob",
+    isWorking: Boolean = false,
     onTap: (() -> Unit)? = null,
 ) {
     // 关键帧序列可以把表情"交给下一个"（例如 唤醒 → 待机放空）
@@ -112,6 +115,12 @@ fun EmotionBallMascot(
         targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(if (spec.zzz) 5200 else 3200, easing = LinearEasing), RepeatMode.Restart),
         label = "mascotT",
+    )
+    val orbitT by life.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(2100, easing = LinearEasing), RepeatMode.Restart),
+        label = "mascotOrbitT",
     )
 
     // ---- 眨眼 ----
@@ -232,31 +241,105 @@ fun EmotionBallMascot(
             )
         }
 
-        if (spec.orbit) {
-            val rc = px(headCenter, headCenter)
-            val r = MascotData.VIEW_SIZE * 0.44f * unit
-            rotate(t * 360f, rc) {
-                drawArc(
+        // 采集插值形变后身体真实像素轮廓点集
+        val bodyLimit = minOf(ringA.size, ringB.size)
+        val numPts = bodyLimit / 2
+        val bodyPts = ArrayList<Offset>(numPts)
+        for (i in 0 until bodyLimit step 2) {
+            val x = ringA[i] + (ringB[i] - ringA[i]) * mp
+            val y = ringA[i + 1] + (ringB[i + 1] - ringA[i + 1]) * mp
+            bodyPts.add(body(x, y))
+        }
+
+        // === 几何自适应流光彩圈 (三角机甲/方块/圆球/菱星专属几何流光轨道) ===
+        if (spec.orbit || isWorking) {
+            // 沿顺时针几何外轮廓法向量外扩，生成与身体等距的几何环绕轨道
+            val orbitMargin = (unit * 11.5f).coerceIn(3.dp.toPx(), 7.dp.toPx())
+            val orbitPts = ArrayList<Offset>(numPts)
+            for (i in 0 until numPts) {
+                val prev = bodyPts[(i - 1 + numPts) % numPts]
+                val next = bodyPts[(i + 1) % numPts]
+                val curr = bodyPts[i]
+                val dx = next.x - prev.x
+                val dy = next.y - prev.y
+                val len = kotlin.math.hypot(dx, dy)
+                if (len > 0.0001f) {
+                    // 顺时针前进方向 (dx, dy) 的指向外侧单位法向量为 (dy/len, -dx/len)
+                    orbitPts.add(Offset(curr.x + (dy / len) * orbitMargin, curr.y + (-dx / len) * orbitMargin))
+                } else {
+                    orbitPts.add(curr)
+                }
+            }
+
+            val orbitBasePath = Path().apply {
+                for (i in 0 until numPts) {
+                    val pt = orbitPts[i]
+                    if (i == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+                }
+                close()
+            }
+
+            val pm = androidx.compose.ui.graphics.PathMeasure()
+            pm.setPath(orbitBasePath, true)
+            val totalLen = pm.length
+            if (totalLen > 1f) {
+                // 流光彩带占据 78% 的环长，保留 22% 灵动缺口，呈现极速流动的流星霓虹拖尾感
+                val sweepRatio = 0.78f
+                val segLen = totalLen * sweepRatio
+                val start = (orbitT * totalLen) % totalLen
+                val stop = start + segLen
+                val segmentPath = Path()
+                if (stop <= totalLen) {
+                    pm.getSegment(start, stop, segmentPath, true)
+                } else {
+                    pm.getSegment(start, totalLen, segmentPath, true)
+                    pm.getSegment(0f, stop - totalLen, segmentPath, false)
+                }
+
+                val orbitCenter = body(headCenter, headCenter)
+                val orbitColors = listOf(
+                    Color(0xFF6366F1), // 极光靛蓝
+                    Color(0xFFA855F7), // 赛博亮紫
+                    Color(0xFFFF52A8), // 灵动粉红
+                    Color(0xFF38BDF8), // 荧光青蓝
+                    Color(0xFF34D399), // 翡翠冰绿
+                    Color(0xFF6366F1), // 闭合回环
+                )
+                val strokeWidth = (unit * 8.5f).coerceIn(2.5.dp.toPx(), 4.5.dp.toPx())
+
+                // 1. 底层科技几何轮廓微光暗轨 (指示三角/方块/圆球能量轨道)
+                drawPath(
+                    path = orbitBasePath,
+                    color = if (isDark) Color(0x24FFFFFF) else Color(0x18000000),
+                    style = Stroke(width = strokeWidth * 0.42f),
+                )
+
+                // 2. 霓虹外发光柔和辉光层 (Glow)
+                drawPath(
+                    path = segmentPath,
                     brush = Brush.sweepGradient(
-                        listOf(Color(0xFF7BD5FF), Color(0xFFB68CFF), Color(0xFFFF8FC7), Color(0xFFFFD36E), Color(0xFF7BD5FF)),
-                        center = rc,
+                        orbitColors.map { it.copy(alpha = 0.40f) },
+                        center = orbitCenter,
                     ),
-                    startAngle = 0f, sweepAngle = 300f, useCenter = false,
-                    topLeft = Offset(rc.x - r, rc.y - r), size = Size(r * 2, r * 2),
-                    style = Stroke(width = 2.2f * unit * 4f, cap = StrokeCap.Round), alpha = 0.85f,
+                    style = Stroke(width = strokeWidth * 2.2f, cap = StrokeCap.Round),
+                )
+
+                // 3. 核心高光流光彩带 (贴合三角/方块/圆球轮廓飞驰流转)
+                drawPath(
+                    path = segmentPath,
+                    brush = Brush.sweepGradient(orbitColors, center = orbitCenter),
+                    style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
                 )
             }
         }
 
-        val bodyPath = Path()
-        val bodyLimit = minOf(ringA.size, ringB.size)
-        for (i in 0 until bodyLimit step 2) {
-            val x = ringA[i] + (ringB[i] - ringA[i]) * mp
-            val y = ringA[i + 1] + (ringB[i + 1] - ringA[i + 1]) * mp
-            val o = body(x, y)
-            if (i == 0) bodyPath.moveTo(o.x, o.y) else bodyPath.lineTo(o.x, o.y)
+        val bodyPath = Path().apply {
+            for (i in 0 until numPts) {
+                val pt = bodyPts[i]
+                if (i == 0) moveTo(pt.x, pt.y) else lineTo(pt.x, pt.y)
+            }
+            close()
         }
-        bodyPath.close()
         drawPath(
             path = bodyPath,
             brush = Brush.radialGradient(
