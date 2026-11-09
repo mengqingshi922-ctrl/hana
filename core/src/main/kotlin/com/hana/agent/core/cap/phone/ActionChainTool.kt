@@ -95,7 +95,7 @@ internal object ActionChainTool : PhoneTool {
             var completed = 0
             for ((index, step) in chain.steps.withIndex()) {
                 val call = com.hana.agent.core.model.Part.ToolCall("chain_step_${index + 1}", step.tool, step.args.toString())
-                val exec = sub(call)
+                val exec = sub.run(call)
                 val ok = (exec.content["ok"] as? JsonPrimitive)?.booleanOrNull ?: true
                 if (!ok) {
                     val err = (exec.content["error"] as? JsonPrimitive)?.contentOrNull ?: "step_failed"
