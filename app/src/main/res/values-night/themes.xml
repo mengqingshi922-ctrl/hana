@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Hana" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/hana_bg</item>
+    </style>
+    <color name="hana_bg">#0E0E10</color>
+</resources>

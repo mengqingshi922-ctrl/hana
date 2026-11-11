@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hana-phone-cli"
+version = "0.1.0"
+description = "Command-line client for Hana's Android task API"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+dependencies = []
+
+[project.scripts]
+hana = "hana_cli:main"
+
+[tool.setuptools]
+py-modules = ["hana_cli"]
+packages = ["hana_desk"]
+package-dir = {"" = "scripts"}
+
+[tool.setuptools.package-data]
+hana_desk = ["*.html", "*.css", "*.js", "hana-logo.png"]

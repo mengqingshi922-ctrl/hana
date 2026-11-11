@@ -1,0 +1,1580 @@
+package com.hana.agent.ui
+
+import androidx.compose.foundation.gestures.scrollBy
+import com.hana.agent.core.agent.QuoteMessage
+import com.hana.agent.core.cap.web.AttachedPage
+import com.hana.agent.ui.components.keepsKeyboard
+import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.TextSelectionColors
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.hana.agent.R
+import com.hana.agent.cap.web.KeptPage
+import com.hana.agent.chat.SharedFile
+import com.hana.agent.confirm.ConfirmationCopy
+import com.hana.agent.settings.Prerequisites
+import com.hana.agent.takeover.Takeover
+import com.hana.agent.task.SteerNote
+import com.hana.agent.task.SteerState
+import com.hana.agent.task.TaskService
+import com.hana.agent.task.unconsumed
+import com.hana.agent.ui.components.BarIconButton
+import com.hana.agent.ui.components.ButtonKind
+import com.hana.agent.ui.components.ButtonSize
+import com.hana.agent.ui.components.GlassBackdrop
+import com.hana.agent.ui.components.GlassBar
+import com.hana.agent.ui.components.HanaButton
+import com.hana.agent.ui.components.HanaCard
+import com.hana.agent.ui.components.PageBackground
+import com.hana.agent.ui.components.TopBar
+import com.hana.agent.ui.components.GrokBotFixedHeader
+import com.hana.agent.ui.components.GrokBotShapeDialog
+import com.hana.agent.ui.components.cardSurface
+import com.hana.agent.ui.components.floatShadow
+import com.hana.agent.ui.components.glassSource
+import com.hana.agent.ui.components.rememberGlassBackdrop
+import com.hana.agent.ui.theme.HanaIcons
+import com.hana.agent.ui.theme.HanaMotion
+import com.hana.agent.ui.theme.HanaShapes
+import com.hana.agent.ui.theme.HanaSize
+import com.hana.agent.ui.theme.HanaTheme
+import com.hana.agent.ui.viewer.FileViewer
+import com.hana.agent.ui.theme.HanaType
+import com.hana.agent.voice.HoldToTalk
+import com.hana.agent.voice.VoiceSource
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import java.time.LocalTime
+
+/**
+ * 对话页:顶栏(左边打开侧栏、中间对话标题和此刻在做什么、右边新对话),对话在顶栏和玻璃输入栏之间滚动。
+ * 进行中是一行状态加一条竖线步骤,不套卡片;要你处理时停在当前步,下面一张白卡;完成后过程收成一行,回答直接排在背景上。
+ * Agent 的虚拟屏以悬浮小窗([AgentPip])盖在对话上,不占布局。
+ */
+@Composable
+fun ChatScreen(
+    vm: ChatViewModel,
+    check: Prerequisites.Check,
+    frames: StateFlow<Bitmap?>,
+    webOpen: StateFlow<Boolean>,
+    reduceMotion: Boolean,
+    /** 左上角菜单:打开侧栏。 */
+    onOpenDrawer: () -> Unit,
+    /** 被拦下的提示里的「去设置」。 */
+    openSettings: () -> Unit,
+    openRun: (String) -> Unit = {},
+    /** 任务要用手机而手机操作没准备好:最后一轮下面放一行去设置。 */
+    phoneSetupNeeded: Boolean = false,
+    openPhoneSetup: () -> Unit = {},
+    /** 按运行记录取依据的来处(「来源」胶囊和点开后的截图);读盘的活由调用方放到后台线程。 */
+    loadSource: suspend (runId: String) -> EvidenceSource? = { null },
+    openSource: (runId: String?, legacyText: String?) -> Unit = { _, _ -> },
+    /** 输入栏按住说话从这里开会话;null 时只能打字。 */
+    voice: VoiceSource? = null,
+    /** 「还不能语音输入」里的「去选」。 */
+    openSpeechModel: () -> Unit = {},
+) {
+    val ui by vm.ui.collectAsState()
+    val others by vm.otherRunning.collectAsState()
+    val keptAny by vm.keptPage.collectAsState()
+    // 只管这个对话留下的那一页
+    val kept = keptAny?.takeIf { it.conversationId == ui.conversationId }
+    val live by frames.collectAsState()
+    val webLive by webOpen.collectAsState()
+    // 任务一结束虚拟屏就释放了;完成时小窗还要停留几秒打勾,继续显示最后一帧
+    var lastFrame by remember { mutableStateOf<Bitmap?>(null) }
+    var lastFrameWasWeb by remember { mutableStateOf(false) }
+    LaunchedEffect(live, webLive, ui.pip.mode) {
+        live?.let {
+            lastFrame = it
+            if (webLive) lastFrameWasWeb = true
+            else if (ui.pip.mode != PipMode.Done) lastFrameWasWeb = false
+        }
+    }
+    val frame = live ?: lastFrame.takeIf { ui.pip.visible && ui.pip.mode == PipMode.Done }
+    val webContent = if (ui.pip.mode == PipMode.Done) lastFrameWasWeb else webLive
+    var input by rememberSaveable { mutableStateOf("") }
+    var voiceHolding by remember { mutableStateOf(false) }
+    var editRequest by remember { mutableIntStateOf(0) }
+    var composerHeight by rememberSaveable { mutableIntStateOf(0) }
+    var topHeight by rememberSaveable { mutableIntStateOf(0) }
+    val density = LocalDensity.current
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    // 只有原本跟着最新消息时才继续跟随。这个状态与列表位置一起跨页面保存。
+    var followingTail by rememberSaveable { mutableStateOf(true) }
+    var previousScrollMarker by rememberSaveable { mutableStateOf<String?>(null) }
+    var previousConversation by rememberSaveable { mutableStateOf<String?>(null) }
+    val tailThresholdPx = with(density) { 240.dp.roundToPx() }
+    LaunchedEffect(listState, tailThresholdPx) {
+        var wasScrolling = false
+        snapshotFlow { listState.isScrollInProgress to listState.nearTail(tailThresholdPx) }.collect { (scrolling, nearTail) ->
+            if (scrolling || wasScrolling) followingTail = nearTail
+            wasScrolling = scrolling
+        }
+    }
+
+    // 返回聊天时同一条内容不重新滚动；新进展仅在跟随末尾时滚动。
+    val last = ui.exchanges.lastOrNull()
+    var isRecentlyDone by remember { mutableStateOf(false) }
+    val lastStatus = last?.status
+    LaunchedEffect(lastStatus) {
+        if (lastStatus is ExchangeStatus.Done) {
+            isRecentlyDone = true
+            delay(4000)
+            isRecentlyDone = false
+        }
+    }
+    var showTopShapeDialog by remember { mutableStateOf(false) }
+    val scrollMarker = "${ui.conversationId}:${ui.exchanges.size}:${last?.steps?.size}:${last?.steers?.size}:${last?.status?.hashCode()}:${ui.blocked?.hashCode()}"
+    LaunchedEffect(scrollMarker) {
+        if (previousScrollMarker == scrollMarker) return@LaunchedEffect
+        val firstEntry = previousScrollMarker == null
+        val changedConversation = previousConversation != ui.conversationId
+        previousScrollMarker = scrollMarker
+        previousConversation = ui.conversationId
+        if (changedConversation) followingTail = true
+        if (!firstEntry && !changedConversation && !followingTail) return@LaunchedEffect
+        val count = listState.layoutInfo.totalItemsCount
+        if (count > 0) {
+            if (firstEntry || changedConversation || reduceMotion) listState.scrollToItem(count - 1)
+            else listState.animateScrollToItem(count - 1)
+        }
+    }
+    // 流式文字增长时跟住底部；用户主动向上翻看过程时不拉回去。
+    LaunchedEffect(last?.draft?.length) {
+        if (last?.draft.isNullOrEmpty() || !followingTail || listState.isScrollInProgress) return@LaunchedEffect
+        val layout = listState.layoutInfo
+        val end = layout.totalItemsCount - 1
+        val draft = layout.visibleItemsInfo.firstOrNull { it.index == end } ?: return@LaunchedEffect
+        val tailGap = draft.offset + draft.size - layout.viewportEndOffset
+        if (tailGap > with(density) { 240.dp.roundToPx() }) return@LaunchedEffect
+        val viewport = layout.viewportEndOffset - layout.viewportStartOffset
+        val offset = (draft.size - viewport + with(density) { 12.dp.roundToPx() }).coerceAtLeast(0)
+        listState.scrollToItem(end, offset)
+    }
+
+    // 输入栏变高(多半是输入法弹起,也可能是附件、多行输入):原本跟着最新消息时,对话流一起往上顶同样的距离,
+    // 最后一条仍贴着输入栏;用户正往上翻看时不动。变矮时列表到底自己会收回来。
+    var lastComposerHeight by remember { mutableIntStateOf(composerHeight) }
+    LaunchedEffect(composerHeight) {
+        val grown = composerHeight - lastComposerHeight
+        lastComposerHeight = composerHeight
+        if (grown > 0 && followingTail && !listState.isScrollInProgress) listState.scrollBy(grown.toFloat())
+    }
+
+    val c = HanaTheme.colors
+    val backdrop = rememberGlassBackdrop()
+    val context = LocalContext.current
+    /** 长按了的那条消息;菜单开着(收起的动画放完才清掉)。 */
+    var menu by remember { mutableStateOf<MessageTarget?>(null) }
+    /** 选了「选择文字」的那条:它换回系统的长按选中;换对话时清掉。 */
+    var selecting by remember(ui.conversationId) { mutableStateOf<String?>(null) }
+    /** 菜单出现的进度:0 是没有,1 是完全出来;关了动画时直接到位。 */
+    val lift = remember { Animatable(0f) }
+    LaunchedEffect(menu) {
+        if (menu != null) {
+            if (reduceMotion) lift.snapTo(1f) else lift.animateTo(1f, tween(MENU_IN_MS, easing = HanaMotion.Decelerate))
+        }
+    }
+    /** 收起菜单:倒着放一遍出现的动画,放完再清掉;[then] 当场做。 */
+    fun closeMenu(then: () -> Unit = {}) {
+        then()
+        scope.launch {
+            if (reduceMotion) lift.snapTo(0f) else lift.animateTo(0f, tween(MENU_OUT_MS, easing = HanaMotion.Decelerate))
+            menu = null
+        }
+    }
+    val menuHost = remember(selecting) { MessageMenuHost(selecting) { menu = it } }
+    val menuOpen = menu != null
+    PageBackground {
+        CompositionLocalProvider(LocalMessageMenu provides menuHost) {
+            LazyColumn(
+                Modifier.fillMaxSize().behindMenu(menuOpen) { lift.value }.voiceDim(voiceHolding, reduceMotion).glassSource(backdrop),
+                state = listState,
+                contentPadding = with(density) {
+                    PaddingValues(
+                        start = 16.dp, end = 16.dp, top = topHeight.toDp() + 4.dp, bottom = composerHeight.toDp() + 12.dp,
+                    )
+                },
+            ) {
+                if (ui.exchanges.isEmpty() && ui.blocked == null) {
+                    item("empty") { EmptyState(ui.conversationId) { input = it } }
+                }
+                ui.exchanges.forEachIndexed { i, ex ->
+                    val backgroundNote = i == ui.exchanges.lastIndex && ui.operatingPhone
+                    exchange(i, ex, ui.conversationId, ui.takeoverStage, vm, reduceMotion, backgroundNote, openRun, loadSource, openSource, kept)
+                }
+                if (phoneSetupNeeded && ui.exchanges.isNotEmpty()) item("phone-setup") { PhoneSetupLine(openPhoneSetup) }
+                ui.blocked?.let { problems ->
+                    item("blocked") {
+                        NeedCard(
+                            stringResource(R.string.chat_cannot_start),
+                            stringResource(R.string.chat_missing, problems.joinToString(stringResource(R.string.list_sep)) { StatusCopy.banner(it).title }),
+                        ) {
+                            CardButton(stringResource(R.string.ok_got_it), onClick = vm::dismissBlocked)
+                            CardButton(stringResource(R.string.chat_go_settings), primary = true, onClick = { vm.dismissBlocked(); openSettings() })
+                        }
+                    }
+                }
+            }
+        }
+
+        // 屏幕顶端常驻固定灵动小精灵头部导航栏 (永久固定置顶，上下滑动绝不消失，不同工作自适应表情与动作)
+        val sub = ChatCopy.subtitle(last, last?.let(vm::livePlace)) ?: kept?.let { ChatCopy.KEPT_PAGE to ChatCopy.Tone.Ok }
+        val liveCoTText = if (last?.live == true) {
+            val d = last.draft?.trim()
+            val thinkingSnippet = d?.let { raw ->
+                val clean = raw.replace(Regex("<think>[\\s\\S]*?</think>"), "")
+                    .replace("<think>", "").trim()
+                clean.lineSequence().firstOrNull { it.isNotBlank() }?.take(18)
+            }
+            when {
+                !thinkingSnippet.isNullOrBlank() -> "⚡ $thinkingSnippet"
+                last.line.isNotBlank() -> "⚡ ${last.line.take(18)}"
+                last.steps.isNotEmpty() -> "⚡ ${last.steps.last().text.take(18)}"
+                else -> null
+            }
+        } else null
+        val isHeaderCollapsed by remember {
+            derivedStateOf {
+                listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 30
+            }
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .behindMenu(menuOpen) { lift.value }
+                .onSizeChanged { topHeight = it.height }
+        ) {
+            GrokBotFixedHeader(
+                onOpenDrawer = onOpenDrawer,
+                hasActiveTasksElsewhere = others.isNotEmpty(),
+                onNewConversation = { vm.newConversation() },
+                canSwitchConversation = vm.canSwitch(),
+                isOperatingPhone = ui.operatingPhone,
+                isBusy = vm.busy(),
+                isListening = voiceHolding,
+                isBlocked = ui.blocked != null,
+                isRecentlyDone = isRecentlyDone,
+                customSubtitle = liveCoTText ?: sub?.first,
+                isCollapsed = isHeaderCollapsed,
+                onOpenShapeDialog = { showTopShapeDialog = true }
+            )
+        }
+
+        Composer(
+            Modifier.align(Alignment.BottomCenter).behindMenu(menuOpen) { lift.value }.onSizeChanged { composerHeight = it.height },
+            backdrop = backdrop,
+            text = input,
+            onText = { input = it },
+            mode = ui.composer,
+            hasHistory = ui.exchanges.isNotEmpty(),
+            onSend = { if (vm.send(input, check)) input = "" },
+            onStop = vm::cancel,
+            attachPanel = if (ui.attachEnabled && ui.composer == ComposerMode.Idle) ({
+                AttachPanelHost(ui.attachments, onPicked = vm::attach, onToggle = vm::toggleAttachment)
+            }) else null,
+            attachments = ui.attachments,
+            importing = ui.importing,
+            rejected = ui.rejectedAttachments,
+            overLimit = ui.overLimit,
+            reduceMotion = reduceMotion,
+            onRemove = vm::removeAttachment,
+            onDismissRejected = vm::dismissRejected,
+            quote = ui.quote,
+            onRemoveQuote = vm::clearQuote,
+            voice = voice,
+            // 说的话接在已有的字后面;任务在跑时发出去就是插话
+            onVoiceText = { input = HoldToTalk.join(input, it) },
+            onPickSpeech = openSpeechModel,
+            steerTarget = last?.goal?.let(ChatCopy::plainTitle),
+            onVoiceHolding = { voiceHolding = it },
+            editRequest = editRequest,
+        )
+
+        AgentPip(
+            pip = ui.pip,
+            frame = frame,
+            webContent = webContent,
+            reduceMotion = reduceMotion,
+            topInset = topHeight.toFloat(),
+            bottomInset = composerHeight.toFloat(),
+            onExpand = vm::expandPip,
+            onCollapse = vm::collapsePip,
+            // 关掉小画面:这个任务结束前只剩右下角的小按钮;提示一句还能去哪看
+            onClose = {
+                vm.closePip()
+                Toast.makeText(context, context.getString(R.string.pip_closed_hint), Toast.LENGTH_SHORT).show()
+            },
+            onReopen = vm::reopenPip,
+            // 要你处理时点小窗:收起,滚到要你处理的那张卡片(在最后一问一答里,它后面只可能还有文件卡片和去设置那一行)
+            onAttention = {
+                vm.attendPip()
+                val count = listState.layoutInfo.totalItemsCount
+                val after = (if (last?.files?.isNotEmpty() == true) 1 else 0) + (if (phoneSetupNeeded) 1 else 0)
+                val card = count - 1 - after
+                if (card >= 0) scope.launch { if (reduceMotion) listState.scrollToItem(card) else listState.animateScrollToItem(card) }
+            },
+        )
+
+        // 长按消息的菜单盖在最上面:复制纯文字;引用放到输入框上方;选择文字让那条换回系统的长按选中
+        menu?.let { m ->
+            val pending = withdrawableSteer(ui.exchanges, m.key)
+            val canEdit = input.isBlank() && ui.quote == null && ui.attachments.isEmpty() && !ui.importing
+            MessageMenu(
+                m, progress = { lift.value },
+                onCopy = { closeMenu { copyMessage(context, m.text) } },
+                onQuote = { closeMenu { vm.quote(m.from, m.text) } },
+                onSelect = {
+                    closeMenu {
+                        selecting = m.key
+                        Toast.makeText(context, context.getString(R.string.chat_select_hint), Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onDismiss = { closeMenu() },
+                onEdit = if (pending != null && canEdit && editableSteer(pending.text)) ({ closeMenu {
+                    vm.editSteer(pending.id)?.let { input = it; editRequest++ }
+                } }) else null,
+                onWithdraw = pending?.let { n -> ({ closeMenu { vm.withdrawSteer(n.id) } }) },
+            )
+        }
+
+        if (showTopShapeDialog) {
+            GrokBotShapeDialog(onDismiss = { showTopShapeDialog = false })
+        }
+    }
+}
+
+/** 最后一项可能是一段很长的答复，仅仅看到它的开头不代表用户正在看末尾。 */
+private fun LazyListState.nearTail(thresholdPx: Int): Boolean {
+    val layout = layoutInfo
+    val end = layout.totalItemsCount - 1
+    val tail = layout.visibleItemsInfo.firstOrNull { it.index == end } ?: return false
+    return tail.offset + tail.size - layout.viewportEndOffset <= thresholdPx
+}
+
+// ---------- 空对话 ----------
+
+/** 问候、一句「想让 Hana 做什么？」和精美 Bento 探索磁贴;点示例把它填进输入框,改好了再发。 */
+@Composable
+private fun EmptyState(conversation: String?, onPick: (String) -> Unit) {
+    val c = HanaTheme.colors
+    val hour = remember(conversation) { LocalTime.now().hour }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
+        Column(Modifier.padding(start = 4.dp, end = 4.dp, top = 40.dp, bottom = 22.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(ChatCopy.greeting(hour), style = HanaType.LargeTitle, color = c.ink)
+                Text("✨", fontSize = 22.sp)
+            }
+            Text(ChatCopy.EMPTY_PROMPT, Modifier.padding(top = 6.dp), style = EmptyLead.copy(fontSize = 15.sp), color = c.ink2)
+        }
+
+        // 2 列现代化 Bento 建议磁贴网格
+        val examples = ChatCopy.examples
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            for (i in examples.indices step 2) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    val ex1 = examples[i]
+                    val (cat1, icon1) = exampleMeta(i)
+                    BentoPromptTile(
+                        category = cat1,
+                        icon = icon1,
+                        text = ex1.text,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onPick(ex1.text) },
+                    )
+                    if (i + 1 < examples.size) {
+                        val ex2 = examples[i + 1]
+                        val (cat2, icon2) = exampleMeta(i + 1)
+                        BentoPromptTile(
+                            category = cat2,
+                            icon = icon2,
+                            text = ex2.text,
+                            modifier = Modifier.weight(1f),
+                            onClick = { onPick(ex2.text) },
+                        )
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun exampleMeta(index: Int): Pair<String, ImageVector> = when (index) {
+    0 -> "微信交互" to HanaIcons.Message
+    1 -> "群聊总结" to HanaIcons.Chats
+    2 -> "求职投递" to HanaIcons.Globe
+    3 -> "应用权益" to HanaIcons.Spark
+    4 -> "系统控制" to HanaIcons.Alarm
+    5 -> "内容探索" to HanaIcons.Search
+    else -> "快捷助手" to HanaIcons.Apps
+}
+
+@Composable
+private fun BentoPromptTile(
+    category: String,
+    icon: ImageVector,
+    text: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val c = HanaTheme.colors
+    val shape = RoundedCornerShape(14.dp)
+    Column(
+        modifier = modifier
+            .cardSurface(c, shape)
+            .clip(shape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(horizontal = 13.dp, vertical = 13.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(24.dp)
+                        .background(c.fill, CircleShape)
+                        .border(0.5.dp, c.hair, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(icon, null, Modifier.size(12.dp), tint = c.ink)
+                }
+                Text(
+                    category,
+                    style = HanaType.Hint.copy(fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
+                    color = c.ink2,
+                    maxLines = 1,
+                )
+            }
+            Icon(
+                HanaIcons.Chevron,
+                null,
+                Modifier.size(10.dp),
+                tint = c.ink3.copy(alpha = 0.7f),
+            )
+        }
+        Text(
+            text,
+            style = HanaType.Caption.copy(fontSize = 13.sp, lineHeight = 18.5.sp),
+            color = c.ink,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+// ---------- 一问一答 ----------
+
+private fun LazyListScope.exchange(
+    index: Int, ex: Exchange, conversationId: String?, stage: Takeover.Stage, vm: ChatViewModel, reduceMotion: Boolean, backgroundNote: Boolean,
+    openRun: (String) -> Unit, loadSource: suspend (String) -> EvidenceSource?, openSource: (String?, String?) -> Unit,
+    kept: KeptPage? = null,
+) {
+    if (ex.goal.isNotEmpty()) item("u$index") { UserBubble(ex.goal, conversationId, key = "u$index") }
+    val active = ex.status.isActive()
+    val hasSteps = ex.steps.isNotEmpty() || ex.runId != null
+    // 只有在没有历史步骤且非后台任务的纯问答场景下，生成回答时才隐藏空白的进度卡片；多步骤任务中保持步骤稳定展示，避免步骤和思考卡片反复横跳
+    val answeringOnly = ex.status == ExchangeStatus.Working && !ex.draft.isNullOrBlank() && !hasSteps
+    if (active) {
+        if (!answeringOnly) item("s$index") { WorkBlock(ex, reduceMotion, backgroundNote, openRun) }
+    } else if (hasSteps) {
+        item("s$index") { DoneLine(ex, reduceMotion, openRun) }
+    }
+    // 任务进行中插的话:用户的原话,下面一行小字说它的去向。
+    // 插话之前已经说完的回复照常显示;插话打断的那段留在原处(淡色、标「被你的新消息打断」);接着才是插话。
+    // 还没交给模型的插话排在正在长出来的回答后面:那段回答是它到之前就在写的,不是对它的回复。
+    fun steer(n: SteerNote) {
+        n.finished?.takeIf(String::isNotBlank)?.let { done -> item("a$index-${n.id}") { FinishedReply(done, "a$index-${n.id}") } }
+        n.interrupted?.takeIf(String::isNotBlank)?.let { cut -> item("i$index-${n.id}") { InterruptedReply(cut) } }
+        item("m$index-${n.id}") { UserBubble(n.text, conversationId, steerLabel(n.state), "m$index-${n.id}") }
+    }
+    val (joined, waiting) = steersAroundDraft(ex.steers)
+    joined.forEach(::steer)
+    // 多步骤任务运行中，思考与操作说明内嵌在 WorkBlock 步骤卡片内部，不在外部单独暴露为回答气泡
+    val showExternalDraft = !hasSteps || !active
+    if (showExternalDraft) {
+        ex.draft?.takeIf(String::isNotBlank)?.let { draft -> item("d$index") { DraftText(draft, ex.waitingForModel) } }
+    }
+    waiting.forEach(::steer)
+    item("r$index") { StatusCard(ex.status, stage, vm, ex.runId, loadSource, openSource, "r$index") }
+    // 这一轮结束后留在后台运行的那一页:还开着是绿色一行(能关),关了是一句原因
+    keptPageRow(index, ex, kept, vm::closeKeptPage)
+    if (ex.files.isNotEmpty()) item("f$index") { FileCards(ex.files) }
+    learningNotes(index, ex, vm)
+}
+
+/**
+ * 插话分成两段:第一句还没交给模型的([SteerState.unconsumed])之前的,和它连同之后的。
+ * 正在长出来的回答排在两段中间。
+ */
+internal fun steersAroundDraft(steers: List<SteerNote>): Pair<List<SteerNote>, List<SteerNote>> {
+    val visible = steers.filterNot { it.state == SteerState.Withdrawn }
+    val first = visible.indexOfFirst { it.state.unconsumed }.let { if (it < 0) visible.size else it }
+    return visible.take(first) to visible.drop(first)
+}
+
+/**
+ * 长按的 [key] 是进行中那一问一答里、模型还没取走的手机插话时给出它,菜单据此提供撤回和编辑(编辑另看 [editableSteer])。
+ * 电脑追加的([SteerNote.remote])不给:编辑会把只归当前任务的话变成手机插话、可能转成下一件事;撤不撤由电脑定。
+ */
+internal fun withdrawableSteer(exchanges: List<Exchange>, key: String): SteerNote? = exchanges.mapIndexedNotNull { i, ex ->
+    if (ex.status.isActive()) ex.steers.firstOrNull { key == "m$i-${it.id}" && it.state.unconsumed && !it.remote } else null
+}.firstOrNull()
+
+private fun ExchangeStatus.isActive() =
+    this !is ExchangeStatus.Done && this !is ExchangeStatus.Failed && this !is ExchangeStatus.Cancelled
+
+/**
+ * 用户的话:蓝色气泡,圆角 20、右下尾角 6,最宽八成。[note] 是插话的去向。
+ * 带着用户此刻的屏幕时上面是截图缩略图和「你此刻的屏幕 · App · 时刻」,附言在下面的气泡里(见 [UserMessage])。
+ * 带着附件时上面是照片格子和文件卡片(见 [SentAttachments]),点开在 App 里的查看页看;写的话在下面另起一个气泡,路径那几行不显示。
+ * 引用了前面的消息时最上面是引的那条(见 [SentQuote])。长按气泡弹出复制 / 引用 / 选择文字([key] 认是哪一条,见 [MessageArea])。
+ * 在浏览器页上对着一页问的,最上面是「网页 · 网站」和选中的字(见 [SentPage]),页面说明那几行不显示。
+ */
+@Composable
+internal fun UserBubble(text: String, conversationId: String?, note: String? = null, key: String = "") {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val paged = remember(text) { AttachedPage.parse(text) }
+    val quoted = remember(text) { QuoteMessage.parse(paged.words) }
+    val attached = remember(text) { AttachmentMessage.parse(quoted.words) }
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 14.dp), contentAlignment = Alignment.CenterEnd) {
+        val max = maxWidth * 0.8f
+        Column(horizontalAlignment = Alignment.End) {
+            paged.page?.let { SentPage(it, max) }
+            quoted.quote?.let { SentQuote(it, max) }
+            if (attached.hasAttachments) {
+                SentAttachments(attached, conversationId, max) { item ->
+                    val id = conversationId ?: return@SentAttachments
+                    scope.launch { if (!AttachFiles.openSent(context, id, item.path)) Toast.makeText(context, AttachCopy.GONE, Toast.LENGTH_SHORT).show() }
+                }
+            }
+            if (attached.hasAttachments && attached.words.isNotEmpty()) Spacer(Modifier.size(6.dp))
+            if ((!attached.hasAttachments || attached.words.isNotEmpty()) && (paged.page == null || quoted.words.isNotEmpty())) UserMessage(conversationId, attached.words.takeIf { attached.hasAttachments } ?: quoted.words, ChatThumbWidth) { words ->
+                // 选择文字时蓝底上选中的底色用白色半透明,把手照旧是蓝色(画在气泡外面)
+                val colors = HanaTheme.colors
+                CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(colors.accent, colors.onAccent.copy(alpha = 0.35f))) {
+                    MessageArea(
+                        key, QuoteMessage.From.You, words, "selectable-user",
+                        Modifier.widthIn(max = max).background(colors.accent, HanaShapes.UserBubble),
+                        lifted = { LiftedMessage(HanaShapes.UserBubble, colors.accent) { UserBubbleText(words) } },
+                    ) { UserBubbleText(words) }
+                }
+            }
+            note?.let { Text(it, Modifier.padding(top = 3.dp, end = 4.dp), style = HanaType.Hint, color = HanaTheme.colors.ink3) }
+        }
+    }
+}
+
+@Composable
+private fun UserBubbleText(words: String) {
+    Text(words, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), style = BubbleText, color = HanaTheme.colors.onAccent)
+}
+
+/** 长按抬起的那条消息:[color] 底、带阴影;太长时(最高半屏)只露开头,下面裁掉。 */
+@Composable
+private fun LiftedMessage(shape: Shape, color: Color, content: @Composable () -> Unit) {
+    Box(
+        Modifier.floatShadow(HanaTheme.colors, shape).background(color, shape).clip(shape)
+            .wrapContentHeight(Alignment.Top, unbounded = true),
+    ) { content() }
+}
+
+/** 对话页里截图缩略图的宽。 */
+private val ChatThumbWidth = 110.dp
+
+/** 正在生成的回答:和完成后的回答一样放在淡灰底上。 */
+@Composable
+private fun DraftText(text: String, generating: Boolean) {
+    MarkdownText(
+        text, AnswerText.copy(color = HanaTheme.colors.ink),
+        Modifier.fillMaxWidth().padding(bottom = 12.dp).answerSurface(), streaming = generating,
+    )
+}
+
+/** 插话交给模型之前已经说完的回复:和回答一样的底和字,长按一样能复制、引用、选择文字。 */
+@Composable
+private fun FinishedReply(text: String, key: String) {
+    Box(Modifier.padding(bottom = 4.dp)) {
+        AnswerArea(key, text, Modifier.fillMaxWidth().answerSurface()) {
+            MarkdownText(text, AnswerText.copy(color = HanaTheme.colors.ink), streaming = false)
+        }
+    }
+}
+
+/**
+ * Hana 的一段回答:长按弹出复制 / 引用 / 选择文字(见 [MessageArea]),复制、引用的是去掉 Markdown 符号的纯文字;
+ * [modifier] 是回答的底,抬起的那张是同样的字放在白卡上。选择文字时选区的把手在单独的弹出窗口里,拖把手不会带出侧栏。
+ */
+@Composable
+private fun AnswerArea(key: String, answer: String, modifier: Modifier, content: @Composable () -> Unit) {
+    val plain = remember(answer) { MarkdownModel.toPlainText(answer) }
+    MessageArea(
+        key, QuoteMessage.From.Hana, plain, "selectable-answer", modifier,
+        lifted = {
+            LiftedMessage(HanaShapes.AnswerBubble, HanaTheme.colors.surface) {
+                MarkdownText(answer, AnswerText.copy(color = HanaTheme.colors.ink), Modifier.padding(horizontal = 14.dp, vertical = 12.dp), streaming = false)
+            }
+        },
+    ) { content() }
+}
+
+/** 被插话打断的那段回复:和回答同样的底,字用次要色,下面一行小字「被你的新消息打断」。 */
+@Composable
+private fun InterruptedReply(text: String) {
+    Column(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        MarkdownText(text, AnswerText.copy(color = HanaTheme.colors.ink2), Modifier.fillMaxWidth().answerSurface(), streaming = false)
+        Text(stringResource(R.string.steer_interrupted_reply), Modifier.padding(top = 3.dp, start = 4.dp), style = HanaType.Hint, color = HanaTheme.colors.ink3)
+    }
+}
+
+/** Hana 回答的底:很淡的灰,左下尾角,带 0.5dp 极细发丝描边。 */
+@Composable
+private fun Modifier.answerSurface(): Modifier =
+    background(HanaTheme.colors.answer, HanaShapes.AnswerBubble)
+        .border(0.5.dp, HanaTheme.colors.edge, HanaShapes.AnswerBubble)
+        .padding(horizontal = 15.dp, vertical = 12.dp)
+
+// ---------- 进度 ----------
+
+/**
+ * 进行中:优雅的 Bento 状态卡片。
+ * 顶部状态行(转圈指示器 + 此刻进展 + 现代计时胶囊),下面精致步骤时间线(做完的完成点、当前的微光强调点)。
+ * 底部为轻量化的「查看过程」胶囊动作与后台运行提示。
+ */
+@Composable
+private fun WorkBlock(ex: Exchange, reduceMotion: Boolean, backgroundNote: Boolean, openRun: (String) -> Unit) {
+    val c = HanaTheme.colors
+    val paused = ChatCopy.paused(ex.status)
+    val elapsed = rememberElapsed(ex.startedAt)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 10.dp)
+            .cardSurface(c, RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp)
+    ) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 28.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Spinner(
+                Modifier.size(16.dp), spinning = !paused && !reduceMotion,
+                track = if (paused) c.warnSoft else c.accentSoft, head = if (paused) c.warnSolid else c.accent,
+            )
+            Text(
+                ChatCopy.progressLine(ex), Modifier.weight(1f),
+                style = NowText.copy(fontWeight = FontWeight.SemiBold), color = c.ink,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (elapsed != null) {
+                Box(
+                    Modifier
+                        .background(c.fill, HanaShapes.Pill)
+                        .border(0.5.dp, c.hair, HanaShapes.Pill)
+                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        ChatCopy.clock(elapsed),
+                        style = ClockText.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Medium),
+                        color = c.ink2,
+                    )
+                }
+            }
+        }
+        if (ex.steps.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            StepLine(ex.steps, ex.stepActions, live = true, paused = paused, dotBg = c.surface)
+        }
+        val liveThought = ex.draft?.takeIf(String::isNotBlank)
+        if (liveThought != null) {
+            Row(
+                Modifier
+                    .padding(top = if (ex.steps.isEmpty()) 6.dp else 8.dp, bottom = 2.dp)
+                    .fillMaxWidth(),
+                verticalAlignment = Alignment.Top,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Icon(
+                    HanaIcons.Spark,
+                    null,
+                    Modifier.padding(top = 2.5.dp).size(13.dp),
+                    tint = c.accent,
+                )
+                Text(
+                    liveThought,
+                    style = HanaType.Hint.copy(fontSize = 12.5.sp, lineHeight = 18.sp),
+                    color = c.ink2,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        // 跑的时候就能进运行过程(页面按秒接着长);以精致药丸动作钮呈现，代替粗糙的下划线斜体
+        ex.runId?.let { id ->
+            Row(
+                Modifier
+                    .padding(top = 8.dp)
+                    .clip(HanaShapes.Pill)
+                    .background(c.fill)
+                    .border(0.5.dp, c.hair, HanaShapes.Pill)
+                    .clickable(role = Role.Button) { openRun(id) }
+                    .padding(horizontal = 10.dp, vertical = 4.5.dp)
+                    .testTag("work-view-process"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    stringResource(R.string.chat_view_process),
+                    style = HanaType.Hint.copy(fontSize = 12.sp, fontWeight = FontWeight.Medium),
+                    color = c.ink2,
+                )
+                Icon(
+                    HanaIcons.Chevron,
+                    null,
+                    Modifier.size(11.dp),
+                    tint = c.ink3,
+                )
+            }
+        }
+        if (backgroundNote) {
+            Row(
+                Modifier
+                    .padding(top = 10.dp)
+                    .fillMaxWidth()
+                    .background(c.bg, RoundedCornerShape(10.dp))
+                    .border(0.5.dp, c.hair, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 11.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Icon(HanaIcons.Eye, null, Modifier.size(14.dp), tint = c.ink3)
+                Text(
+                    ChatCopy.BACKGROUND_NOTE,
+                    style = NoteText.copy(fontSize = 12.sp, lineHeight = 16.5.sp),
+                    color = c.ink2,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/** 从 [startedAt] 起的用时,每秒更新;不知道开始时刻(为 0)时为 null。 */
+@Composable
+private fun rememberElapsed(startedAt: Long): Long? {
+    if (startedAt <= 0L) return null
+    val now by produceState(System.currentTimeMillis(), startedAt) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(1_000L - value % 1_000L)
+        }
+    }
+    return (now - startedAt).coerceAtLeast(0L)
+}
+
+private enum class Dot { Done, Current, Paused, Dim }
+
+/**
+ * 竖线步骤。[live] 时最后一步按任务此刻的状态标蓝点或橙点;在跑时只列最近 [ChatCopy.VISIBLE_STEPS] 步,
+ * 前面的收成一行,点开看全部。[dotBg] 用于遮挡背后的时间线竖线，使步骤点边缘干净无杂色。
+ */
+@Composable
+private fun StepLine(
+    steps: List<StepRow>,
+    actions: Map<Int, List<StepAction>>,
+    live: Boolean,
+    paused: Boolean,
+    dotBg: Color = HanaTheme.colors.bg,
+) {
+    val c = HanaTheme.colors
+    var all by rememberSaveable { mutableStateOf(!live) }
+    // 哪几步点开了:按这一屏里的序号记,列表变长也不乱
+    val expanded = remember { mutableStateMapOf<Int, Boolean>() }
+    val hidden = if (all) 0 else (steps.size - ChatCopy.VISIBLE_STEPS).coerceAtLeast(0)
+    Column(
+        Modifier.padding(top = 4.dp).fillMaxWidth().drawBehind {
+            val x = StepRail.toPx()
+            drawLine(c.hair, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1.dp.toPx())
+        },
+    ) {
+        if (hidden > 0) {
+            StepItem(ChatCopy.earlierSteps(hidden), "", Dot.Dim, current = false, link = true, dotBg = dotBg, onClick = { all = true })
+        }
+        steps.drop(hidden).forEachIndexed { i, row ->
+            val key = hidden + i
+            val isLast = key == steps.lastIndex
+            val dot = when {
+                live && isLast && paused -> Dot.Paused
+                live && isLast && row.state == StepState.Run -> Dot.Current
+                row.state == StepState.Dim -> Dot.Dim
+                else -> Dot.Done
+            }
+            val open = expanded[key] == true
+            val detail = actions[row.step].orEmpty()
+            StepItem(
+                row.text, row.subtitle, dot, current = dot == Dot.Current || dot == Dot.Paused,
+                actions = detail, open = open, dotBg = dotBg,
+                // 有具体动作才点得开:点开看这一步实际做了什么、对什么、结果如何
+                onClick = if (detail.isEmpty()) null else ({ expanded[key] = !open }),
+            )
+        }
+    }
+}
+
+@Composable
+private fun StepItem(
+    text: String, subtitle: String, dot: Dot, current: Boolean, link: Boolean = false, onClick: (() -> Unit)? = null,
+    actions: List<StepAction> = emptyList(), open: Boolean = false,
+    dotBg: Color = HanaTheme.colors.bg,
+) {
+    val c = HanaTheme.colors
+    Row(
+        Modifier.fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClickLabel = stringResource(if (open) R.string.collapse else R.string.chat_expand_steps), onClick = onClick)
+                } else Modifier,
+            )
+            .heightIn(min = 26.dp).padding(vertical = 2.5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.width(StepRail * 2), contentAlignment = Alignment.Center) { StepDot(dot, dotBg) }
+        Spacer(Modifier.width(9.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                text, style = if (current) StepCurrentText else StepText,
+                color = when {
+                    link -> c.accent
+                    current -> c.ink
+                    else -> c.ink2
+                },
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+            )
+            if (subtitle.isNotEmpty()) Text(subtitle, style = HanaType.Hint, color = c.ink3, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            // 点开:这一步实际做的几件事,一件一行「做了什么 · 对什么 · 结果」,说法和运行过程页一样
+            if (open) actions.forEach { a ->
+                Text(
+                    ChatCopy.actionLine(a), Modifier.padding(top = 2.dp),
+                    style = HanaType.Hint, color = if (a.failed) c.bad else c.ink3, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        // 能点开的只有有动作的那些:右边一个小箭头,点开时朝下
+        if (actions.isNotEmpty()) Icon(
+            HanaIcons.Chevron, null,
+            Modifier.padding(start = 6.dp).size(12.dp).graphicsLayer { rotationZ = if (open) 90f else 0f },
+            tint = c.ink3,
+        )
+    }
+}
+
+/** 步骤点:8dp 实心;当前步外面一圈 3dp 的淡色光环。[bg] 用于遮挡背后的时间线竖线。 */
+@Composable
+private fun StepDot(dot: Dot, bg: Color = HanaTheme.colors.bg) {
+    val c = HanaTheme.colors
+    val (fill, ring) = when (dot) {
+        Dot.Done -> c.ink3 to null
+        Dot.Dim -> c.hair to null
+        Dot.Current -> c.accent to c.accentSoft
+        Dot.Paused -> c.warnSolid to c.warnSoft
+    }
+    // 底色先盖住竖线,点才是干净的
+    Box(
+        Modifier.size(14.dp).drawBehind {
+            val center = Offset(size.width / 2, size.height / 2)
+            if (ring != null) {
+                drawCircle(bg, 7.dp.toPx(), center)
+                drawCircle(ring, 7.dp.toPx(), center)
+            } else {
+                drawCircle(bg, 5.dp.toPx(), center)
+            }
+            drawCircle(fill, if (dot == Dot.Current || dot == Dot.Paused) 4.dp.toPx() else 3.5.dp.toPx(), center)
+        },
+    )
+}
+
+/** 转圈:淡色圆环,顶上一段实色。[spinning] 为假(关了动画、停下来等你)时停在原处。 */
+@Composable
+internal fun Spinner(modifier: Modifier, spinning: Boolean, track: Color, head: Color) {
+    val turn = if (!spinning) 0f else rememberInfiniteTransition(label = "spin").animateFloat(
+        0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart), label = "spin",
+    ).value
+    Box(
+        modifier.graphicsLayer { rotationZ = turn }
+            .border(2.dp, track, CircleShape)
+            .border(
+                2.dp,
+                Brush.sweepGradient(0f to Color.Transparent, 0.62f to Color.Transparent, 0.63f to head, 0.88f to head, 0.89f to Color.Transparent),
+                CircleShape,
+            ),
+    )
+}
+
+/**
+ * 结束后过程收成一行:「做了 N 步 · 用时」(点了在下面展开步骤)和「查看过程」(进时间线)。
+ */
+@Composable
+private fun DoneLine(ex: Exchange, reduceMotion: Boolean, openRun: (String) -> Unit) {
+    val c = HanaTheme.colors
+    var open by rememberSaveable { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+        Row(
+            Modifier.heightIn(min = 28.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (ex.status is ExchangeStatus.Done) Icon(HanaIcons.Check, null, Modifier.size(16.dp), tint = c.ink3)
+            if (ex.steps.isNotEmpty()) {
+                Text(
+                    stepsSummary(ex),
+                    Modifier.clickable(onClickLabel = if (open) stringResource(R.string.chat_collapse_steps) else stringResource(R.string.chat_expand_steps)) { open = !open },
+                    style = DoneText, color = c.ink3,
+                )
+            }
+            ex.runId?.let { id ->
+                Row(
+                    Modifier
+                        .clip(HanaShapes.Pill)
+                        .background(c.fill)
+                        .clickable(role = Role.Button) { openRun(id) }
+                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        stringResource(R.string.chat_view_process),
+                        style = DoneText.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Medium),
+                        color = c.ink2,
+                    )
+                    Icon(
+                        HanaIcons.Chevron,
+                        null,
+                        Modifier.size(10.dp),
+                        tint = c.ink3,
+                    )
+                }
+            }
+        }
+        Reveal(open && ex.steps.isNotEmpty(), reduceMotion) { StepLine(ex.steps, ex.stepActions, live = false, paused = false, dotBg = c.bg) }
+    }
+}
+
+/** 点开的内容:平时展开收起带动画,关了动画时直接出现、消失。 */
+@Composable
+private fun Reveal(visible: Boolean, reduceMotion: Boolean, content: @Composable () -> Unit) {
+    if (reduceMotion) {
+        if (visible) content()
+    } else {
+        AnimatedVisibility(visible, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) { content() }
+    }
+}
+
+// ---------- 状态与结果 ----------
+
+@StringRes
+fun takeoverReasonLabel(reason: String): Int? = when (reason) {
+    "captcha" -> R.string.takeover_reason_captcha
+    "login" -> R.string.takeover_reason_login
+    "access_blocked" -> R.string.takeover_reason_access_blocked
+    "payment" -> R.string.takeover_reason_payment
+    "decision" -> R.string.takeover_reason_decision
+    else -> null
+}
+
+/** 一问一答此刻的状态:要你做的事是一张白卡([NeedCard]),结果直接排在背景上。 */
+@Composable
+private fun StatusCard(
+    status: ExchangeStatus, stage: Takeover.Stage, vm: ChatViewModel, runId: String?,
+    loadSource: suspend (String) -> EvidenceSource?, openSource: (String?, String?) -> Unit,
+    /** 回答的长按菜单认这一条用的(见 [MessageArea])。 */
+    key: String,
+) {
+    when (status) {
+        ExchangeStatus.Working -> Unit
+        ExchangeStatus.WaitingUnlock -> NeedCard(stringResource(R.string.chat_wait_unlock), stringResource(R.string.chat_unlock_body))
+        is ExchangeStatus.NeedsTakeover -> {
+            val label = takeoverReasonLabel(status.reason)
+            val title = if (label != null) stringResource(R.string.takeover_title_reason, stringResource(label)) else stringResource(R.string.takeover_title)
+            val handedOver = stage == Takeover.Stage.HandedOver
+            val text = if (handedOver) stringResource(R.string.takeover_handed_over_hint) else status.message
+            // 付款的商品、金额、地址单独成行:这张卡片就是付款前的确认
+            val body = listOfNotNull(text, StatusCopy.paymentLines(status.item, status.amount, status.address)).joinToString("\n")
+            NeedCard(title, body, footer = { TextLink(stringResource(R.string.action_cancel_task), vm::cancel) }) {
+                if (handedOver) {
+                    CardButton(stringResource(R.string.action_finished_myself), onClick = vm::finishedMyself)
+                    CardButton(stringResource(R.string.action_hand_back), primary = true, onClick = vm::handBack)
+                } else {
+                    CardButton(stringResource(R.string.action_skip), onClick = vm::skip)
+                    CardButton(stringResource(R.string.action_take_over), primary = true, onClick = vm::takeOver)
+                }
+            }
+        }
+        is ExchangeStatus.NeedsInput -> {
+            val options = status.options.orEmpty()
+            val note = stringResource(R.string.no_answer_note, TaskService.INPUT_TIMEOUT_MINUTES)
+            NeedCard(
+                stringResource(R.string.input_title), stringResource(R.string.chat_input_body, status.prompt, note),
+                options = if (options.isEmpty()) null else ({
+                    options.forEach { o -> HanaButton(o, { vm.answer(o) }, Modifier.fillMaxWidth(), kind = ButtonKind.Tonal, size = ButtonSize.Medium) }
+                }),
+            ) {
+                if (options.isEmpty()) CardButton(stringResource(R.string.action_cancel_task), onClick = vm::cancel)
+            }
+        }
+        // 关键高危操作（支付、转账、敏感授权等）：使用带物理阻尼与琥珀色呼吸光晕的滑动确认放行组件，杜绝单手握持误触
+        is ExchangeStatus.NeedsConfirmation -> {
+            com.hana.agent.ui.safegate.SlideToAuthorize(
+                title = status.title,
+                riskDescription = status.body + "\n" + ConfirmationCopy.NOTE,
+                onAuthorized = { vm.approve(status.key) },
+                onRejected = { vm.decline(status.key) },
+                modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
+            )
+        }
+        is ExchangeStatus.Paused -> NeedCard(stringResource(if (status.resumable) R.string.chat_paused else R.string.chat_waiting_for_you), status.why) {
+            CardButton(stringResource(R.string.action_cancel_task), onClick = vm::cancel)
+            if (status.resumable) CardButton(stringResource(R.string.chat_continue), primary = true, onClick = vm::resume)
+        }
+        // 排队等开始:轮到时自动开始,点继续不能插队,只给取消
+        is ExchangeStatus.Queued -> NeedCard(stringResource(R.string.chat_queued), status.why) {
+            CardButton(stringResource(R.string.action_cancel_task), onClick = vm::cancel)
+        }
+        // 长按整块回答弹菜单;复制、引用的只是回答的字,不带上面的提示和下面的来源
+        is ExchangeStatus.Done -> Box(Modifier.padding(bottom = 12.dp)) {
+            AnswerArea(key, status.answer, Modifier.fillMaxWidth().answerSurface()) {
+                Column {
+                    status.unverifiedLine?.let { line ->
+                        Row(Modifier.padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(18.dp).background(HanaTheme.colors.warnSoft, CircleShape), contentAlignment = Alignment.Center) {
+                                Icon(HanaIcons.Exclaim, null, Modifier.size(11.dp), tint = HanaTheme.colors.warn)
+                            }
+                            Text(line, style = HanaType.Caption, fontWeight = FontWeight.SemiBold, color = HanaTheme.colors.ink2)
+                        }
+                    }
+                    MarkdownText(status.answer, AnswerText.copy(color = HanaTheme.colors.ink))
+                    // 来源:旧记录里模型写的依据文字,或运行记录里代码记下的来源;都没有就不显示
+                    if (status.evidence != null || runId != null) SourceChip(status.evidence, runId, loadSource, openSource)
+                }
+            }
+        }
+        is ExchangeStatus.Failed -> Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp, bottom = 12.dp)
+                .background(HanaTheme.colors.fill, RoundedCornerShape(12.dp))
+                .border(0.5.dp, HanaTheme.colors.hair, RoundedCornerShape(12.dp))
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Box(Modifier.size(7.dp).background(HanaTheme.colors.bad, CircleShape))
+                Text(stringResource(R.string.chat_not_done), style = HanaType.BodyStrong.copy(fontSize = 14.sp), color = HanaTheme.colors.ink)
+            }
+            if (status.reason.isNotBlank()) {
+                Text(
+                    status.reason,
+                    Modifier.padding(top = 4.dp),
+                    style = CardBody.copy(fontSize = 12.5.sp, lineHeight = 17.5.sp),
+                    color = HanaTheme.colors.ink2,
+                )
+            }
+        }
+        // 停止后补上的交代当作这一轮的回答,排在「已停止」下面;还在写时一行小字
+        is ExchangeStatus.Cancelled -> Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+            Text(stringResource(R.string.chat_stopped), Modifier.padding(start = 2.dp), style = HanaType.Body, color = HanaTheme.colors.ink2)
+            if (status.summarizing) Text(
+                StatusCopy.STOP_SUMMARIZING, Modifier.padding(start = 2.dp, top = 4.dp), style = HanaType.Caption, color = HanaTheme.colors.ink3,
+            )
+            status.summary?.let { summary ->
+                Box(Modifier.padding(top = 8.dp)) {
+                    AnswerArea(key, summary, Modifier.fillMaxWidth().answerSurface()) {
+                        MarkdownText(summary, AnswerText.copy(color = HanaTheme.colors.ink))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 回答下面的「来源」小胶囊,只是入口;依据和截图在独立页面看。 */
+@Composable
+private fun SourceChip(text: String?, runId: String?, loadSource: suspend (String) -> EvidenceSource?, openSource: (String?, String?) -> Unit) {
+    val source by produceState<EvidenceSource?>(null, runId) { value = runId?.let { loadSource(it) } }
+    if (text == null && source?.items.isNullOrEmpty() && source?.screenshots.isNullOrEmpty()) return
+    val c = HanaTheme.colors
+    Row(
+        Modifier.padding(top = 12.dp).heightIn(min = 30.dp)
+            .cardSurface(c, HanaShapes.Pill).clip(HanaShapes.Pill)
+            .clickable(onClickLabel = stringResource(R.string.chat_view_source)) { openSource(runId, text) }
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Icon(HanaIcons.Link, null, Modifier.size(15.dp), tint = c.ink2)
+        Text(sourceLabel(source), style = PillText, color = c.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/**
+ * 「需要你」卡片(要你处理、提问、确认、暂停、锁屏、被拦下):白卡,标题前一个橙色圆点,下面说明;
+ * [options] 是一列可点的答案;按钮并排,次要的在左(浅色)、主要的在右(蓝色);[footer] 在最下面。
+ */
+@Composable
+private fun NeedCard(
+    title: String,
+    body: String,
+    footer: (@Composable () -> Unit)? = null,
+    options: (@Composable () -> Unit)? = null,
+    buttons: (@Composable RowScope.() -> Unit)? = null,
+) {
+    val c = HanaTheme.colors
+    HanaCard(Modifier.padding(top = 8.dp, bottom = 12.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.size(20.dp).background(c.warnSoft, CircleShape), contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(8.dp).background(c.warnSolid, CircleShape))
+                }
+                Text(title, style = NeedTitle, color = c.ink)
+            }
+            Text(body, Modifier.padding(top = 6.dp), style = CardBody, color = c.ink2)
+            if (options != null) {
+                Column(Modifier.padding(top = 14.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) { options() }
+            }
+            if (buttons != null) {
+                Row(Modifier.padding(top = 14.dp).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { buttons() }
+            }
+            footer?.let { Box(Modifier.padding(top = 10.dp).fillMaxWidth(), contentAlignment = Alignment.Center) { it() } }
+        }
+    }
+}
+
+@Composable
+private fun RowScope.CardButton(text: String, primary: Boolean = false, onClick: () -> Unit) {
+    HanaButton(
+        text, onClick, Modifier.weight(1f),
+        kind = if (primary) ButtonKind.Primary else ButtonKind.Tonal, size = ButtonSize.Medium,
+    )
+}
+
+@Composable
+private fun TextLink(text: String, onClick: () -> Unit) {
+    Text(text, Modifier.clip(HanaShapes.Pill).clickable(onClick = onClick).padding(4.dp), style = HanaType.Caption, color = HanaTheme.colors.ink3)
+}
+
+/** 导出到「下载/Hana」的文件:小卡片,名字、大小和存放处;点了能看的在 App 里打开([FileViewer]),其余交给系统里能打开它的 App。 */
+@Composable
+private fun FileCards(files: List<SharedFile>) {
+    val context = LocalContext.current
+    val c = HanaTheme.colors
+    Column(Modifier.fillMaxWidth().padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (f in files) {
+            Row(
+                Modifier.fillMaxWidth().cardSurface(c, HanaShapes.Card).clip(HanaShapes.Card)
+                    .clickable(onClickLabel = stringResource(R.string.chat_open), role = Role.Button) { openShared(context, f) }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(36.dp).background(c.neutralSoft, FileTileShape), contentAlignment = Alignment.Center) {
+                    Icon(HanaIcons.Doc, null, Modifier.size(20.dp), tint = c.ink)
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(f.name, style = FileName, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "${ChatViewModel.sizeLabel(f.size)} · ${f.savedAs.substringBeforeLast('/')}",
+                        style = FileMeta, color = c.ink3, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Icon(HanaIcons.Chevron, null, Modifier.size(HanaSize.SmallIcon), tint = c.ink3)
+            }
+        }
+    }
+}
+
+private fun openShared(context: Context, f: SharedFile) = FileViewer.open(context, Uri.parse(f.uri), f.name)
+
+// ---------- 输入栏 ----------
+
+/** 「＋」面板:关着、开着、正让给键盘(点了输入框:键盘升起来时面板跟着矮下去,键盘到位再关)。 */
+private enum class Panel { Closed, Open, Yielding }
+
+/**
+ * 玻璃胶囊输入栏:左边「＋」,右边发送(没内容时灰);任务在跑时多一个停止,输入框的灰字提示插话会交给当前任务。
+ * 「＋」点开的附件面板([attachPanel])在输入栏下面、占键盘那块位置,和键盘互换:开面板收键盘,
+ * 再点「＋」(这时是 ×)或点输入框就收起面板、换成键盘;返回先收面板。待发的附件在输入栏上方一排([PendingTray])。
+ */
+@Composable
+internal fun Composer(
+    modifier: Modifier,
+    text: String,
+    onText: (String) -> Unit,
+    mode: ComposerMode,
+    hasHistory: Boolean,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    /** 沙箱就绪、没有任务在跑时才有「＋」;点开是这块面板。 */
+    attachPanel: (@Composable () -> Unit)? = null,
+    attachments: List<PendingAttachment> = emptyList(),
+    importing: Boolean = false,
+    rejected: List<String> = emptyList(),
+    overLimit: Int = 0,
+    onRemove: (String) -> Unit = {},
+    onDismissRejected: () -> Unit = {},
+    /** 要随下一句话发出去的引用;有时输入框上方一张小条,× 去掉。 */
+    quote: QuoteMessage.Quote? = null,
+    onRemoveQuote: () -> Unit = {},
+    editRequest: Int = 0,
+    /** 输入栏后面那层内容的画面;为 null 时输入栏不做模糊、用不透明底。 */
+    backdrop: GlassBackdrop? = null,
+    reduceMotion: Boolean = false,
+    /** 按住说话从这里开会话;null 时输入框只能打字。 */
+    voice: VoiceSource? = null,
+    /** 说完的字;调用方把它接在已有的字后面,不自动发送。 */
+    onVoiceText: (String) -> Unit = {},
+    /** 「还不能语音输入」里的「去选」:到设置里选转文字。 */
+    onPickSpeech: () -> Unit = {},
+    /** 任务在跑时说的话交给谁:卡片顶上写「插话给『…』」。 */
+    steerTarget: String? = null,
+    /** 按着说话时为 true:对话内容跟着虚化。 */
+    onVoiceHolding: (Boolean) -> Unit = {},
+) {
+    val c = HanaTheme.colors
+    val vh = rememberVoiceHold(voice, onVoiceText)
+    val vState = voiceState(vh)
+    val voiceHolding = vh?.holding == true
+    LaunchedEffect(voiceHolding) { onVoiceHolding(voiceHolding) }
+    var fieldFocused by remember { mutableStateOf(false) }
+    // 底部从页面底色淡出到透明,输入栏是浮在上面的玻璃
+    val fade = remember(c) { Brush.verticalGradient(0f to c.bg.copy(alpha = 0f), 0.6f to c.bg, 1f to c.bg) }
+    val busy = mode == ComposerMode.Busy
+    val density = LocalDensity.current
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val field = remember { FocusRequester() }
+    val ime = WindowInsets.ime
+    val nav = WindowInsets.navigationBars
+    var panel by rememberSaveable { mutableStateOf(Panel.Closed) }
+    LaunchedEffect(editRequest) {
+        if (editRequest > 0) {
+            panel = Panel.Closed
+            field.requestFocus()
+            keyboard?.show()
+        }
+    }
+    // 面板和键盘一样高:记下见过的键盘高度(在导航栏之上的那段),没见过时用默认高度
+    var keyboardPx by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(ime, nav, density) {
+        snapshotFlow { ime.getBottom(density) - nav.getBottom(density) }.collect { if (it > keyboardPx) keyboardPx = it }
+    }
+    // 输入框聚焦时长按留给系统的选字、粘贴(悬浮、分体、实体键盘也一样);没聚焦时输入框上盖一层按住说话的手势
+    val voiceGesture = vh != null && (!fieldFocused || voiceHolding)
+    // 键盘从弹着到收起(返回键、键盘自己的收起键):输入框跟着失焦,又能按住说话。只看键盘的变化,实体键盘(从不弹出)不受影响
+    LaunchedEffect(ime, density, vh != null) {
+        if (vh == null) return@LaunchedEffect
+        var wasUp = false
+        snapshotFlow { ime.getBottom(density) > 0 }.collect { up ->
+            if (wasUp && !up && fieldFocused) focus.clearFocus()
+            wasUp = up
+        }
+    }
+    // 输入框外面的字一变(说完填进来、点了示例),光标放到末尾,接着说或接着打都在后面
+    var fieldValue by remember { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
+    val shownValue = if (fieldValue.text == text) fieldValue else TextFieldValue(text, TextRange(text.length))
+    val panelPx = with(density) {
+        if (keyboardPx > 0) keyboardPx.coerceIn(PanelMin.roundToPx(), PanelMax.roundToPx()) else PanelDefault.roundToPx()
+    }
+    LaunchedEffect(attachPanel == null) { if (attachPanel == null) panel = Panel.Closed }
+    BackHandler(enabled = panel == Panel.Open) { panel = Panel.Closed }
+    // 让给键盘:等键盘升到差不多面板高(没有键盘弹出来时最多等一会儿)再关
+    LaunchedEffect(panel, panelPx) {
+        if (panel != Panel.Yielding) return@LaunchedEffect
+        withTimeoutOrNull(YIELD_MS) {
+            snapshotFlow { ime.getBottom(density) - nav.getBottom(density) }.first { it >= panelPx * 9 / 10 }
+        }
+        panel = Panel.Closed
+    }
+    val togglePanel: () -> Unit = {
+        if (panel == Panel.Open) {
+            panel = Panel.Yielding
+            field.requestFocus()
+            keyboard?.show()
+        } else {
+            focus.clearFocus()
+            keyboard?.hide()
+            panel = Panel.Open
+        }
+    }
+    val turn by animateFloatAsState(if (panel == Panel.Open) 45f else 0f, if (reduceMotion) snap() else tween(200), label = "plus")
+    Box(
+        modifier.fillMaxWidth()
+            .background(fade)
+            .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
+            .padding(start = 12.dp, end = 12.dp, top = 10.dp, bottom = 6.dp),
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            quote?.let { QuoteChip(it, onRemoveQuote, Modifier.padding(bottom = 6.dp)) }
+            if (attachments.isNotEmpty()) PendingTray(attachments, onRemove, Modifier.padding(bottom = 2.dp))
+            if (importing || rejected.isNotEmpty() || overLimit > 0) {
+                Column(Modifier.fillMaxWidth().padding(start = 4.dp, bottom = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (importing) Text(AttachCopy.IMPORTING, style = HanaType.Caption, color = c.ink3)
+                    if (rejected.isNotEmpty() || overLimit > 0) {
+                        val why = listOfNotNull(
+                            rejected.takeIf { it.isNotEmpty() }?.let { stringResource(R.string.chat_attach_rejected, it.joinToString(stringResource(R.string.list_sep))) },
+                            overLimit.takeIf { it > 0 }?.let(AttachCopy::overLimit),
+                        ).joinToString("\n")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(why, Modifier.weight(1f), style = HanaType.Caption, color = c.warn)
+                            TextLink(stringResource(R.string.ok_got_it), onDismissRejected)
+                        }
+                    }
+                }
+            }
+            if (vh != null) {
+                val title = if (busy && !steerTarget.isNullOrBlank()) stringResource(R.string.voice_steer_to, steerTarget)
+                else stringResource(R.string.voice_listening)
+                VoiceFloat(vh, vState, title, backdrop, reduceMotion)
+            }
+            Box(Modifier.fillMaxWidth()) {
+            GlassBar(Modifier.fillMaxWidth().keepsKeyboard(), backdrop) {
+                if (attachPanel != null) {
+                    val label = if (panel == Panel.Open) AttachCopy.CLOSE else AttachCopy.ADD
+                    Box(
+                        Modifier.size(HanaSize.IconButton).clip(CircleShape)
+                            .clickable(enabled = !importing, onClickLabel = label, onClick = togglePanel),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(HanaIcons.Plus, label, Modifier.size(HanaSize.Icon).graphicsLayer { rotationZ = turn }, tint = c.ink)
+                    }
+                }
+                Box(Modifier.weight(1f).padding(start = if (attachPanel != null) 2.dp else 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp)) {
+                    val converting = vState is HoldToTalk.State.Converting
+                    if (text.isEmpty() && !converting) {
+                        if (vh != null) VoicePlaceholder(mode)
+                        else Text(ChatCopy.placeholder(mode, hasHistory), style = HanaType.Body, color = c.ink3, maxLines = 1)
+                    }
+                    BasicTextField(
+                        shownValue,
+                        { v -> fieldValue = v; if (v.text != text) onText(v.text) },
+                        Modifier.fillMaxWidth().testTag("composer-field").focusRequester(field)
+                            .alpha(if (converting) 0f else 1f)
+                            // 面板开着时点输入框:面板让给键盘
+                            .onFocusChanged {
+                                fieldFocused = it.isFocused
+                                if (it.isFocused && panel == Panel.Open) panel = Panel.Yielding
+                            },
+                        textStyle = HanaType.Body.copy(color = c.ink),
+                        cursorBrush = SolidColor(c.accent),
+                        maxLines = 5,
+                    )
+                    // 服务商松开后在转:输入框里转圈,转好的字填进来
+                    if (converting) VoiceConverting(Modifier.align(Alignment.CenterStart))
+                    if (voiceGesture && vh != null) {
+                        Box(Modifier.matchParentSize().holdToTalk(vh) { field.requestFocus(); keyboard?.show() })
+                    }
+                }
+                val canSend = AttachTray.canSend(text, attachments, importing)
+                // 键盘出来以后长按输入框留给系统选字;话筒按住才听,点一下只提示按住
+                if (fieldFocused && vh != null) {
+                    val hint = stringResource(R.string.voice_hold_to_talk)
+                    Box(
+                        Modifier.size(HanaSize.IconButton).testTag("composer-mic").holdToTalk(vh) { vh.toast = hint },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(HanaIcons.Mic, hint, Modifier.size(HanaSize.Icon), tint = c.ink)
+                    }
+                }
+                // 任务在跑时停止一直在;写了字再多一个发送,发出去的话交给当前任务
+                if (busy) {
+                    Box(
+                        Modifier.size(HanaSize.IconButton).background(c.ink, CircleShape).clip(CircleShape)
+                            .clickable(onClickLabel = stringResource(R.string.chat_stop), onClick = onStop),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(HanaIcons.Stop, stringResource(R.string.chat_stop), Modifier.size(16.dp), tint = c.bg)
+                    }
+                }
+                if (!busy || canSend) {
+                    Box(
+                        Modifier.size(HanaSize.IconButton)
+                            .background(if (canSend) c.accent else c.greySoft, CircleShape)
+                            .clip(CircleShape)
+                            .clickable(enabled = canSend, onClickLabel = stringResource(R.string.chat_send)) { panel = Panel.Closed; onSend() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(HanaIcons.Up, stringResource(R.string.chat_send), Modifier.size(20.dp), tint = if (canSend) c.onAccent else c.ink3)
+                    }
+                }
+            }
+            if (vh != null) VoiceBarCover(vh, vState, reduceMotion, Modifier.matchParentSize())
+            }
+            if (vh != null) VoiceSheetHost(vh, onPickSpeech)
+            if (panel != Panel.Closed && attachPanel != null) {
+                // 键盘还在(刚开面板时正在收、让给键盘时正在升)的那一段从面板里扣掉:输入栏不跟着上下跳
+                Box(
+                    Modifier.fillMaxWidth().clipToBounds().layout { m, cons ->
+                        val keyboardNow = (ime.getBottom(this) - nav.getBottom(this)).coerceAtLeast(0)
+                        val shown = (panelPx - keyboardNow).coerceAtLeast(0)
+                        val p = m.measure(Constraints.fixed(cons.maxWidth, panelPx))
+                        layout(cons.maxWidth, shown) { p.place(0, 0) }
+                    },
+                ) {
+                    Box(Modifier.fillMaxSize().padding(top = 4.dp)) { attachPanel() }
+                }
+            }
+        }
+    }
+}
+
+/** 面板高度:没见过键盘时的默认值,以及跟着键盘时的上下限。 */
+private val PanelDefault = 320.dp
+private val PanelMin = 280.dp
+private val PanelMax = 420.dp
+/** 让给键盘时最多等这么久(毫秒)。 */
+private const val YIELD_MS = 700L
+
+/** 竖线的位置(从左边算起);步骤点、转圈的中心都在这条线上。 */
+private val StepRail = 8.dp
+
+private val FileTileShape = RoundedCornerShape(10.dp)
+private val EmptyLead = TextStyle(fontSize = 15.sp, lineHeight = 21.sp)
+private val ExampleText = TextStyle(fontSize = 15.sp, lineHeight = 21.sp)
+private val BubbleText = TextStyle(fontSize = 15.sp, lineHeight = 22.sp)
+/** 回答:正文字号,行距放宽到 1.7。 */
+private val AnswerText = TextStyle(fontSize = 15.sp, lineHeight = 26.sp)
+private val NowText = TextStyle(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
+private val ClockText = TextStyle(fontSize = 12.5.sp, lineHeight = 17.sp, fontFeatureSettings = "tnum")
+private val StepText = TextStyle(fontSize = 14.sp, lineHeight = 19.sp)
+private val StepCurrentText = TextStyle(fontSize = 14.sp, lineHeight = 19.sp, fontWeight = FontWeight.Medium)
+private val NoteText = TextStyle(fontSize = 12.5.sp, lineHeight = 17.sp)
+private val DoneText = TextStyle(fontSize = 13.sp, lineHeight = 18.sp)
+private val NeedTitle = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.SemiBold)
+private val CardBody = TextStyle(fontSize = 14.sp, lineHeight = 21.5.sp)
+private val PillText = TextStyle(fontSize = 13.sp, lineHeight = 18.sp)
+private val FileName = TextStyle(fontSize = 14.5.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
+private val FileMeta = TextStyle(fontSize = 12.5.sp, lineHeight = 17.sp)
