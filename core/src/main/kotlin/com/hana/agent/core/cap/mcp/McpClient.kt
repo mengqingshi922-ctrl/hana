@@ -114,6 +114,8 @@ private class McpClientTool(
     }
     override val approvalRisk: ApprovalRisk = approval
     override val offScreen = true
+    // offScreen 的 MCP 只读工具可在 executeRead 上下文中被调用（readOnlyHint=true + TrustAnnotations）
+    override val executableAsRead: Boolean get() = risk == Risk.Read
     override val logged = risk != Risk.Read
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {

@@ -326,33 +326,31 @@ class AndroidScreen(
         val cur = display.current ?: return@withContext null
         val rawBmp = cur.latestFrameBitmap() ?: return@withContext null
         try {
-            val masks = findPrivacyMaskBounds()
-            if (masks.isNotEmpty()) {
-                val canvas = android.graphics.Canvas(rawBmp)
-                val paint = android.graphics.Paint().apply {
-                    color = android.graphics.Color.BLACK
-                    style = android.graphics.Paint.Style.FILL
-                }
-                masks.forEach { rect ->
-                    canvas.drawRect(rect, paint)
+            val cached = cachedRead?.read
+            val uiElements = cached?.entries?.map { it.element }.orEmpty()
+            val pkg = cached?.topPackage ?: targetPackage
+            if (uiElements.isEmpty()) {
+                val masks = findPrivacyMaskBounds()
+                if (masks.isNotEmpty()) {
+                    val canvas = android.graphics.Canvas(rawBmp)
+                    val paint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.BLACK
+                        style = android.graphics.Paint.Style.FILL
+                    }
+                    masks.forEach { rect ->
+                        canvas.drawRect(rect, paint)
+                    }
                 }
             }
-            // 针对高分辨率屏幕（如 1220×2712）进行等比自适应降采样，最大边限制在 1280 内，极大提升编码速度并降低 VLM Token 开销
-            val maxDim = maxOf(rawBmp.width, rawBmp.height)
-            val bmp = if (maxDim > 1280) {
-                val scale = 1280f / maxDim
-                val targetW = (rawBmp.width * scale).roundToInt().coerceAtLeast(1)
-                val targetH = (rawBmp.height * scale).roundToInt().coerceAtLeast(1)
-                android.graphics.Bitmap.createScaledBitmap(rawBmp, targetW, targetH, true)
-            } else rawBmp
-
-            try {
-                val out = java.io.ByteArrayOutputStream()
-                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
-                out.toByteArray()
-            } finally {
-                if (bmp !== rawBmp) bmp.recycle()
-            }
+            com.hana.agent.privacy.HybridPrivacyFirewall.redactAndEncode(
+                source = rawBmp,
+                ocrLines = emptyList(),
+                uiElements = uiElements,
+                packageName = pkg,
+                maxSide = 1280,
+                quality = 80,
+                format = android.graphics.Bitmap.CompressFormat.JPEG,
+            ).bytes
         } finally {
             rawBmp.recycle()
         }
@@ -694,8 +692,27 @@ class AndroidScreen(
         }
         var field = found.node
         val original = FieldShape.of(field)
-        if (!field.isFocused) field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
         val web = inWebView(field)
+        val imePlan = com.hana.agent.core.security.VirtualDisplayImeGuard.decideInputPlan(
+            com.hana.agent.core.security.VirtualDisplayImeRequest(
+                sdkInt = android.os.Build.VERSION.SDK_INT,
+                displayId = displayId,
+                isVirtualDisplay = displayId > Display.DEFAULT_DISPLAY,
+                isPasswordField = field.isPassword,
+                inWebView = web,
+                hasAccessibilityNode = true,
+                supportsShortcutSetText = !web,
+                supportsPasteKey = true,
+                clipboardAvailable = true,
+                imeVisibleOnTargetDisplay = imeBox() != null,
+            )
+        )
+        if (imePlan.primaryPath == com.hana.agent.core.security.VirtualDisplayInputPath.HAND_TO_USER) {
+            return@withContext ActionResult.Failed("hand_to_user_required", imePlan.reason)
+        }
+        if (!field.isFocused && !imePlan.avoidTapToFocusImePopup) {
+            field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        }
         // 网页编辑区要粘贴才收得到输入;密码框不经剪贴板
         var pasteUnavailable = web && field.isPassword
         val placeholder = ScreenReader.placeholderOf(field)

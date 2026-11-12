@@ -60,7 +60,9 @@ import com.hana.agent.voice.SpeechFailure
 import com.hana.agent.ui.ChatViewModel
 import com.hana.agent.ui.Exchange
 import com.hana.agent.ui.ExchangeStatus
+import com.hana.agent.ui.PipTeleportCoordinator
 import com.hana.agent.ui.ScreenCopy
+import com.hana.agent.ui.TeleportTakeoverState
 import com.hana.agent.ui.screenThumbnail
 import com.hana.agent.ui.ToolLabels
 import com.hana.agent.ui.theme.HanaTheme
@@ -126,6 +128,9 @@ class CapsuleController(
     private var card by mutableStateOf<CardView?>(null)
     private var preview by mutableStateOf<Bitmap?>(null)
     private var zoomed by mutableStateOf(false)
+    private val teleportCoordinator = PipTeleportCoordinator()
+    private var teleportRunKey: String? = null
+    private var audioAmplitude by mutableStateOf(0f)
     private var dock by mutableStateOf(flags.capsuleDock())
     private var inputUi by mutableStateOf(CardInputUi())
     /** 截到一屏时加一:一颗上闪一下。 */
@@ -344,8 +349,29 @@ class CapsuleController(
         if (inputUi.open && card?.let(CapsuleCards::input) == null) closeInput()
         val detail = card as? CardView.Detail
         val keptCard = card as? CardView.Kept
-        if (keptCard != null) watchKept(keptCard.page.id)
-        else watchPreview(detail?.takeIf { CapsuleCards.showsScreen(it.content) }?.run?.run?.key)
+        val teleportRun = s.runs.firstOrNull {
+            val st = it.state
+            st is TaskState.WaitingTakeover && PipTeleportCoordinator.isTeleportEligibleReason(st.reason)
+        }
+        if (teleportRun != null) {
+            val wt = teleportRun.state as TaskState.WaitingTakeover
+            val changedReason = teleportRunKey != teleportRun.key || teleportCoordinator.state.value.reason != wt.reason
+            teleportRunKey = teleportRun.key
+            if (!teleportCoordinator.state.value.autoRestored || changedReason) {
+                teleportCoordinator.teleportForTakeover(wt.reason, wt.message, preview)
+            }
+        } else if (teleportRunKey != null) {
+            teleportRunKey = null
+            teleportCoordinator.onTakeoverResolved()
+        }
+
+        val activeTeleportKey = if (teleportCoordinator.state.value.active) teleportRunKey else null
+        when {
+            keptCard != null -> watchKept(keptCard.page.id)
+            detail != null && CapsuleCards.showsScreen(detail.content) -> watchPreview(detail.run.run.key)
+            activeTeleportKey != null -> watchPreview(activeTeleportKey)
+            else -> watchPreview(null)
+        }
         val w = window ?: openWindows(service)
         if (w == null) {
             view = null
@@ -781,7 +807,10 @@ class CapsuleController(
             return
         }
         // 初始立即取一次现有帧，避免初次展开时因节流延迟导致小画面空白
-        run.frames.value?.let { preview = it }
+        run.frames.value?.let {
+            preview = it
+            teleportCoordinator.onFrame(it)
+        }
         previewJob = scope.launch {
             launch {
                 run.state.collect { st ->
@@ -792,6 +821,7 @@ class CapsuleController(
             }
             run.frames.filterNotNull().previewFrames(same = ::sameFrame).flowOn(Dispatchers.Default).collect {
                 preview = it
+                teleportCoordinator.onFrame(it)
             }
         }
     }
@@ -1313,6 +1343,7 @@ class CapsuleController(
         val talking = talk.active && !talk.released
         val servicePaused by TaskService.isPaused.collectAsState()
         val isPaused = servicePaused || v.kind == CapsuleKind.Held
+        val teleport by teleportCoordinator.state.collectAsState()
         HanaTheme(reduceMotion = animationsOff(context)) {
             OverlayMotion(open = true, origin = { TransformOrigin(if (dock.side == DockSide.Right) 1f else 0f, 0.5f) }, onClosed = {}) {
                 CapsuleContent(
@@ -1336,12 +1367,38 @@ class CapsuleController(
                     holding = talking && talk.byTouch,
                     onTalk = if (canTalk()) ::toggleTalk else null,
                     talkLabel = tr(if (talking && !talk.byTouch) R.string.capsule_voice_send else R.string.capsule_voice_talk),
+                    capsuleState = if (teleport.active) CapsuleState.EXPANDED else null,
                     virtualScreenFrame = preview,
+                    onStateChange = { next ->
+                        if (next != CapsuleState.EXPANDED && teleport.active) {
+                            teleportCoordinator.restore(autoRestored = false)
+                        }
+                    },
                     pipInput = tasks.pipInput,
-                    pipTouchEnabled = flags.pipTouchEnabled(),
+                    pipTouchEnabled = teleportCoordinator.isEffectiveTouchEnabled(flags.pipTouchEnabled()),
+                    audioAmplitude = audioAmplitude,
+                    teleportState = teleport,
+                    onTeleportTouch = { teleportCoordinator.onUserTouchInjected() },
                 )
             }
         }
+    }
+
+    /**
+     * 主动触发 Hana Teleport 验证码/滑块/2FA 小窗瞬移接管。
+     * 即使设置里的虚拟屏触控穿透关闭，也会在接管期间临时豁免放行，画面改变后自动恢复。
+     */
+    fun teleportForTakeover(reason: String, message: String = "", runKey: String? = null): TeleportTakeoverState {
+        if (runKey != null) teleportRunKey = runKey
+        val next = teleportCoordinator.teleportForTakeover(reason, message, preview)
+        refresh()
+        return next
+    }
+
+    fun teleportState(): kotlinx.coroutines.flow.StateFlow<TeleportTakeoverState> = teleportCoordinator.state
+
+    fun updateAudioAmplitude(amplitude: Float) {
+        audioAmplitude = amplitude.coerceIn(0f, 1f)
     }
 
     /** 用时,每秒更新;不显示用时时为 null。 */

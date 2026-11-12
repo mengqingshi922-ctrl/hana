@@ -404,7 +404,7 @@ phone on the main screen at the same time.
 - If back does not change the page, use the page's own back control instead
   of pressing back again.
 
-==== tools (55) ====
+==== tools (56) ====
 ## wait
 Wait briefly for an app to load or an animation to finish.
 {"type":"object","properties":{"seconds":{"type":"number","description":"0.2-10 seconds.","minimum":0.2,"maximum":10},"reason":{"type":"string","description":"Optional short note on why you are calling this, in the user's language; shown to the user as the step label."}},"required":["seconds"],"additionalProperties":false}
@@ -485,6 +485,10 @@ List what is on this screen as text, without a screenshot. Each element comes wi
 ## phone_screenshot
 Capture the current screen as an image.
 {"type":"object","properties":{"reason":{"type":"string","description":"Optional short note on why you are calling this, in the user's language; shown to the user as the step label."}},"required":[],"additionalProperties":false}
+
+## phone_zoom_region
+Crop and return a high-resolution zoomed region from the current screen (or an earlier screenshotId) using normalized 0-999 bounds (x1, y1, x2, y2), to inspect small text, icons, or dense prices before acting with phone_tap.
+{"type":"object","properties":{"x1":{"type":"integer","description":"Left edge of the crop box (normalized 0-999, or 0-1 / pixel coordinate).","minimum":0,"maximum":999},"y1":{"type":"integer","description":"Top edge of the crop box (normalized 0-999, or 0-1 / pixel coordinate).","minimum":0,"maximum":999},"x2":{"type":"integer","description":"Right edge of the crop box (normalized 0-999, or 0-1 / pixel coordinate).","minimum":0,"maximum":999},"y2":{"type":"integer","description":"Bottom edge of the crop box (normalized 0-999, or 0-1 / pixel coordinate).","minimum":0,"maximum":999},"screenshotId":{"type":"integer","description":"Optional screenshotId from an earlier read to crop from; omit to capture or reuse the current screen.","minimum":1,"maximum":2147483647},"reason":{"type":"string","description":"Optional short note on why you are calling this, in the user's language; shown to the user as the step label."}},"required":["x1","y1","x2","y2"],"additionalProperties":false}
 
 ## phone_describe
 Ask the vision model to read the whole screen for you, when you cannot tell from the element list what the page is or how it is laid out. Say in task what you are about to do. You get back what the page is, the controls you can use with their 0-999 centre points, anything odd or in the way, and hints for your task. It is slow (often over ten seconds): to find one control, icon or input box, use phone_find_visually instead.

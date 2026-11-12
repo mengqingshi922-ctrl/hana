@@ -71,6 +71,7 @@ internal class ScreenSession(
     val shots: Shots,
     vision: VisionService? = null,
     private val adaptiveVision: Boolean = false,
+    private val uiTreeFormat: UiTreeFormat = UiTreeFormat.JSON,
 ) {
     /** 限制单屏传递元素上限为 250，兼顾长列表完整呈现与病态超长树的剪枝，减少 Token 开销并防止 GC 停顿与模型超时。 */
     private val modelElementsLimit get() = 250
@@ -81,6 +82,77 @@ internal class ScreenSession(
     suspend fun <T> textOnly(block: suspend () -> T): T {
         textOnlyDepth++
         try { return block() } finally { textOnlyDepth-- }
+    }
+
+    private var frozenDepth = 0
+    private var frozenSnapshot: ScreenSnapshot? = null
+    private var frozenScreenshotPng: ByteArray? = null
+    private var frozenTreeRead: TreeRead? = null
+
+    /** 当前是否处于只读锁屏上下文模式（复用快照与截图，跳过重复截屏与无障碍 dump）。 */
+    val isFrozen: Boolean get() = frozenDepth > 0
+
+    /**
+     * 只读锁屏模式（多条目比价 / 信息提取）：
+     * 期间复用当前快照与截图，跳过重复截屏和 A11y dump；若进入时尚无快照则先读一次基准快照。
+     * 支持可重入嵌套，最外层退出时自动释放锁屏缓存。
+     */
+    suspend fun <T> withFrozenContext(captureScreenshot: Boolean = false, block: suspend () -> T): T {
+        val entering = frozenDepth == 0
+        if (entering) {
+            val base = lastSnapshot ?: snapshot()
+            frozenSnapshot = base
+            frozenTreeRead = lastTree?.let { t -> TreeRead(t, lastOcrText, null) }
+            if (captureScreenshot && !base.protected) {
+                frozenScreenshotPng = frozenScreenshotPng ?: screenAttempt {
+                    if (screen.isProtected()) null else screen.screenshotPng()
+                }
+            }
+        }
+        frozenDepth++
+        try {
+            return block()
+        } finally {
+            frozenDepth--
+            if (frozenDepth == 0) {
+                frozenSnapshot = null
+                frozenScreenshotPng = null
+                frozenTreeRead = null
+            }
+        }
+    }
+
+    /** 手动开启只读锁屏上下文（需配合 [unfreezePageContext] 使用，推荐优先使用 [withFrozenContext]）。 */
+    fun freezePageContext(snapshot: ScreenSnapshot? = lastSnapshot, screenshotPng: ByteArray? = null) {
+        if (frozenDepth == 0) {
+            frozenSnapshot = snapshot
+            frozenScreenshotPng = screenshotPng?.takeIf { snapshot?.protected != true }
+            frozenTreeRead = lastTree?.let { t -> TreeRead(t, lastOcrText, null) }
+        }
+        frozenDepth++
+    }
+
+    /** 退出手动开启的只读锁屏上下文。 */
+    fun unfreezePageContext() {
+        if (frozenDepth <= 0) return
+        frozenDepth--
+        if (frozenDepth == 0) {
+            frozenSnapshot = null
+            frozenScreenshotPng = null
+            frozenTreeRead = null
+        }
+    }
+
+    /** 取当前屏幕截图：锁屏模式下优先复用并缓存同一帧原始截图，跳过重复截屏。 */
+    suspend fun screenshotPngCached(): ByteArray? {
+        if (isFrozen) {
+            if (frozenSnapshot?.protected == true) return null
+            frozenScreenshotPng?.let { return it }
+            val captured = screenAttempt { if (screen.isProtected()) null else screen.screenshotPng() }
+            frozenScreenshotPng = captured
+            return captured
+        }
+        return if (screen.isProtected()) null else screen.screenshotPng()
     }
 
     val stabilizer = if (stableRefs) RefStabilizer(surface.family.snapshotPrefix) else null
@@ -162,6 +234,9 @@ internal class ScreenSession(
             readAt.clear()
             shown = null
             chain.clear()
+            frozenSnapshot = null
+            frozenScreenshotPng = null
+            frozenTreeRead = null
             stale = true
             accessRevision = state.revision
         }
@@ -188,25 +263,37 @@ internal class ScreenSession(
      * 读一屏并登记编号。[internal]:不是给模型看的(按描述找目标时),模型手里那屏过没过时照旧;
      * 端口原样的这一屏留作接着那个动作的「动作前」([probe] 用它,不再读一次)。
      */
-    suspend fun snapshot(internal: Boolean = false): ScreenSnapshot = screen.snapshot().let { p ->
-        val prevPkg = lastSnapshot?.packageName
-        if (prevPkg != null && p.packageName != null && prevPkg != p.packageName) {
-            saveAppState(prevPkg, lastSnapshot)
-            restoreAppStateIfAvailable(p.packageName)
+    suspend fun snapshot(internal: Boolean = false): ScreenSnapshot {
+        if (isFrozen) {
+            frozenSnapshot?.let { cached ->
+                reads++
+                if (!internal) stale = false
+                lastSnapshot = cached
+                return cached
+            }
         }
-        (stabilizer?.next(p)?.screen ?: p).also { primed = if (internal) it.snapshotId to p else null }
-    }.also {
-        reads++
-        if (!internal) stale = false
-        lastSnapshot = it
-        recentSnapshots.addLast(it)
-        readAt[it.snapshotId] = System.currentTimeMillis()
-        issued[it.snapshotId] = Unit
-        while (recentSnapshots.size > RECENT_SNAPSHOTS) recentSnapshots.removeFirst().snapshotId.let { id -> readAt.remove(id) }
+        return screen.snapshot().let { p ->
+            val prevPkg = lastSnapshot?.packageName
+            if (prevPkg != null && p.packageName != null && prevPkg != p.packageName) {
+                saveAppState(prevPkg, lastSnapshot)
+                restoreAppStateIfAvailable(p.packageName)
+            }
+            (stabilizer?.next(p)?.screen ?: p).also { primed = if (internal) it.snapshotId to p else null }
+        }.also {
+            reads++
+            if (!internal) stale = false
+            lastSnapshot = it
+            recentSnapshots.addLast(it)
+            readAt[it.snapshotId] = System.currentTimeMillis()
+            issued[it.snapshotId] = Unit
+            while (recentSnapshots.size > RECENT_SNAPSHOTS) recentSnapshots.removeFirst().snapshotId.let { id -> readAt.remove(id) }
+            if (isFrozen && frozenSnapshot == null) frozenSnapshot = it
+        }
     }
 
     /** 此刻重新读一屏,不登记编号、不改模型手里的读屏;读不到为 null。 */
-    suspend fun peek(): ScreenSnapshot? = screenAttempt { screen.peek() }
+    suspend fun peek(): ScreenSnapshot? =
+        if (isFrozen && frozenSnapshot != null) frozenSnapshot else screenAttempt { screen.peek() }
 
     suspend fun observe(withImage: Boolean, adaptiveImage: Boolean = false, recordFrame: Boolean = true): ToolExecution {
         val s = snapshot()
@@ -237,7 +324,12 @@ internal class ScreenSession(
             else treeHint(tree, ocrStatus)?.let { put("hint", it) }
             put("viewport", buildJsonObject { put("width", s.width); put("height", s.height) })
             put("elements", elements)
-            if (surface.id == "phone" && s.windows.isNotEmpty()) put("tree", UiTreeJson.windows(s))
+            if (surface.id == "phone" && s.windows.isNotEmpty()) {
+                when (uiTreeFormat) {
+                    UiTreeFormat.JSON -> put("tree", UiTreeJson.windows(s))
+                    UiTreeFormat.COMPACT -> put("tree", UiTreeCompact.format(s))
+                }
+            }
             ocr?.let { put("visibleText", VisibleText.json(it)) }
             if (surface.id == "phone") ScreenMap.json(s, ocr.orEmpty())?.let { put("screenMap", it) }
             if (surface.id == "phone" && tree.poor && !ocr.isNullOrEmpty()) {
@@ -261,7 +353,7 @@ internal class ScreenSession(
             if (omitted > 0) put("omitted", hidden + omitted)
         }
         // 防截屏页面截到的是黑图,给模型只会误导
-        val png = if ((sendImage && textOnlyDepth == 0 || (recordFrames && recordFrame && textOnlyDepth == 0)) && !s.protected) screen.screenshotPng() else null
+        val png = if ((sendImage && textOnlyDepth == 0 || (recordFrames && recordFrame && textOnlyDepth == 0)) && !s.protected) screenshotPngCached() else null
         // 只有主模型能看图才留图；付款页和普通页面按同一规则处理
         val kept = png?.takeIf { visionEnabled }
         shots.remember(Recall(shotId, shots.step, s.packageName, kept, observationText(s, ocr.orEmpty())))
@@ -275,10 +367,10 @@ internal class ScreenSession(
      */
     suspend fun currentFrame(): Pair<ByteArray, Int>? {
         if (!visionEnabled) return null
-        val s = screenAttempt { screen.peek() } ?: return null
+        val s = peek() ?: return null
         if (s.protected) return null
         if (s.packageName == null && s.elements.isEmpty() && !s.hasWindow) return null
-        val png = screenAttempt { if (screen.isProtected()) null else screen.screenshotPng() } ?: return null
+        val png = screenAttempt { screenshotPngCached() } ?: return null
         val shotId = shots.next()
         shots.remember(Recall(shotId, shots.step, s.packageName, png, screenText(s)))
         return png to shotId
@@ -290,7 +382,7 @@ internal class ScreenSession(
      */
     suspend fun currentView(): ToolDispatcher.Glance? {
         if (!visionEnabled && !adaptiveVision) return null
-        val peeked = screenAttempt { screen.peek() } ?: return null
+        val peeked = peek() ?: return null
         if (peeked.packageName == null && peeked.elements.isEmpty() && !peeked.hasWindow) return null
         if (textOnlyDepth > 0) {
             val obs = screenAttempt { observe(withImage = false, recordFrame = false) } ?: return null
@@ -306,7 +398,7 @@ internal class ScreenSession(
         val obs = screenAttempt { observe(withImage = false) } ?: return null
         val s = lastSnapshot ?: return null
         val shotId = (obs.content["screenshotId"] as? JsonPrimitive)?.content?.toIntOrNull() ?: return null
-        val png = if (s.protected) null else screenAttempt { obs.frame ?: if (screen.isProtected()) null else screen.screenshotPng() }
+        val png = if (s.protected) null else screenAttempt { obs.frame ?: screenshotPngCached() }
         // 回看里这一张补上画面
         val recalls = shots.recalls
         if (png != null) recalls.indexOfLast { it.id == shotId }.takeIf { it >= 0 }?.let { i ->
@@ -543,14 +635,22 @@ internal class ScreenSession(
      * 能看图的主模型也拿它的位置去点,证据账本(回答来源、核查)和 phone_collect 也只能从这里拿到屏上写着什么。
      */
     private suspend fun readTree(s: ScreenSnapshot): TreeRead {
+        if (isFrozen) frozenTreeRead?.let { return it }
         val tree = TreeAdequacy.ofTree(s)
-        if (tree.quality == TreeQuality.Adequate || tree.quality == TreeQuality.Protected) return TreeRead(tree, null, null).also { lastTree = it.tree }
+        if (tree.quality == TreeQuality.Adequate || tree.quality == TreeQuality.Protected) {
+            return TreeRead(tree, null, null).also {
+                lastTree = it.tree
+                if (isFrozen) frozenTreeRead = it
+            }
+        }
         val (ocr, status) = visibleText(s, if (tree.poor) OCR_WAIT_POOR_MS else OCR_WAIT_MS)
         val checked = TreeAdequacy.withText(tree, ocr)
         lastTree = checked
         lastOcrText = ocr
         // 树不够用、屏上文字也一行没有:照实说为什么,模型才知道该看图找,而不是再读一次
-        return TreeRead(checked, ocr, status.takeIf { quality(checked) != null && ocr.isNullOrEmpty() })
+        return TreeRead(checked, ocr, status.takeIf { quality(checked) != null && ocr.isNullOrEmpty() }).also {
+            if (isFrozen) frozenTreeRead = it
+        }
     }
 
     /**
@@ -589,9 +689,9 @@ internal class ScreenSession(
      * 读到了时再加上能力另给的 [extra](网页正文的开头:读屏只有视口里的元素)。读不到也照样返回(没有观察)。
      */
     suspend fun freshLook(withImage: Boolean, extra: (suspend () -> Observation?)? = null): Look {
-        val s = screenAttempt { screen.snapshot() }
+        val s = if (isFrozen) frozenSnapshot ?: screenAttempt { screen.snapshot() } else screenAttempt { screen.snapshot() }
         val png = if (withImage && s != null && !s.protected) {
-            screenAttempt { screen.screenshotPng() }
+            screenAttempt { screenshotPngCached() }
         } else null
         // 树不够用时照样读屏上文字:核查要看的是屏上写着什么
         val seen = s?.let { interfaceRead(it, readTree(it).ocr.orEmpty()) }?.takeIf { it.text.isNotEmpty() }

@@ -47,7 +47,7 @@ internal object MemorySearch : AgentTool {
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
         val q = a.str("query", max = 100)!!
-        val found = MemoryIndex(ctx.config.memory!!.items.value).search(q, MEMORY_SEARCH_LIMIT)
+        val found = ctx.config.memory!!.search(q, MEMORY_SEARCH_LIMIT)
         return ok {
             put("memories", JsonArray(found.map { (m, _) ->
                 buildJsonObject { put("id", m.id); put("kind", m.kind.name); put("content", m.content) }

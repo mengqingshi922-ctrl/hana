@@ -34,4 +34,7 @@ data class MemoryItem(
     val lastUsedAt: Long? = null,
     val useCount: Int = 0,
     val replaces: String? = null,
+    val lastAccessedAt: Long? = null,
+    val accessCount: Int = 0,
+    val strength: Double = EbbinghausRetention.DEFAULT_STRENGTH,
 )

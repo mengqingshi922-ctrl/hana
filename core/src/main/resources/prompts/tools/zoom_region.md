@@ -1,0 +1,1 @@
+Crop and return a high-resolution zoomed region from the current screen (or an earlier screenshotId) using normalized 0-999 bounds (x1, y1, x2, y2), to inspect small text, icons, or dense prices before acting with {{tap}}.

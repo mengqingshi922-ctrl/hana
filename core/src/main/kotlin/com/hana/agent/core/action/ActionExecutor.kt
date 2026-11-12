@@ -36,6 +36,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import com.hana.agent.core.tool.SubActions
 import com.hana.agent.core.guard.OffScreenGuard
+import com.hana.agent.core.guard.OutboundActionRequest
+import com.hana.agent.core.guard.TaintCheckOutcome
+import com.hana.agent.core.guard.TaintGuard
 import com.hana.agent.core.run.RunProvenance
 import com.hana.agent.core.run.SKIPPED_FOR_NEW_MESSAGE
 import com.hana.agent.core.run.waitOrSteer
@@ -61,9 +64,14 @@ class ActionExecutor(
     autonomous: Boolean = false,
     /** 同一网站、App 里连着做对外动作(发送、提交)时两次之间的间隔(见 [OutwardPacing]);默认不等。 */
     private val pacing: OutwardPacing = OutwardPacing.Off,
+    /** 跨会话数据污点外泄守卫(TaintGuard);默认 null 不启用。 */
+    private val taintGuard: TaintGuard? = null,
+    private val taintSessionId: String = "default",
 ) {
     private val decision = ConfirmDecision(tools, confirmations, approvals, recorder = recorder, provenance = provenance, selfPackage = selfPackage, autonomous = autonomous)
     private val pass = ActionPass()
+    @Volatile
+    private var lastObservedPackage: String? = null
 
     init {
         tools.ctx.chainExecutor = { chain ->
@@ -142,6 +150,36 @@ class ActionExecutor(
             Decision.Unresolved -> return refuse("target_unresolved", origin, before)
             Decision.OwnApp -> return ownApp(call, args, origin, before, followUp)
             else -> Unit
+        }
+        if (taintGuard != null) {
+            val req = OutboundActionRequest(
+                sessionId = taintSessionId,
+                toolName = call.name,
+                verb = verb,
+                args = args,
+                currentPackage = lastObservedPackage ?: decision.outwardSite,
+                isOpenWorldMcp = call.name.startsWith("mcp_") || (args["openWorld"] as? JsonPrimitive)?.booleanOrNull == true,
+                approvalToken = (args["approvalToken"] as? JsonPrimitive)?.contentOrNull,
+            )
+            when (val taintOutcome = taintGuard.checkOutbound(req)) {
+                is TaintCheckOutcome.Allowed -> Unit
+                is TaintCheckOutcome.Blocked -> {
+                    val block = taintOutcome.block
+                    val content = buildJsonObject {
+                        put("ok", false)
+                        put("error", "taint_blocked")
+                        put("message", block.toUserPrompt())
+                        put("approvalToken", block.approvalToken)
+                        put("actionKind", block.actionKind.wire)
+                        block.target?.let { put("target", it) }
+                    }
+                    if (origin.policy.recordsRefusal) {
+                        followUp.refused(content)
+                        recorder.result(origin.step, call.name, verb, content, tools.portRecord(call.name, args), null, null, 0, origin.policy.source, call.id)
+                    }
+                    return ActionOutcome.Refused("taint_blocked", content, before)
+                }
+            }
         }
         // 对外动作:和同一网站、App 里的上一次隔开(等的时候任务还能取消,动作还没开始)
         val site = decision.outwardSite
@@ -225,6 +263,14 @@ class ActionExecutor(
         val durationMs = recorder.now() - started
         val resolved = s.followUp.resolve(raw) ?: return ActionOutcome.Cancelled(s.before)
         tools.interfaces.checkAppAccess(tools.declared(call.name), after = true)
+        resolved.place?.name?.let { lastObservedPackage = it }
+        taintGuard?.observeRead(
+            sessionId = taintSessionId,
+            toolName = call.name,
+            args = s.args,
+            packageName = resolved.place?.name ?: lastObservedPackage,
+            observedText = resolved.content.toString(),
+        )
 
         val after = subVerdicts.toMutableList()
         after += if (s.offScreen) offScreen?.result(call.name, s.args, resolved.content).orEmpty() else guards.result(call.name, resolved.content)

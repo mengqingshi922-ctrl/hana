@@ -208,10 +208,11 @@ class ToolDispatcher internal constructor(
      */
     fun misaimed(name: String, args: JsonObject): ToolExecution? = registry.declared(name)?.let { surfaces.misaimed(it, args, ctx.tools) }
 
-    /** 只读的调用(读屏、报失败一类):工具声明会改变屏幕、页面或沙箱的一律拒绝,那些只能经执行入口做。 */
+    /** 只读的调用(读屏、报失败一类):工具声明会改变屏幕、页面或沙箱的一律拒绝,那些只能经执行入口做。
+     *  例外：offScreen 且声明 [AgentTool.executableAsRead] 的工具（如 MCP readOnlyHint 工具）同样允许。 */
     suspend fun executeRead(call: Part.ToolCall, step: Int? = null): ToolExecution {
         val tool = registry.declared(call.name)
-        if (tool != null && !tool.readOnly) {
+        if (tool != null && !tool.readOnly && !tool.executableAsRead) {
             return fail("not_a_read", Feedback.format("not_a_read", "tool" to call.name), recoverable = false)
         }
         return dispatch(call, step, null)

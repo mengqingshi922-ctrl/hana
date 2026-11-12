@@ -25,9 +25,71 @@ data class Selector(
     val uniqueAtRecord: Boolean = false,
 )
 
-/** 一屏的锚点:前台包名 + 最多 [RouteAnchors.MAX] 段稳定文字。 */
+/** 一屏的锚点:前台包名 + 最多 [RouteAnchors.MAX] 段稳定文字 + 可热更新的边锚点权重。 */
 @Serializable
-data class Anchors(val packageName: String?, val texts: List<String>)
+data class Anchors(
+    val packageName: String?,
+    val texts: List<String>,
+    val weights: Map<String, Float> = emptyMap(),
+) {
+    fun weightOf(text: String): Float = weights[text] ?: DEFAULT_WEIGHT
+
+    /**
+     * 按当前屏幕可见文案热更新边锚点权重：
+     * 命中的锚点提高权重（最高 2.0），未命中的衰减（最低 0.1）；
+     * 若有旧锚点衰减到阈值以下且存在新的稳定文案，可补充新锚点。
+     */
+    fun hotUpdated(presentTexts: Set<String>, candidateNewTexts: List<String> = emptyList()): Anchors {
+        if (texts.isEmpty() && candidateNewTexts.isEmpty()) return this
+        val nextWeights = LinkedHashMap<String, Float>()
+        val nextTexts = mutableListOf<String>()
+        for (t in texts) {
+            val prev = weightOf(t)
+            val updated = if (t in presentTexts) {
+                minOf(MAX_WEIGHT, prev + BOOST_STEP)
+            } else {
+                maxOf(MIN_WEIGHT, prev * DECAY_FACTOR)
+            }
+            nextTexts += t
+            nextWeights[t] = updated
+        }
+        val hasWeak = nextWeights.values.any { it < REPLACE_THRESHOLD }
+        if (hasWeak && candidateNewTexts.isNotEmpty()) {
+            for (cand in candidateNewTexts) {
+                if (nextTexts.size >= RouteAnchors.MAX + EXTRA_ANCHOR_SLOTS) break
+                if (cand !in nextWeights && RouteAnchors.stable(cand)) {
+                    nextTexts += cand
+                    nextWeights[cand] = DEFAULT_WEIGHT
+                }
+            }
+        }
+        return copy(texts = nextTexts, weights = nextWeights)
+    }
+
+    /** 基于权重的页面锚点匹配：无权重时保持原有计数规则；有权重时按总权重占比 >= 50% 判定。 */
+    fun matchesWeighted(screenTexts: Set<String>): Boolean {
+        if (texts.isEmpty()) return true
+        val need = minOf(2, texts.size)
+        if (weights.isEmpty()) {
+            return texts.count { it in screenTexts } >= need
+        }
+        val totalWeight = texts.sumOf { weightOf(it).toDouble() }
+        if (totalWeight <= 0.0) return texts.count { it in screenTexts } >= need
+        val matchedWeight = texts.filter { it in screenTexts }.sumOf { weightOf(it).toDouble() }
+        return matchedWeight / totalWeight >= WEIGHT_MATCH_THRESHOLD || texts.count { it in screenTexts } >= need
+    }
+
+    companion object {
+        const val DEFAULT_WEIGHT = 1.0f
+        const val MAX_WEIGHT = 2.0f
+        const val MIN_WEIGHT = 0.1f
+        const val BOOST_STEP = 0.25f
+        const val DECAY_FACTOR = 0.7f
+        const val REPLACE_THRESHOLD = 0.35f
+        const val WEIGHT_MATCH_THRESHOLD = 0.5
+        private const val EXTRA_ANCHOR_SLOTS = 2
+    }
+}
 
 /** [argsJson] 已去掉编号,输入文字里的槽写成 `{1}`。 */
 @Serializable

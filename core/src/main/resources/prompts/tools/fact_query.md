@@ -1,0 +1,1 @@
+Query the persistent bi-temporal entity-relation fact graph to recall structured user preferences, addresses, habits, and related entities across turns. Optionally filter by entity or relation or include invalidated historical facts.

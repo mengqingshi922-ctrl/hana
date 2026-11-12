@@ -7,7 +7,10 @@ import kotlin.math.max
  * 跨会话任务记忆的内存倒排与关键词索引。
  * 支持根据意图关键词、特定 App、域名以及关键操作词（如「搜索」「下单」「比价」）进行相关度打分与模糊召回。
  */
-class TaskMemoryIndex(private val memories: List<TaskMemory>) {
+class TaskMemoryIndex(
+    private val memories: List<TaskMemory>,
+    private val nowMs: Long = System.currentTimeMillis(),
+) {
 
     private data class IndexedDoc(
         val memory: TaskMemory,
@@ -147,7 +150,10 @@ class TaskMemoryIndex(private val memories: List<TaskMemory>) {
                 score += SUCCESS_BONUS
             }
 
-            doc.memory to score
+            // 引入 Ebbinghaus 时间衰减因子 R = max(0.3, exp(-deltaDays / strength))
+            val refTime = doc.memory.lastAccessedAt ?: doc.memory.timestamp
+            val retention = EbbinghausRetention.retention(refTime, nowMs, doc.memory.strength)
+            doc.memory to (score * retention)
         }
 
         return scored.sortedByDescending { it.second }.map { it.first }.take(limit)

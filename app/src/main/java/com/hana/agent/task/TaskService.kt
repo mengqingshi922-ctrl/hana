@@ -12,7 +12,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Color
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -33,6 +35,7 @@ import com.hana.agent.core.agent.Conversation
 import com.hana.agent.core.model.ModelSession
 import com.hana.agent.core.agent.FailKind
 import com.hana.agent.core.agent.RunOutcome
+import com.hana.agent.core.agent.RunProgress
 import com.hana.agent.core.agent.TaskState
 import com.hana.agent.core.agent.Turn
 import com.hana.agent.core.trigger.ConditionOutcome
@@ -637,14 +640,15 @@ class TaskService : Service() {
         val (_, text) = describe(state) { ConfirmationNotifier.appLabel(this, it) }
         val warning = run.muteFailedFor?.let { "\n" + tr(R.string.task_may_make_sound) }.orEmpty() +
             (if (state is TaskState.WaitingTakeover && !takeoverFirst(run)) "\n$TAKEOVER_QUEUED" else "")
+        val bodyText = text + warning
         val b = Notification.Builder(this, CHANNEL_PROGRESS)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(tr(R.string.task_notif_title, ScreenCopy.plain(run.goal)))
-            .setContentText(text + warning)
-            .setStyle(Notification.BigTextStyle().bigText(text + warning))
+            .setContentText(bodyText)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openApp())
+        applyLiveUpdateProgressStyle(b, state, bodyText)
         val active = center.running().size
         if (active >= 2) b.setSubText(trPlural(R.plurals.task_active, active))
         when (state) {
@@ -1085,5 +1089,170 @@ class TaskService : Service() {
             is TaskState.Failed -> tr(R.string.task_not_done) to state.reason
             TaskState.Cancelled -> tr(R.string.task_stopped) to tr(R.string.task_stopped_body)
         }
+
+        internal const val API_ANDROID_16 = 36
+        internal const val EXTRA_REQUEST_PROMOTED_ONGOING = "android.requestPromotedOngoing"
+
+        internal data class LiveUpdateSegment(val id: Int, val length: Int, val color: Int)
+        internal data class LiveUpdatePoint(val id: Int, val position: Int, val color: Int)
+        internal data class LiveUpdateSpec(
+            val progress: Int,
+            val max: Int,
+            val indeterminate: Boolean,
+            val shortCriticalText: String,
+            val stageIndex: Int,
+            val segments: List<LiveUpdateSegment>,
+            val points: List<LiveUpdatePoint>,
+        )
+
+        /**
+         * 为 Android 16 (API 36) Live Updates 构建四阶段分段里程碑进度规格：
+         * 1. 准备理解 (0..20)
+         * 2. 探索定位 (20..50)
+         * 3. 执行操作 (50..85)
+         * 4. 核验收尾 (85..100)
+         */
+        internal fun buildLiveUpdateSpec(state: TaskState): LiveUpdateSpec {
+            val isAttention = state is TaskState.WaitingTakeover || state is TaskState.WaitingInput || state is TaskState.WaitingConfirmation
+            val stageColor0 = 0xFF6366F1.toInt()   // 靛蓝：准备
+            val stageColor1 = 0xFF38BDF8.toInt()   // 青蓝：探索
+            val stageColor2 = if (isAttention) 0xFFF59E0B.toInt() else 0xFF34D399.toInt() // 琥珀提醒 / 翡翠执行
+            val stageColor3 = 0xFFA855F7.toInt()   // 亮紫：收尾
+
+            val segments = listOf(
+                LiveUpdateSegment(id = 1, length = 20, color = stageColor0),
+                LiveUpdateSegment(id = 2, length = 30, color = stageColor1),
+                LiveUpdateSegment(id = 3, length = 35, color = stageColor2),
+                LiveUpdateSegment(id = 4, length = 15, color = stageColor3),
+            )
+            val (progress, indeterminate, chipText, stageIdx) = when (state) {
+                TaskState.Idle -> Quad(0, false, "Hana", 0)
+                is TaskState.Running -> when (val p = state.progress) {
+                    is RunProgress.Replay -> {
+                        val pct = ((p.step.toFloat() / p.total.coerceAtLeast(1)) * 100f).toInt().coerceIn(5, 98)
+                        val idx = when {
+                            pct < 20 -> 0
+                            pct < 50 -> 1
+                            pct < 85 -> 2
+                            else -> 3
+                        }
+                        Quad(pct, false, "${p.step}/${p.total}", idx)
+                    }
+                    is RunProgress.Batch -> Quad(60, false, "连做${p.steps}步", 2)
+                    is RunProgress.WaitingForApp -> Quad(30, true, "排队中", 1)
+                    null -> when {
+                        state.step <= 0 -> Quad(10, false, "准备中", 0)
+                        state.step <= 2 -> Quad(20 + state.step * 12, false, "第${state.step}步", 1)
+                        else -> {
+                            val pct = (50 + (state.step - 2) * 8).coerceAtMost(92)
+                            Quad(pct, false, "第${state.step}步", if (pct >= 85) 3 else 2)
+                        }
+                    }
+                }
+                is TaskState.Held -> Quad(
+                    40,
+                    true,
+                    if (state.reason.resumable) "已暂停" else "等待中",
+                    1,
+                )
+                is TaskState.WaitingTakeover -> Quad(65, false, "需接管", 2)
+                is TaskState.WaitingInput -> Quad(65, false, "待回复", 2)
+                is TaskState.WaitingConfirmation -> Quad(65, false, "待确认", 2)
+                is TaskState.Succeeded -> Quad(100, false, "已完成", 3)
+                is TaskState.Failed -> Quad(0, false, "已中断", 0)
+                TaskState.Cancelled -> Quad(0, false, "已停止", 0)
+            }
+            val pointReachedColor = if (isAttention) 0xFFF59E0B.toInt() else 0xFF34D399.toInt()
+            val pointPendingColor = 0xFF94A3B8.toInt()
+            val points = listOf(
+                LiveUpdatePoint(id = 101, position = 20, color = if (progress >= 20) pointReachedColor else pointPendingColor),
+                LiveUpdatePoint(id = 102, position = 50, color = if (progress >= 50) pointReachedColor else pointPendingColor),
+                LiveUpdatePoint(id = 103, position = 85, color = if (progress >= 85) pointReachedColor else pointPendingColor),
+            )
+            return LiveUpdateSpec(
+                progress = progress,
+                max = segments.sumOf { it.length },
+                indeterminate = indeterminate,
+                shortCriticalText = chipText,
+                stageIndex = stageIdx,
+                segments = segments,
+                points = points,
+            )
+        }
+
+        private data class Quad(val progress: Int, val indeterminate: Boolean, val chip: String, val stage: Int)
+
+        internal enum class LiveUpdatePath { API_36_PROGRESS_STYLE, LEGACY_BIG_TEXT_FALLBACK }
+
+        internal interface LiveUpdateSink {
+            fun applyProgressStyle(spec: LiveUpdateSpec)
+            fun applyBigTextFallback(body: String)
+        }
+
+        internal fun selectLiveUpdatePath(sdkInt: Int = Build.VERSION.SDK_INT): LiveUpdatePath =
+            if (sdkInt >= API_ANDROID_16) LiveUpdatePath.API_36_PROGRESS_STYLE else LiveUpdatePath.LEGACY_BIG_TEXT_FALLBACK
+
+        internal fun dispatchLiveUpdate(
+            state: TaskState,
+            fallbackBigText: String,
+            sdkInt: Int,
+            sink: LiveUpdateSink,
+        ): LiveUpdatePath {
+            if (selectLiveUpdatePath(sdkInt) == LiveUpdatePath.API_36_PROGRESS_STYLE) {
+                val applied = runCatching {
+                    sink.applyProgressStyle(buildLiveUpdateSpec(state))
+                }.isSuccess
+                if (applied) return LiveUpdatePath.API_36_PROGRESS_STYLE
+            }
+            sink.applyBigTextFallback(fallbackBigText)
+            return LiveUpdatePath.LEGACY_BIG_TEXT_FALLBACK
+        }
+
+        /**
+         * 在 Android 16 (API 36+) 上为通知注入 [Notification.ProgressStyle] 分段里程碑胶囊样式与状态栏短标签；
+         * 低版本无缝回退到 [Notification.BigTextStyle]，绝不破坏低版本兼容与编译。
+         * 返回 true 表示成功应用了 API 36 Live Updates 样式，false 表示走了低版本/异常回退路径。
+         */
+        @android.annotation.SuppressLint("NewApi")
+        internal fun applyLiveUpdateProgressStyle(
+            builder: Notification.Builder,
+            state: TaskState,
+            fallbackBigText: String,
+            sdkInt: Int = Build.VERSION.SDK_INT,
+        ): Boolean = dispatchLiveUpdate(
+            state = state,
+            fallbackBigText = fallbackBigText,
+            sdkInt = sdkInt,
+            sink = object : LiveUpdateSink {
+                override fun applyProgressStyle(spec: LiveUpdateSpec) {
+                    val style = Notification.ProgressStyle()
+                        .setProgress(spec.progress)
+                        .setProgressIndeterminate(spec.indeterminate)
+                        .setStyledByProgress(true)
+                    for (seg in spec.segments) {
+                        style.addProgressSegment(
+                            Notification.ProgressStyle.Segment(seg.length)
+                                .setId(seg.id)
+                                .setColor(seg.color),
+                        )
+                    }
+                    for (pt in spec.points) {
+                        style.addProgressPoint(
+                            Notification.ProgressStyle.Point(pt.position)
+                                .setId(pt.id)
+                                .setColor(pt.color),
+                        )
+                    }
+                    builder.setStyle(style)
+                    builder.setShortCriticalText(spec.shortCriticalText)
+                    builder.setCategory(Notification.CATEGORY_PROGRESS)
+                    builder.addExtras(Bundle().apply { putBoolean(EXTRA_REQUEST_PROMOTED_ONGOING, true) })
+                }
+
+                override fun applyBigTextFallback(body: String) {
+                    builder.setStyle(Notification.BigTextStyle().bigText(body))
+                }
+            },
+        ) == LiveUpdatePath.API_36_PROGRESS_STYLE
     }
 }

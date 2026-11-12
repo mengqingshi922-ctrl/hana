@@ -196,6 +196,9 @@ fun CapsuleContent(
     onStateChange: ((CapsuleState) -> Unit)? = null,
     pipInput: com.hana.agent.cap.phone.display.PipInput? = null,
     pipTouchEnabled: Boolean = false,
+    audioAmplitude: Float = 0f,
+    teleportState: com.hana.agent.ui.TeleportTakeoverState? = null,
+    onTeleportTouch: (() -> Unit)? = null,
 ) {
     // 淡下去、恢复都慢慢来;关了动画时直接换
     val shown = if (HanaTheme.reduceMotion) alpha else animateFloatAsState(alpha, tween(FADE_MS), label = "fade").value
@@ -206,10 +209,16 @@ fun CapsuleContent(
             onTalk?.let { f -> CustomAccessibilityAction(talkLabel) { f(); true } },
         )
     }
-    val effectiveState = capsuleState ?: if (view.pill) CapsuleState.PILL else CapsuleState.MINI
+    val effectiveState = when {
+        teleportState?.active == true -> CapsuleState.EXPANDED
+        capsuleState != null -> capsuleState
+        view.pill -> CapsuleState.PILL
+        else -> CapsuleState.MINI
+    }
+    val effectiveTouch = pipTouchEnabled || (teleportState?.active == true && teleportState.touchExempted)
     Box(modifier.padding(CapsuleShadowRoom)) {
         when {
-            view.kind == CapsuleKind.HandedOver -> TakeoverBar(view, onStop, onHandBack)
+            view.kind == CapsuleKind.HandedOver && teleportState?.active != true -> TakeoverBar(view, onStop, onHandBack)
             effectiveState == CapsuleState.EXPANDED -> ExpandedCockpit(
                 view = view,
                 onClose = { onStateChange?.invoke(if (view.pill) CapsuleState.PILL else CapsuleState.MINI) },
@@ -219,7 +228,10 @@ fun CapsuleContent(
                 speedEnabled = speedEnabled,
                 virtualScreenFrame = virtualScreenFrame,
                 pipInput = pipInput,
-                pipTouchEnabled = pipTouchEnabled,
+                pipTouchEnabled = effectiveTouch,
+                audioAmplitude = audioAmplitude,
+                teleportState = teleportState,
+                onTeleportTouch = onTeleportTouch,
             )
             else -> Capsule(
                 view = view,
@@ -234,6 +246,7 @@ fun CapsuleContent(
                 onPauseToggle = onPauseToggle,
                 isPaused = isPaused,
                 onStop = onStop,
+                audioAmplitude = audioAmplitude,
             )
         }
     }
@@ -254,6 +267,7 @@ private fun Capsule(
     onPauseToggle: (() -> Unit)? = null,
     isPaused: Boolean = false,
     onStop: (() -> Unit)? = null,
+    audioAmplitude: Float = 0f,
 ) {
     val isPill = state == CapsuleState.PILL || view.pill
     val c = HanaTheme.colors
@@ -295,13 +309,14 @@ private fun Capsule(
                 .then(a11y)
                 .morphLayout(morph, end),
         ) {
-            if (isPill) PillRow(view, end, need, onPauseToggle, isPaused, onStop)
+            if (isPill) PillRow(view, end, need, onPauseToggle, isPaused, onStop, audioAmplitude)
             else Box(Modifier.size(CapsuleHeight), contentAlignment = Alignment.Center) {
                 com.hana.agent.ui.components.mascot.EmotionBallMascot(
                     size = 32.dp,
                     emotionId = mascotEmotionIdForKind(view.kind, view.phase),
                     shapeKey = botShapeKey,
                     isWorking = isWorking,
+                    audioAmplitude = audioAmplitude,
                 )
             }
             if (glow.value > 0f) Box(Modifier.matchParentSize().background(androidx.compose.ui.graphics.Color.White.copy(alpha = glow.value)))
@@ -323,6 +338,7 @@ private fun PillRow(
     onPauseToggle: (() -> Unit)? = null,
     isPaused: Boolean = false,
     onStop: (() -> Unit)? = null,
+    audioAmplitude: Float = 0f,
 ) {
     val c = HanaTheme.colors
     val activeBotShape by GrokBotTheme.currentShape.collectAsState()
@@ -347,6 +363,7 @@ private fun PillRow(
                     emotionId = mascotEmotionIdForKind(view.kind, view.phase),
                     shapeKey = botShapeKey,
                     isWorking = isWorking,
+                    audioAmplitude = audioAmplitude,
                 )
             }
         }
@@ -400,6 +417,7 @@ private fun PillRow(
                     emotionId = mascotEmotionIdForKind(view.kind, view.phase),
                     shapeKey = botShapeKey,
                     isWorking = isWorking,
+                    audioAmplitude = audioAmplitude,
                 )
             }
         }
@@ -425,12 +443,17 @@ fun ExpandedCockpit(
     modifier: Modifier = Modifier,
     pipInput: com.hana.agent.cap.phone.display.PipInput? = null,
     pipTouchEnabled: Boolean = false,
+    audioAmplitude: Float = 0f,
+    teleportState: com.hana.agent.ui.TeleportTakeoverState? = null,
+    onTeleportTouch: (() -> Unit)? = null,
 ) {
     val c = HanaTheme.colors
     val scope = rememberCoroutineScope()
     val activeBotShape by GrokBotTheme.currentShape.collectAsState()
     val botShapeKey = remember(activeBotShape) { shapeKeyFor(activeBotShape) }
     val isWorking = view.kind == CapsuleKind.Running
+    val teleporting = teleportState?.active == true
+    val effectiveTouchEnabled = pipTouchEnabled || (teleporting && teleportState?.touchExempted == true)
     val shape = RoundedCornerShape(20.dp)
     Column(
         modifier
@@ -438,7 +461,7 @@ fun ExpandedCockpit(
             .widthIn(min = 280.dp, max = 340.dp)
             .shadow(12.dp, shape)
             .background(c.surface, shape)
-            .border(1.dp, c.edge, shape)
+            .border(if (teleporting) 1.5.dp else 1.dp, if (teleporting) c.warn else c.edge, shape)
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -455,13 +478,25 @@ fun ExpandedCockpit(
                 Box(
                     Modifier
                         .size(8.dp)
-                        .background(c.accent, HanaShapes.Pill),
+                        .background(if (teleporting) c.warn else c.accent, HanaShapes.Pill),
                 )
                 Text(
-                    "透视全息舱",
+                    if (teleporting) "Hana 瞬移接管" else "透视全息舱",
                     style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
-                    color = c.ink,
+                    color = if (teleporting) c.warn else c.ink,
                 )
+                if (teleporting) {
+                    Text(
+                        "触控直通",
+                        style = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                        color = androidx.compose.ui.graphics.Color.White,
+                        modifier = Modifier
+                            .clip(HanaShapes.Pill)
+                            .background(c.warn)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .testTag("capsule-teleport-badge"),
+                    )
+                }
             }
             Box(
                 Modifier
@@ -493,9 +528,11 @@ fun ExpandedCockpit(
                 ) {
                     com.hana.agent.ui.components.mascot.EmotionBallMascot(
                         size = 56.dp,
-                        emotionId = mascotEmotionIdForKind(view.kind, view.phase),
+                        emotionId = if (teleporting) "alert" else mascotEmotionIdForKind(view.kind, view.phase),
                         shapeKey = botShapeKey,
-                        isWorking = isWorking,
+                        isWorking = isWorking || teleporting,
+                        audioAmplitude = audioAmplitude,
+                        pipDocked = teleporting,
                     )
                 }
                 Text(
@@ -513,10 +550,10 @@ fun ExpandedCockpit(
                     .size(width = 110.dp, height = 150.dp)
                     .clip(RoundedCornerShape(10.dp))
                     .background(androidx.compose.ui.graphics.Color.Black)
-                    .border(0.5.dp, c.edge, RoundedCornerShape(10.dp))
+                    .border(if (teleporting) 1.5.dp else 0.5.dp, if (teleporting) c.warn else c.edge, RoundedCornerShape(10.dp))
                     .testTag("capsule-virtual-screen")
-                    .pointerInput(pipTouchEnabled, pipInput) {
-                        if (!pipTouchEnabled || pipInput == null) return@pointerInput
+                    .pointerInput(effectiveTouchEnabled, pipInput) {
+                        if (!effectiveTouchEnabled || pipInput == null) return@pointerInput
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val startX = down.position.x
@@ -570,6 +607,7 @@ fun ExpandedCockpit(
                                 down.consume()
                                 val fx = (startX / w).coerceIn(0f, 1f)
                                 val fy = (startY / h).coerceIn(0f, 1f)
+                                onTeleportTouch?.invoke()
                                 scope.launch {
                                     pipInput.tap(fx, fy)
                                 }
@@ -577,6 +615,7 @@ fun ExpandedCockpit(
                                 val totalDx = lastX - startX
                                 val totalDy = kotlin.math.abs(lastY - startY)
                                 val isLeftEdgeSwipe = (startX / w) <= 0.15f && totalDx > 25f && totalDx > totalDy * 1.2f
+                                onTeleportTouch?.invoke()
                                 if (isLeftEdgeSwipe) {
                                     scope.launch {
                                         pipInput.back()
@@ -598,7 +637,7 @@ fun ExpandedCockpit(
                         modifier = Modifier.matchParentSize(),
                         contentScale = ContentScale.Fit,
                     )
-                    if (pipTouchEnabled && pipInput != null) {
+                    if (effectiveTouchEnabled && pipInput != null) {
                         Box(
                             Modifier
                                 .align(Alignment.BottomStart)
@@ -606,7 +645,10 @@ fun ExpandedCockpit(
                                 .size(20.dp)
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f))
-                                .clickable { scope.launch { pipInput.back() } }
+                                .clickable {
+                                    onTeleportTouch?.invoke()
+                                    scope.launch { pipInput.back() }
+                                }
                                 .testTag("capsule-screen-back"),
                             contentAlignment = Alignment.Center,
                         ) {

@@ -42,4 +42,7 @@ data class TaskMemory(
     val timestamp: Long,
     val conversationId: String? = null,
     val success: Boolean = true,
+    val lastAccessedAt: Long? = null,
+    val accessCount: Int = 0,
+    val strength: Double = EbbinghausRetention.DEFAULT_STRENGTH,
 )

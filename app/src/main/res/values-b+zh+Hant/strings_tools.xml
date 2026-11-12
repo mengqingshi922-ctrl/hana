@@ -55,6 +55,7 @@
     <string name="tool_observe">看螢幕</string>
     <string name="tool_list_elements">讀取介面元素</string>
     <string name="tool_screenshot">截圖</string>
+    <string name="tool_zoom_region">局部放大截圖</string>
     <string name="tool_scroll">滾動</string>
     <string name="tool_swipe">滑動</string>
     <string name="tool_tap">點選</string>

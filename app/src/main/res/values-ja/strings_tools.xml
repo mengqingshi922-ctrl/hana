@@ -55,6 +55,7 @@
     <string name="tool_observe">画面を見る</string>
     <string name="tool_list_elements">画面の要素を読み取る</string>
     <string name="tool_screenshot">スクリーンショット</string>
+    <string name="tool_zoom_region">ズーム領域</string>
     <string name="tool_scroll">スクロール</string>
     <string name="tool_swipe">スワイプ</string>
     <string name="tool_tap">タップ</string>

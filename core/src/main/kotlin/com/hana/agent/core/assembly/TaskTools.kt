@@ -117,9 +117,16 @@ fun toolDispatcher(
     runRecords: RunRecords? = null,
     /** 跨会话长期任务记忆存储;给了才提供 task_memory_search、task_memory_step、task_memory_timeline。 */
     taskMemories: com.hana.agent.core.memory.TaskMemoryStore? = null,
+    /** 双时态实体关系图谱;给了才提供 fact_assert、fact_query。 */
+    factGraph: com.hana.agent.core.memory.TemporalFactGraph? = null,
+    /** 演化式影子宏目录;非空时提供 run_macro。 */
+    shadowMacros: List<com.hana.agent.core.replay.ShadowMacroDef> = emptyList(),
+    /** UI 树序列化格式（false = 标准 JSON，true = 脱水紧凑行文本）。 */
+    compactUiTree: Boolean = false,
 ): ToolDispatcher {
     val config = ToolConfig(visionEnabled, skills, recordFrames, vision, inlineScreen, adaptiveVision, memory, profile, utterances, conversationId,
-        imageOps, scheduleTrigger, scheduleAdmin, runSpec, childHost, userScreens, personalSkills, selfConfig, runRecords, taskMemories)
+        imageOps, scheduleTrigger, scheduleAdmin, runSpec, childHost, userScreens, personalSkills, selfConfig, runRecords, taskMemories,
+        factGraph, shadowMacros, compactUiTree)
     val providers: List<CapabilityProvider> = listOf(
         object : CapabilityProvider {
             override val id = PHONE

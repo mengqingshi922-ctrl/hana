@@ -71,9 +71,16 @@ class MainActivity : ComponentActivity() {
 
     fun speakAlert(text: String) {
         if (voiceSpeaker == null) {
-            voiceSpeaker = com.hana.agent.voice.VoiceSpeaker(this)
+            voiceSpeaker = com.hana.agent.voice.VoiceSpeaker(this) { amp ->
+                (application as? HanaApp)?.updateVoiceAmplitude(amp)
+            }
         }
         voiceSpeaker?.speak(text)
+    }
+
+    fun stopVoiceAlert() {
+        voiceSpeaker?.stop()
+        (application as? HanaApp)?.updateVoiceAmplitude(0f)
     }
 
     override fun onUserLeaveHint() {

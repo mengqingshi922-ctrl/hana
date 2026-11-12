@@ -23,7 +23,11 @@ import kotlinx.coroutines.channels.ReceiveChannel
  * stop 返回到目前为止的全部 PCM;录满 [maxMs] 自动停止,之后再 stop 仍返回已录的内容。
  * 录音权限由调用方先检查,这里拿不到麦克风就返回 false。stop 会短暂阻塞(等读循环退出),别在主线程调。
  */
-class PcmRecorder(private val maxMs: Int = 60_000, private val streaming: Boolean = false) : StreamingRecorder {
+class PcmRecorder @JvmOverloads constructor(
+    private val maxMs: Int = 60_000,
+    private val streaming: Boolean = false,
+    private val onAudioFrame: ((ShortArray, Float) -> Unit)? = null,
+) : StreamingRecorder {
     // At most five seconds while a connection is opening. Never silently drop a sample.
     private val audio = Channel<ShortArray>(100)
     override val chunks: ReceiveChannel<ShortArray> = audio
@@ -104,6 +108,7 @@ class PcmRecorder(private val maxMs: Int = 60_000, private val streaming: Boolea
                 }
                 size >= pcm.size
             }
+            onAudioFrame?.invoke(buf.copyOf(n), lvl)
             if (full) break
         }
         // 录满自动停:释放麦克风,已录内容留给之后的 stop 取

@@ -55,6 +55,7 @@
     <string name="tool_observe">화면 보기</string>
     <string name="tool_list_elements">화면 요소 읽기</string>
     <string name="tool_screenshot">스크린샷</string>
+    <string name="tool_zoom_region">확대 영역</string>
     <string name="tool_scroll">스크롤</string>
     <string name="tool_swipe">스와이프</string>
     <string name="tool_tap">탭</string>

@@ -3,6 +3,15 @@ package com.hana.agent.core.agent
 import com.hana.agent.core.trace.RunTrace
 import com.hana.agent.core.guard.OperationGuards
 import com.hana.agent.core.guard.GuardVerdict
+import com.hana.agent.core.guard.TaintGuard
+import com.hana.agent.core.memory.MemoryFlushHook
+import com.hana.agent.core.memory.StoreBackedMemoryFlushHook
+import com.hana.agent.core.memory.TemporalFactGraph
+import com.hana.agent.core.route.SemanticRouteCache
+import com.hana.agent.core.usage.BudgetBreaker
+import com.hana.agent.core.usage.BudgetExceeded
+import com.hana.agent.core.watchdog.WatchdogVerdict
+import kotlinx.coroutines.withContext
 import com.hana.agent.core.observation.Place
 import com.hana.agent.core.observation.PlaceKind
 import com.hana.agent.core.observation.tag
@@ -157,6 +166,11 @@ class AgentLoop(
     private val outwardPacing: OutwardPacing = OutwardPacing.Off,
     private val trace: RunTrace? = null,
     private val edgePort: com.hana.agent.core.edge.EdgeDecisionPort = com.hana.agent.core.edge.EdgeDecisionPort.NONE,
+    private val budgetBreaker: BudgetBreaker? = null,
+    private val taintGuard: TaintGuard? = null,
+    private val semanticRouteCache: SemanticRouteCache? = null,
+    private val factGraph: TemporalFactGraph? = null,
+    private val memoryFlushHook: MemoryFlushHook? = null,
 ) {
     init {
         require(maxSteps > 0) { "maxSteps must be positive" }
@@ -174,7 +188,9 @@ class AgentLoop(
         tools.observer = { record { order.observed(RunEvent.Observed.of(it)) } }
     }
 
-    private val caller = ModelCaller(model, tools, router, flags, retry, ::emit, ::now, autonomous, trace, edgePort)
+    private val effectiveFlushHook: MemoryFlushHook? =
+        memoryFlushHook ?: if (memory != null || factGraph != null) StoreBackedMemoryFlushHook(memory, factGraph) else null
+    private val caller = ModelCaller(model, tools, router, flags, retry, ::emit, ::now, autonomous, trace, edgePort, effectiveFlushHook, budgetBreaker)
     private val intentGate = if (intentJudge != null || edgePort != com.hana.agent.core.edge.EdgeDecisionPort.NONE) IntentGate(intentJudge, model.takeUnless { main -> main === intentJudge }, edgePort) else null
     private val routeMatcher = routes
     /** 本任务的上下文生成器(外壳、预算、已给过的参考资料)。 */
@@ -234,6 +250,7 @@ class AgentLoop(
     /** 本任务的回答已因核对没对上退回过一次;再没对上就标成未确认交出,不再退回。 */
     private var gapsNudged = false
     private var provenance = RunProvenance()
+    @Volatile private var activeTaintSessionId: String = "default"
     val activeAsk: Delivery.Ask? get() = user.activeAsk
 
     /** 新入口:同一对话里的插话和控制经 [inbox] 进入;旧入口继续使用相同的执行路径。 */
@@ -244,6 +261,7 @@ class AgentLoop(
     private suspend fun runInternal(task: String, priorTurns: List<Turn>, inbox: RunInbox?, runProvenance: RunProvenance, threadId: String): TaskState {
         cancelRequested = false
         provenance = runProvenance
+        activeTaintSessionId = threadId.ifBlank { "default" }
         user.begin(threadId, runProvenance, interaction)
         inbox?.bind(object : RunInbox.Handler {
             override suspend fun answer(text: String, askId: String?) = user.answerInput(text, askId)
@@ -289,13 +307,18 @@ class AgentLoop(
 
     private suspend fun runLoop(task: String, priorTurns: List<Turn>, inbox: RunInbox?): TaskState {
         val end = try {
-            coroutineScope {
-                // 插话的信号装在整个运行的上下文里:撤掉也不丢东西的等待据此提前结束(见 waitOrSteer)
-                val body = async(inbox?.signal ?: EmptyCoroutineContext) { loop(task, priorTurns, inbox) }
-                job = body
-                if (cancelRequested) body.cancel()
-                body.await()
+            withContext(budgetBreaker ?: EmptyCoroutineContext) {
+                coroutineScope {
+                    // 插话的信号装在整个运行的上下文里:撤掉也不丢东西的等待据此提前结束(见 waitOrSteer)
+                    val body = async(inbox?.signal ?: EmptyCoroutineContext) { loop(task, priorTurns, inbox) }
+                    job = body
+                    if (cancelRequested) body.cancel()
+                    body.await()
+                }
             }
+        } catch (e: BudgetExceeded) {
+            emit(RunEvent.State(now(), "budget_exceeded", e.dimensions.joinToString(",") { it.key }))
+            TaskState.Failed(e.message ?: "任务预算耗尽，已安全熔断。", FailKind.Guard)
         } catch (e: CancellationException) {
             if (!cancelRequested) throw e
             TaskState.Cancelled
@@ -407,7 +430,8 @@ class AgentLoop(
         val recorder = ActionRecorder(sink, clock, saveScreen = { id, png -> sink.media(id, png) })
         val executor = ActionExecutor(tools, guards, confirmations, gate = ::awaitGate, recorder = recorder, offScreen = tools.offScreenGuard(), approvals = approvals,
             provenance = provenance,
-            selfPackage = selfPackage, autonomous = autonomous, pacing = outwardPacing)
+            selfPackage = selfPackage, autonomous = autonomous, pacing = outwardPacing,
+            taintGuard = taintGuard, taintSessionId = activeTaintSessionId)
         var emptyNudged = false
         // 调过工具才有可核对的材料;交给用户付款和放行过对外动作一样,回答要另请核查
         var acted = false
@@ -497,7 +521,38 @@ class AgentLoop(
             }
         }
 
+        val routeCache = semanticRouteCache
+        if (!acted && routeCache != null && !task.trimStart().startsWith(WEB_CHANNEL_PREFIX)) {
+            val cacheHit = runCatching { routeCache.lookupRouteGraph(task, appId = place?.name) }.getOrNull()
+            if (cacheHit != null && cacheHit.similarity >= 0.90) {
+                val entrySig = cacheHit.targetNode?.pageSignature ?: "start"
+                val entryNodeId = cacheHit.targetNode?.nodeId ?: cacheHit.graph.initialNodeId
+                emit(RunEvent.State(now(), "semantic_route_cache_hit", "${cacheHit.graph.intentKeyword}:$entrySig"))
+                val actionHint = cacheHit.graph.edges
+                    .filter { it.fromNodeId == entryNodeId }
+                    .joinToString(" -> ") { "${it.action.tool}->${it.toNodeId}" }
+                val msg = buildString {
+                    append("[Semantic Route Cache Hit (sim=")
+                    append(String.format("%.2f", cacheHit.similarity))
+                    append(")] intent='").append(cacheHit.matchedIntent).append("'")
+                    append(", entryNode=").append(entrySig)
+                    if (actionHint.isNotBlank()) append(", knownPaths=").append(actionHint)
+                }
+                history += ctx.notice("semantic_route_cache", msg)
+            }
+        }
+
+        var budgetWarned = false
         for (step in 1..maxSteps) {
+            if (budgetBreaker != null) {
+                budgetBreaker.checkOrThrow()
+                if (!budgetWarned && budgetBreaker.shouldDowngradeToLight()) {
+                    budgetWarned = true
+                    val warnMsg = budgetBreaker.warningNotice().orEmpty()
+                    emit(RunEvent.State(now(), "budget_warning", warnMsg))
+                    if (warnMsg.isNotEmpty()) history += ctx.notice("budget_warning", warnMsg)
+                }
+            }
             appendSteers(history, inbox)
             if (maxSteps != Int.MAX_VALUE) TurnPolicy.beforeStep(TurnSnapshot(step, maxSteps))?.let { history += ctx.notice(it.source, it.text) }
             appendRuntimeState(history, place, labels, step)
@@ -505,6 +560,8 @@ class AgentLoop(
             refreshOffer()
             val routed = try {
                 routedOrRedirect(inbox, history, specs, track, step, previewFor(step))
+            } catch (e: BudgetExceeded) {
+                throw e
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -525,6 +582,7 @@ class AgentLoop(
                     val discussion = history + ctx.notice("conversation_intent",
                         "The user is discussing or reviewing this time. Answer this question directly, without reading or operating apps, websites or other outside content.")
                     reply = try { caller.ask(discussion, emptyList(), step, using = model, onText = previewFor(step)) }
+                    catch (e: BudgetExceeded) { throw e }
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) { return StopRules.modelFailed(e) }
                     used = model
@@ -684,6 +742,25 @@ class AgentLoop(
                 }
             }
 
+            if (flags.batchSteps && first.name == "run_macro" && tools.ctx.config.shadowMacros.isNotEmpty()) {
+                val macroKey = (args["name"] as? JsonPrimitive)?.contentOrNull
+                val macro = tools.ctx.config.shadowMacros.firstOrNull { it.name == macroKey || it.id == macroKey }
+                if (macro != null) {
+                    val macroParams = (args["params"] as? JsonObject)?.entries?.associate { (k, v) ->
+                        k to ((v as? JsonPrimitive)?.contentOrNull ?: v.toString())
+                    }.orEmpty()
+                    when (val end = runMacroBatch(first, skipped, macro, macroParams, history, guards, executor, track, step, note, tool, reason, narration,
+                        recordReply = ::recordReply, app = { place = it }, steerWaiting = { inbox?.hasSteers() == true },
+                        noteVerdicts = { s, sub, v ->
+                            val typed = StuckAdvice.typedText(tools.verb(s.tool), parseArgs(s.argsJson), sub?.content)
+                            stuckTracker.advice(v, typed, place?.name)
+                        })) {
+                        null -> continue
+                        else -> return end
+                    }
+                }
+            }
+
             // Google ARTEMIS 风格原生多动作并发流水线 (Action Bursting):
             // 若模型直接输出多个可批处理的动作(如点击输入框+输入文字+点击搜索)，自动流水线连续执行，杜绝粗暴丢弃报错
             val canBurst = flags.batchSteps && calls.size > 1 && calls.all { it.name in tools.batchable() } &&
@@ -768,10 +845,10 @@ class AgentLoop(
                         track.after(tools.verb(first.name), ok = false, guard = false, changed = null, recovery = false, app = null)
                         continue
                     }
-                    // 模型单步只会被守卫叫停、被确认关卡拦下或因作用在 Hana 自己身上不做;别的拒绝说明执行入口和这里对不上
-                    check(action.hit != null || action.code == Refusals.OWN_APP) { "unexpected refusal ${action.code} for ${first.name}" }
+                    // 模型单步只会被守卫叫停、被确认关卡拦下、被污点外泄守卫拦截或因作用在 Hana 自己身上不做;别的拒绝说明执行入口和这里对不上
+                    check(action.hit != null || action.code == Refusals.OWN_APP || action.code == "taint_blocked") { "unexpected refusal ${action.code} for ${first.name}" }
                     // 被确认关卡拦下:不计入失败熔断,交给模型走确认流程
-                    track.after(tools.verb(first.name), ok = false, guard = action.before.isNotEmpty(), changed = null, recovery = false, app = null)
+                    track.after(tools.verb(first.name), ok = false, guard = action.before.isNotEmpty() || action.code == "taint_blocked", changed = null, recovery = false, app = null)
                     continue
                 }
                 is ActionOutcome.Ran -> action
@@ -785,22 +862,32 @@ class AgentLoop(
             com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
             goalTracker.onActionExecuted(exec, place?.name, historySize = history.size)
             val stopNow = guards.stop ?: executor.offScreenStop
-            if (!offScreen && stopNow == null && verb != Verb.TypeText && verb != Verb.ClearText) {
-                if (exec.changed == true) {
+            if (!offScreen && stopNow == null && verb != Verb.TypeText && verb != Verb.ClearText &&
+                !(verb == Verb.Wait && place == null && exec.place == null)
+            ) {
+                watchdog.recordAction(first.name, verb)
+                val currentTexts = extractScreenTexts(exec.content)
+                val isPostSubmit = (verb == Verb.Tap || first.name.contains("submit", ignoreCase = true)) && exec.changed == false && !isError
+                if (currentTexts.isNotEmpty()) {
+                    watchdog.recordScreenTexts(currentTexts, isPostSubmit = isPostSubmit, stagnated = exec.changed == false)
+                }
+                val driftDetected = watchdog.detectNavigationDrift()
+                if (exec.changed == true && !driftDetected && verb !in setOf(Verb.Swipe, Verb.Back, Verb.Wait)) {
                     watchdog.reset()
                     consecutiveWatchdogFailures = 0
-                } else if (verb == Verb.Observe) {
+                } else if (verb == Verb.Observe && !driftDetected) {
                     val screenContent = exec.content["screen"] ?: exec.content
                     val frameFingerprint = com.hana.agent.core.watchdog.StructuralFrameFingerprint.from(place?.name, screenContent)
                     watchdog.recordFrame(frameFingerprint)
-                } else if (exec.changed == false && !isError && ran.verdicts.isEmpty()) {
+                } else if ((exec.changed == false && !isError && ran.verdicts.isEmpty()) || driftDetected) {
                     val screenContent = exec.content["screen"] ?: exec.content
                     val frameFingerprint = com.hana.agent.core.watchdog.StructuralFrameFingerprint.from(place?.name, screenContent)
                     watchdog.recordFrame(frameFingerprint)
-                    val verdict = watchdog.evaluate()
-                    if (verdict != com.hana.agent.core.watchdog.WatchdogVerdict.HEALTHY) {
+                    val tripleReport = watchdog.evaluateTripleLoop(consecutiveWatchdogFailures)
+                    val verdict = tripleReport.verdict
+                    if (verdict != WatchdogVerdict.HEALTHY) {
                         consecutiveWatchdogFailures++
-                        val healingTier = watchdog.recommendHealing(consecutiveWatchdogFailures)
+                        val healingTier = tripleReport.healingTier ?: watchdog.recommendHealing(consecutiveWatchdogFailures)
                         emit(RunEvent.State(now(), "watchdog_healing", "${verdict.name}:${healingTier.name}"))
                         when (healingTier) {
                             com.hana.agent.core.watchdog.SelfHealingTier.TIER_1_DISMISS_OBSTACLE,
@@ -855,14 +942,15 @@ class AgentLoop(
                             }
                             emit(RunEvent.State(now(), "cognitive_rollback", "checkpoint=${latestCp.checkpointId}:revertedTo=${latestCp.historyMessageCount}"))
                         }
-                        val reflectionGuidance = when (verdict) {
-                            com.hana.agent.core.watchdog.WatchdogVerdict.STAGNATION ->
+                        val reflectionGuidance = tripleReport.guidance ?: when (verdict) {
+                            WatchdogVerdict.STAGNATION ->
                                 "【自愈认知反思】连续操作未能产生界面有效状态改变（停滞死锁）。已执行回退自愈。请彻底反思前序尝试的假设，切勿重复点击同一区域或相同参数，换用备选路径或先重新观察界面。"
-                            com.hana.agent.core.watchdog.WatchdogVerdict.OSCILLATION ->
+                            WatchdogVerdict.OSCILLATION ->
                                 "【自愈认知反思】检测到界面在多状态间往复循环死锁（震荡）。已触发自愈回退。请立即放弃当前往复循环逻辑，换用全新路径完成目标。"
                             else -> "【自愈认知反思】当前操作受阻，请重新审视界面寻找替代方案。"
                         }
                         history += ctx.notice("watchdog_reflection", reflectionGuidance)
+                        if (driftDetected) watchdog.reset()
                     } else {
                         consecutiveWatchdogFailures = 0
                     }
@@ -1150,6 +1238,70 @@ class AgentLoop(
         return guards.stop?.let(StopRules::guard)
     }
 
+    private suspend fun runMacroBatch(
+        first: Part.ToolCall,
+        skipped: List<Part.ToolResult>,
+        macro: com.hana.agent.core.replay.ShadowMacroDef,
+        params: Map<String, String>,
+        history: MutableList<Message>,
+        guards: OperationGuards,
+        executor: ActionExecutor,
+        track: StepTrack,
+        step: Int,
+        note: String,
+        tool: String?,
+        reason: String?,
+        narration: String?,
+        recordReply: (String?) -> Unit,
+        app: (Place) -> Unit,
+        steerWaiting: () -> Boolean,
+        noteVerdicts: (BatchStep, ToolExecution?, List<GuardVerdict>) -> String?,
+    ): TaskState? {
+        val running = TaskState.Running(step, note, tool, RunProgress.Batch(macro.maxTotalSteps), reason, narration)
+        _state.value = running
+        gateState = running
+        val started = now()
+        val runner = BatchRunner(tools, guards, executor, noteVerdicts = noteVerdicts, steerWaiting = steerWaiting)
+        val exec = runner.runMacro(macro, params, first.id, step)
+        val durationMs = now() - started
+        val isError = exec.content["ok"] != JsonPrimitive(true)
+        history += Message(Role.Tool, listOf(Part.ToolResult(first.id, exec.content.toString(), isError, exec.observations.map { it.tag })) + skipped, Author.Hana)
+        recordReply(Redactor.args(Verb.RunMacro, first.argsJson, secretField = false))
+        val picture = exec.frame
+        val shotId = picture?.let { executor.recorder.nextShot() }
+        emit(RunEvent.ToolResult(now(), step, first.name, RunEvent.clipResult(Redactor.text(exec.content.toString())), exec.changed, shotId, durationMs,
+            waitMs = runner.waitedMs, callId = first.id))
+        val currentPlace = exec.place
+        currentPlace?.let(app)
+        track.after(Verb.RunMacro, !isError, runner.verdicts.isNotEmpty() || exec.content["advice"] != null, exec.changed, false, currentPlace?.name)
+        com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
+        goalTracker.onActionExecuted(exec, currentPlace?.name, historySize = history.size)
+        if (isError) track.markRecovery()
+        if (picture != null && shotId != null) {
+            record { sink.media(shotId, picture) }
+            media.getOrPut(step) { mutableListOf() } += shotId
+            emit(RunEvent.Media(now(), shotId, step, RunEvent.placeLabel(currentPlace)))
+        }
+        return guards.stop?.let(StopRules::guard)
+    }
+
+    private fun extractScreenTexts(content: JsonObject): List<String> {
+        val elements = ((content["screen"] as? JsonObject)?.get("elements") as? JsonArray)
+            ?: (content["elements"] as? JsonArray)
+            ?: return emptyList()
+        val out = ArrayList<String>(elements.size)
+        for (el in elements) {
+            val obj = el as? JsonObject ?: continue
+            val name = (obj["name"] as? JsonPrimitive)?.contentOrNull?.trim()
+            val text = (obj["text"] as? JsonPrimitive)?.contentOrNull?.trim()
+            val desc = (obj["desc"] as? JsonPrimitive)?.contentOrNull?.trim()
+            if (!name.isNullOrEmpty()) out.add(name)
+            if (!text.isNullOrEmpty() && text != name) out.add(text)
+            if (!desc.isNullOrEmpty() && desc != name && desc != text) out.add(desc)
+        }
+        return out
+    }
+
     /** do_steps 的结果里至少有一个子步真的执行了(没执行的停止项标着 executed=false)。 */
     private fun ranAnyStep(content: JsonObject): Boolean =
         (content["steps"] as? JsonArray)?.any { (it as? JsonObject)?.get("executed") != JsonPrimitive(false) } == true
@@ -1209,6 +1361,8 @@ class AgentLoop(
             val asked = now()
             val reply = try {
                 caller.ask(history, TurnPolicy.finalTools(specs, tools::verb), step, onText = previewFor(step))
+            } catch (e: BudgetExceeded) {
+                throw e
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

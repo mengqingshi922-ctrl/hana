@@ -35,7 +35,7 @@ internal abstract class ScreenTool(val family: ScreenFamily, val base: String) :
 
         /** 每块屏都有的动词,按发给模型的顺序。 */
         val MIRRORED = listOf(
-            "observe", "list_elements", "screenshot", "describe", "find_visually",
+            "observe", "list_elements", "screenshot", "zoom_region", "describe", "find_visually",
             "tap", "scroll", "swipe", "type_text", "clear_text", "back", "press_key", "diagnose",
         )
 
@@ -45,7 +45,7 @@ internal abstract class ScreenTool(val family: ScreenFamily, val base: String) :
 
         /** 一块屏的那一套屏幕工具,按 [MIRRORED] 的顺序。 */
         fun of(f: ScreenFamily): List<AgentTool> = listOf(
-            Observe(f), ListElements(f), Screenshot(f), Describe(f), FindVisually(f),
+            Observe(f), ListElements(f), Screenshot(f), ZoomRegionTool(f), Describe(f), FindVisually(f),
             Tap(f), Scroll(f), Swipe(f), TypeText(f), ClearText(f), Back(f), PressKey(f), Diagnose(f),
         ).also { tools -> check(tools.map { it.base } == MIRRORED) }
     }

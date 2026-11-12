@@ -13,6 +13,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -30,6 +31,21 @@ class McpRpc(
     /** 每个过了门口、能读出来的请求:对方说自己是哪个客户端(没说时为空)。 */
     private val onRequest: (remote: java.net.InetAddress, clientName: String?) -> Unit = { _, _ -> },
 ) {
+    /** 可选的 MCP 2026 Elicitation（表单/URL 人工澄清）回调。 */
+    private var onElicitation: (suspend (McpElicitationRequest) -> McpElicitationResponse)? = null
+
+    constructor(
+        tools: McpTaskTools,
+        serverVersion: String,
+        onRequest: (remote: java.net.InetAddress, clientName: String?) -> Unit,
+        onElicitation: (suspend (McpElicitationRequest) -> McpElicitationResponse)?,
+    ) : this(tools, serverVersion, onRequest) {
+        this.onElicitation = onElicitation
+    }
+
+    fun withElicitationHandler(handler: suspend (McpElicitationRequest) -> McpElicitationResponse): McpRpc = apply {
+        this.onElicitation = handler
+    }
     fun handle(req: HttpRequest): HttpResponse {
         if (req.method != "POST") return transportError(405, "Only POST is supported on this endpoint", mapOf("Allow" to "POST"))
         val type = req.header("content-type")?.substringBefore(';')?.trim()?.lowercase()
@@ -93,12 +109,33 @@ class McpRpc(
                 is Call.Done -> r.result
                 is Call.Bad -> return error(400, id, INVALID_PARAMS, r.message)
             }
+            Mcp2026Codec.METHOD_TASKS_GET -> when (val r = handleTasksGet(params)) {
+                is Call.Done -> r.result
+                is Call.Bad -> return error(400, id, INVALID_PARAMS, r.message)
+            }
+            Mcp2026Codec.METHOD_TASKS_RESULT -> when (val r = handleTasksResult(params)) {
+                is Call.Done -> r.result
+                is Call.Bad -> return error(400, id, INVALID_PARAMS, r.message)
+            }
+            Mcp2026Codec.METHOD_TASKS_CANCEL -> when (val r = handleTasksCancel(params)) {
+                is Call.Done -> r.result
+                is Call.Bad -> return error(400, id, INVALID_PARAMS, r.message)
+            }
+            Mcp2026Codec.METHOD_ELICITATION_CREATE -> when (val r = handleElicitationCreate(params)) {
+                is ElicitationCall.Done -> r.result
+                is ElicitationCall.Bad -> return error(400, id, INVALID_PARAMS, r.message)
+                is ElicitationCall.Unsupported -> return error(404, id, METHOD_NOT_FOUND, r.message)
+            }
             else -> return error(404, id, METHOD_NOT_FOUND, "Method not found: $method")
         }
         val complete = buildJsonObject {
             put("resultType", "complete")
-            result.forEach { (k, v) -> put(k, v) }
-            putJsonObject("_meta") { put(META_SERVER, serverInfo()) }
+            result.forEach { (k, v) -> if (k != "_meta") put(k, v) }
+            val existingMeta = result["_meta"] as? JsonObject
+            putJsonObject("_meta") {
+                existingMeta?.forEach { (k, v) -> put(k, v) }
+                put(META_SERVER, serverInfo())
+            }
         }
         return ok(id, complete)
     }
@@ -131,6 +168,35 @@ class McpRpc(
                     is Call.Bad -> return error(200, id, INVALID_PARAMS, r.message)
                 }
             }
+            Mcp2026Codec.METHOD_TASKS_GET -> {
+                onRequest(req.remote, null)
+                when (val r = handleTasksGet(params)) {
+                    is Call.Done -> r.result
+                    is Call.Bad -> return error(200, id, INVALID_PARAMS, r.message)
+                }
+            }
+            Mcp2026Codec.METHOD_TASKS_RESULT -> {
+                onRequest(req.remote, null)
+                when (val r = handleTasksResult(params)) {
+                    is Call.Done -> r.result
+                    is Call.Bad -> return error(200, id, INVALID_PARAMS, r.message)
+                }
+            }
+            Mcp2026Codec.METHOD_TASKS_CANCEL -> {
+                onRequest(req.remote, null)
+                when (val r = handleTasksCancel(params)) {
+                    is Call.Done -> r.result
+                    is Call.Bad -> return error(200, id, INVALID_PARAMS, r.message)
+                }
+            }
+            Mcp2026Codec.METHOD_ELICITATION_CREATE -> {
+                onRequest(req.remote, null)
+                when (val r = handleElicitationCreate(params)) {
+                    is ElicitationCall.Done -> r.result
+                    is ElicitationCall.Bad -> return error(200, id, INVALID_PARAMS, r.message)
+                    is ElicitationCall.Unsupported -> return error(200, id, METHOD_NOT_FOUND, r.message)
+                }
+            }
             else -> return error(200, id, METHOD_NOT_FOUND, "Method not found: $method")
         }
         return ok(id, result)
@@ -139,6 +205,68 @@ class McpRpc(
     private sealed interface Call {
         data class Done(val result: JsonObject) : Call
         data class Bad(val message: String) : Call
+    }
+
+    private sealed interface ElicitationCall {
+        data class Done(val result: JsonObject) : ElicitationCall
+        data class Bad(val message: String) : ElicitationCall
+        data class Unsupported(val message: String) : ElicitationCall
+    }
+
+    private fun handleTasksGet(params: JsonObject): Call {
+        val taskId = try {
+            Mcp2026Codec.decodeTaskIdParams(params)
+        } catch (e: IllegalArgumentException) {
+            return Call.Bad(e.message ?: "Invalid taskId")
+        }
+        return try {
+            Call.Done(Mcp2026Codec.encodeTaskInfo(tools.getMcpTask(taskId)))
+        } catch (e: McpTaskTools.ToolError) {
+            Call.Bad(e.message ?: "Task lookup failed")
+        }
+    }
+
+    private fun handleTasksCancel(params: JsonObject): Call {
+        val taskId = try {
+            Mcp2026Codec.decodeTaskIdParams(params)
+        } catch (e: IllegalArgumentException) {
+            return Call.Bad(e.message ?: "Invalid taskId")
+        }
+        return try {
+            Call.Done(Mcp2026Codec.encodeTaskInfo(tools.cancelMcpTask(taskId)))
+        } catch (e: McpTaskTools.ToolError) {
+            Call.Bad(e.message ?: "Task cancel failed")
+        }
+    }
+
+    private fun handleTasksResult(params: JsonObject): Call {
+        val taskId = try {
+            Mcp2026Codec.decodeTaskIdParams(params)
+        } catch (e: IllegalArgumentException) {
+            return Call.Bad(e.message ?: "Invalid taskId")
+        }
+        val waitMs = (params["waitMs"] as? JsonPrimitive)?.longOrNull?.coerceAtLeast(0L) ?: 0L
+        return try {
+            Call.Done(runBlocking { tools.getMcpTaskResult(taskId, waitMs) })
+        } catch (e: McpTaskTools.ToolError) {
+            Call.Bad(e.message ?: "Task result failed")
+        }
+    }
+
+    private fun handleElicitationCreate(params: JsonObject): ElicitationCall {
+        val req = try {
+            Mcp2026Codec.decodeElicitationCreateParams(params)
+        } catch (e: IllegalArgumentException) {
+            return ElicitationCall.Bad(e.message ?: "Invalid elicitation params")
+        }
+        val handler = onElicitation
+            ?: return ElicitationCall.Unsupported("Method not found: ${Mcp2026Codec.METHOD_ELICITATION_CREATE}")
+        return try {
+            val response = runBlocking { handler(req) }
+            ElicitationCall.Done(Mcp2026Codec.encodeElicitationResponse(response))
+        } catch (e: Exception) {
+            ElicitationCall.Bad(e.message ?: "Elicitation handler failed")
+        }
     }
 
     /** 工具名不认得、参数不是对象:协议错误。参数内容不对、任务找不到:工具执行出错(isError),交给对面的模型看着改。 */
@@ -166,7 +294,21 @@ class McpRpc(
         put("isError", isError)
     }
 
-    private fun capabilities() = buildJsonObject { putJsonObject("tools") { put("listChanged", false) } }
+    private fun capabilities() = buildJsonObject {
+        putJsonObject("tools") { put("listChanged", false) }
+        putJsonObject("tasks") {
+            putJsonObject("cancel") {}
+            putJsonObject("requests") {
+                putJsonObject("tools") { putJsonObject("call") {} }
+            }
+        }
+        if (onElicitation != null) {
+            putJsonObject("elicitation") {
+                putJsonObject("form") {}
+                putJsonObject("url") {}
+            }
+        }
+    }
     private fun serverInfo() = buildJsonObject { put("name", "hana"); put("title", "Hana"); put("version", serverVersion) }
 
     private fun clientName(info: JsonElement?): String? =
@@ -231,5 +373,30 @@ class McpRpc(
             if (v.startsWith("=?base64?") && v.endsWith("?=") && v.length >= 11) {
                 runCatching { String(Base64.getDecoder().decode(v.substring(9, v.length - 2)), Charsets.UTF_8) }.getOrNull()
             } else v
+
+        fun encodeHeader(v: String): String =
+            if (v.all { it.code in 0x20..0x7E }) v
+            else "=?base64?" + Base64.getEncoder().encodeToString(v.toByteArray(Charsets.UTF_8)) + "?="
+
+        fun encodeTaskGetRequest(id: JsonElement, taskId: String, meta: JsonObject? = null): JsonObject =
+            Mcp2026Codec.encodeTaskGetRequest(id, taskId, meta)
+
+        fun encodeTaskResultRequest(id: JsonElement, taskId: String, meta: JsonObject? = null): JsonObject =
+            Mcp2026Codec.encodeTaskResultRequest(id, taskId, meta)
+
+        fun encodeTaskCancelRequest(id: JsonElement, taskId: String, meta: JsonObject? = null): JsonObject =
+            Mcp2026Codec.encodeTaskCancelRequest(id, taskId, meta)
+
+        fun decodeTaskInfo(obj: JsonObject): McpTaskInfo = Mcp2026Codec.decodeTaskInfo(obj)
+        fun encodeTaskInfo(info: McpTaskInfo): JsonObject = Mcp2026Codec.encodeTaskInfo(info)
+        fun decodeTaskCallResult(obj: JsonObject): McpTaskCallResult = Mcp2026Codec.decodeTaskCallResult(obj)
+        fun encodeElicitationCreateRequest(id: JsonElement, req: McpElicitationRequest, meta: JsonObject? = null): JsonObject =
+            Mcp2026Codec.encodeElicitationCreateRequest(id, req, meta)
+        fun decodeElicitationCreateParams(params: JsonObject): McpElicitationRequest =
+            Mcp2026Codec.decodeElicitationCreateParams(params)
+        fun encodeElicitationResponse(resp: McpElicitationResponse): JsonObject =
+            Mcp2026Codec.encodeElicitationResponse(resp)
+        fun decodeElicitationResponse(obj: JsonObject): McpElicitationResponse =
+            Mcp2026Codec.decodeElicitationResponse(obj)
     }
 }

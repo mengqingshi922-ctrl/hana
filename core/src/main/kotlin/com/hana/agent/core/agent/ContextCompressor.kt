@@ -1,10 +1,14 @@
 package com.hana.agent.core.agent
 
 import com.hana.agent.core.context.StepSummary
+import com.hana.agent.core.memory.FlushTriggerReason
+import com.hana.agent.core.memory.MemoryFlushHook
+import com.hana.agent.core.memory.PreCompactFlushRequest
 import com.hana.agent.core.model.Author
 import com.hana.agent.core.model.Message
 import com.hana.agent.core.model.Part
 import com.hana.agent.core.model.Role
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -48,6 +52,7 @@ class ContextCompressor(
     private val structured: Boolean = false,
     private val diffScreens: Boolean = false,
     private val triggerOverride: Int? = null,
+    private val memoryFlushHook: MemoryFlushHook? = null,
 ) {
     /** 「真实 / 粗估」比值:每次用量回来就平滑更新([TokenEstimate.calibrated]);只决定什么时候压缩、压到哪一级,不改发过的内容。 */
     private var observed: Double? = null
@@ -59,6 +64,8 @@ class ContextCompressor(
         val estimate = TokenEstimate.of(base)
     }
     private val views = HashMap<Int, View>()
+    /** 已触发过 Pre-Compaction 刷盘的历史消息下标上限，避免同段历史重复刷盘。 */
+    private var flushedCount = 0
 
     /** 一次请求发出后:[estimated] 是这次请求的粗估(含固定开销),[actual] 是服务商报的输入 token。 */
     fun calibrate(estimated: Int, actual: Int) {
@@ -66,7 +73,10 @@ class ContextCompressor(
     }
 
     /** 新任务:压缩状态清空(校准比值留着,同一个模型)。 */
-    fun forget() = views.clear()
+    fun forget() {
+        views.clear()
+        flushedCount = 0
+    }
 
     private fun tokens(ms: List<Message>) = TokenEstimate.of(ms) * scale
 
@@ -99,6 +109,10 @@ class ContextCompressor(
             maxOf(limits.trigger, UsageMeter.estimate(it.estimate + fixedOverhead, scale) + limits.margin).coerceAtMost(limits.usable)
         } ?: limits.trigger
         val compact = (last != null && view == null) || (aggressive && view?.aggressive != true) || size > trigger
+        val flushWatermark = (limits.usable * PRE_COMPACTION_FLUSH_RATIO).toInt()
+        if (memoryFlushHook != null && (compact || size >= flushWatermark)) {
+            maybeFlushBeforeCompact(history, contextTokens, size, trigger, aggressive, compact)
+        }
         if (!compact) return Compressed(HistoryPruner.limitImages(sent, maxImages), view?.folded ?: 0, size = size, trigger = trigger)
         val next = compact(history, limits, fixedOverhead, aggressive)
         views[contextTokens] = next
@@ -110,11 +124,65 @@ class ContextCompressor(
      * 压出来的比刚发出的小才换上并返回 true(调用方据此重发一次);一样大说明压不动了,返回 false。
      */
     fun overflow(history: List<Message>, contextTokens: Int, fixedOverhead: Int = 0): Boolean {
+        val limits = ContextLimits.of(contextTokens, triggerOverride, allowLowOverride = true)
         val current = sent(valid(views[contextTokens], history), history)
-        val next = compact(history, ContextLimits.of(contextTokens, triggerOverride, allowLowOverride = true), fixedOverhead, aggressive = true)
+        val currentSize = UsageMeter.of(current, fixedOverhead, scale)
+        if (memoryFlushHook != null) {
+            maybeFlushBeforeCompact(history, contextTokens, currentSize, limits.trigger, aggressive = true, compact = true)
+        }
+        val next = compact(history, limits, fixedOverhead, aggressive = true)
         if (next.estimate >= TokenEstimate.of(current)) return false
         views[contextTokens] = next
         return true
+    }
+
+    private fun maybeFlushBeforeCompact(
+        history: List<Message>,
+        contextTokens: Int,
+        size: Int,
+        trigger: Int,
+        aggressive: Boolean,
+        compact: Boolean,
+    ) {
+        val hook = memoryFlushHook ?: return
+        val start = flushedCount.coerceIn(0, history.size)
+        val end = if (compact) {
+            val cut = cutIndexForFlush(history, if (aggressive) AGGRESSIVE_KEEP else keepRecent)
+            if (cut > start) cut else history.size
+        } else {
+            history.size
+        }
+        if (end <= start) return
+        val reason = when {
+            aggressive -> FlushTriggerReason.Overflow
+            compact -> FlushTriggerReason.Compaction
+            else -> FlushTriggerReason.Watermark80
+        }
+        val slice = history.subList(start, end)
+        try {
+            hook.onPreCompact(
+                PreCompactFlushRequest(
+                    history = history,
+                    aboutToCompact = slice,
+                    contextTokens = contextTokens,
+                    currentSize = size,
+                    trigger = trigger,
+                    aggressive = aggressive,
+                    reason = reason,
+                )
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // 刷盘异常不阻断主上下文压缩流程
+        }
+        flushedCount = end
+    }
+
+    private fun cutIndexForFlush(history: List<Message>, keep: Int): Int {
+        val starts = history.indices.filter { i -> history[i].role == Role.Assistant && history[i].parts.any { it is Part.ToolCall } }
+        val k = (starts.size - keep).coerceAtLeast(0)
+        return if (k == 0) 0 else starts[k]
     }
 
     /** 压缩覆盖的那段历史没被改过才接着用;否则(不会发生在正常流程里)重新压。 */
@@ -298,6 +366,8 @@ class ContextCompressor(
         const val SUMMARY_REMINDER = "Only the latest user message is the current task, and the tools are still available; earlier user messages are for reference only."
         private const val SUMMARY_SOURCE = "earlier steps"
         const val AGGRESSIVE_KEEP = 6
+        /** 触发 Pre-Compaction 记忆强制刷盘的可用上下文比例水位（80%）。 */
+        const val PRE_COMPACTION_FLUSH_RATIO = 0.8
         /**
          * 还没有真实用量可校准时估算乘的比值。粗估对英文、JSON 常偏少(分词器切得更碎),宁可早一点压,不要先超长再狠压。
          */

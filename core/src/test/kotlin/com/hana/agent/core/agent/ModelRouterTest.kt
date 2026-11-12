@@ -126,6 +126,81 @@ class ModelRouterTest {
         assertTrue(SANDBOX_TOOLS.all { ModelRouter.mainOnly(it, verb(it)) })
         assertTrue(SANDBOX_TOOLS.none { it in BATCHABLE })
     }
+
+    @Test fun sceneSlotsRouteToDedicatedModels() {
+        val chatModel = NamedModel("chat", vision = false)
+        val visionModel = NamedModel("vision", vision = true)
+        val summaryModel = NamedModel("summary", vision = false)
+        val reflexModel = NamedModel("reflex", vision = true)
+
+        val router = ModelRouter(
+            slots = ModelSlots(
+                chat = chatModel,
+                visionAction = visionModel,
+                memorySummary = summaryModel,
+                edgeReflex = reflexModel,
+            ),
+        )
+
+        assertSame(chatModel, router.pickForScene(ModelScene.Chat))
+        assertSame(summaryModel, router.pickForScene(ModelScene.MemorySummary))
+        assertSame(reflexModel, router.pickForScene(ModelScene.EdgeReflex))
+        assertSame(visionModel, router.pickForScene(ModelScene.VisionAction, clean(1)))
+        assertSame(reflexModel, router.pickForScene(ModelScene.VisionAction, clean(2)))
+    }
+
+    @Test fun thermalAndBatteryCallbacksReduceConcurrencyAndDowngradeModels() {
+        val chatModel = NamedModel("chat-heavy", vision = true)
+        val visionModel = NamedModel("vision-heavy", vision = true)
+        val summaryModel = NamedModel("summary-light", vision = false)
+        val reflexModel = NamedModel("reflex-light", vision = true)
+
+        val router = ModelRouter(
+            slots = ModelSlots(
+                chat = chatModel,
+                visionAction = visionModel,
+                memorySummary = summaryModel,
+                edgeReflex = reflexModel,
+            ),
+            baseConcurrency = 4,
+        )
+
+        val observedPolicies = mutableListOf<RoutingPolicy>()
+        router.addPolicyListener { _, policy -> observedPolicies += policy }
+
+        assertEquals(4, router.recommendedConcurrency)
+        assertTrue(router.currentPolicy.allowHeavyLocalVlm)
+        assertSame(chatModel, router.pickForScene(ModelScene.Chat))
+
+        // 1. 中度发热：并发减半
+        val modPolicy = router.onThermalStatusChanged(ThermalLevel.MODERATE)
+        assertEquals(2, modPolicy.maxConcurrency)
+        assertEquals(2, router.recommendedConcurrency)
+
+        // 2. 严重发热：并发缩至 1，禁用重型端侧 VLM，Chat 与 VisionAction 降级轻量模型
+        val severePolicy = router.onThermalStatusChanged(ThermalLevel.SEVERE)
+        assertEquals(1, severePolicy.maxConcurrency)
+        org.junit.Assert.assertFalse(severePolicy.allowHeavyLocalVlm)
+        assertTrue(severePolicy.preferLightweightModel)
+        assertSame(reflexModel, router.pickForScene(ModelScene.Chat))
+        assertSame(reflexModel, router.pickForScene(ModelScene.VisionAction, clean(1)))
+
+        // 3. 恢复正常温度但电量低于 15% 且未充电：仍保持降级保护
+        router.onThermalStatusChanged(ThermalLevel.NONE)
+        val lowBatPolicy = router.onBatteryLevelChanged(batteryPct = 12, isCharging = false)
+        assertEquals(1, lowBatPolicy.maxConcurrency)
+        assertTrue(lowBatPolicy.preferLightweightModel)
+        assertSame(reflexModel, router.pickForScene(ModelScene.Chat))
+
+        // 4. 插上电源充电后解除低电量限流
+        val chargingPolicy = router.onBatteryLevelChanged(batteryPct = 12, isCharging = true)
+        assertEquals(4, chargingPolicy.maxConcurrency)
+        org.junit.Assert.assertFalse(chargingPolicy.preferLightweightModel)
+        assertSame(chatModel, router.pickForScene(ModelScene.Chat))
+        assertTrue(observedPolicies.size >= 4)
+    }
+
+    private fun assertEquals(expected: Int, actual: Int) = org.junit.Assert.assertEquals(expected, actual)
 }
 
 /** 「在哪」分手机 App 与网站:换到网页、打开网址都算换了地方。 */

@@ -1427,6 +1427,7 @@ class ToolLabels(private val tools: ToolIndex, private val legacy: LegacyNames =
             "看屏幕" to R.string.tool_observe,
             "读取界面元素" to R.string.tool_list_elements,
             "截图" to R.string.tool_screenshot,
+            "局部放大截图" to R.string.tool_zoom_region,
             "滚动" to R.string.tool_scroll,
             "滑动" to R.string.tool_swipe,
             "点击" to R.string.tool_tap,

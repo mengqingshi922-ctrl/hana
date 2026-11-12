@@ -13,10 +13,17 @@ import com.hana.agent.core.prompt.Feedback
 import com.hana.agent.core.prompt.Prompts
 import com.hana.agent.core.record.Redactor
 import com.hana.agent.core.record.RunEvent
+import com.hana.agent.core.replay.FlowNode
+import com.hana.agent.core.replay.MacroPredicate
+import com.hana.agent.core.replay.ShadowMacroDef
+import com.hana.agent.core.replay.ShadowMacroPlan
 import com.hana.agent.core.tool.ToolDispatcher
 import com.hana.agent.core.tool.ToolExecution
 import com.hana.agent.core.tool.Until
 import com.hana.agent.core.tool.UntilOutcome
+import com.hana.agent.core.tool.Verb
+import com.hana.agent.core.uistate.ScreenSnapshot
+import com.hana.agent.core.uistate.interfaces
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -82,6 +89,11 @@ class BatchRunner(
     var waitedMs = 0L
         private set
 
+    private sealed interface StepOutcome {
+        data class Done(val entry: JsonObject, val exec: ToolExecution, val cutShortBySteer: Boolean = false) : StepOutcome
+        data class Stopped(val stop: Stop, val exec: ToolExecution? = null) : StepOutcome
+    }
+
     suspend fun run(steps: List<BatchStep>, callId: String, step: Int = 0): ToolExecution {
         val entries = mutableListOf<JsonElement>()
         var last: ToolExecution? = null
@@ -97,100 +109,387 @@ class BatchRunner(
                 stop = skipFrom(i)
                 break
             }
-            // 采用 35ms 渲染平水期短路，杜绝 250ms 盲等
-            if (i > 0) tools.settle(RENDER_SETTLE_WINDOW_MS)
-            val out = executor.run(Part.ToolCall("$callId.${i + 1}", s.tool, s.argsJson), Origin.Batch(step))
-            val before = out.before
-            note(s, null, before)
-            fun notRun(reason: String, extra: JsonObject = JsonObject(emptyMap()), message: String? = null) = Stop(i, reason, entry(s.tool) {
-                put("ok", false); put("error", reason); put("executed", false)
-                message?.let { put("message", it) }
-                if (before.isNotEmpty()) put("guard", JsonArray(before.map { it.toJson() }))
-            }, executed = false, extra = extra)
-            val exec = when (out) {
-                is ActionOutcome.Ran -> out.exec
-                is ActionOutcome.Refused -> {
-                    val hit = out.hit
-                    // 应用权限拒绝:把执行入口给的下一步说明一起交给模型,别让它只看到错误码
-                    val message = (out.content["message"] as? JsonPrimitive)?.contentOrNull?.takeIf { appAccessDenied(out.code) }
-                    stop = if (hit == null) notRun(out.code, message = message)
-                    else notRun(out.code, buildJsonObject { put("action", hit.action.name); put("matched", hit.matched) }, message)
+            when (val res = executeOneStep(s, index = i, hasMore = i < steps.lastIndex, subCallId = "$callId.${i + 1}", step = step, seen = seen, settleBefore = i > 0, allowDialogContinuation = false)) {
+                is StepOutcome.Stopped -> {
+                    last = res.exec ?: last
+                    stop = if (res.stop.reason == NEW_MESSAGE) skipFrom(i) else res.stop
                     break
                 }
-                is ActionOutcome.Cancelled -> { stop = notRun("cancelled"); break }
-            }
-            // 这一步之前的停留、间隔或这次等待被用户插话截断:这一步什么也没做,和后面的一起跳过,交给循环去送那句话
-            if (exec.content["error"] == JsonPrimitive(NEW_MESSAGE)) {
-                waitedMs += exec.waitMs
-                stop = skipFrom(i)
-                break
-            }
-            seen += exec.observations
-            // 子步里为节奏补的停留同样算这一批的等待
-            waitedMs += exec.waitMs
-            val afterVerdicts = out.after
-            note(s, exec, afterVerdicts)
-            val all = before + afterVerdicts
-            last = exec
-            val c = exec.content
-            val screen = c["screen"] as? JsonObject
-            val failed = c["ok"] != JsonPrimitive(true)
-            val hard = when {
-                failed -> (c["error"] as? JsonPrimitive)?.contentOrNull ?: "failed"
-                c["verification"] == JsonPrimitive("mismatch") -> "action_not_applied"
-                c["app_switched"] != null -> "app_switched"
-                c["chooser"] != null && i < steps.lastIndex -> "chooser_opened"
-                screen?.get("dialog") != null && i < steps.lastIndex -> "dialog_opened"
-                // 开到了用户的主屏上(挪回来了也是换了地方):后面的步骤是按原来那一屏排的
-                c["opened"] != null -> "opened_elsewhere"
-                // 网站、App 说到上限了:后面的步骤不再做
-                c["limitReached"] != null -> "limit_reached"
-                else -> null
-            }
-            val review = i < steps.lastIndex && screen != null &&
-                (screen["imageReason"] != null || screen["protected"] == JsonPrimitive(true) ||
-                    screen["readable"] == JsonPrimitive(false) || screen["note"] != null)
-            // 动作自带的屏幕可能还是加载中的样子:等到要出现的字出现了,就不必再看图
-            val until = s.until?.takeIf { hard == null && (!review || it.appears != null) }
-            val waited = until?.let { tools.waitUntil(it, executor.recorder::now, steerWaiting) }
-            waited?.let { waitedMs += it.waitedMs }
-            val reason = hard ?: when {
-                waited != null && !waited.met -> when (waited.stopped) {
-                    UntilOutcome.TIMEOUT -> "expectation_unmet"
-                    UntilOutcome.NEW_MESSAGE -> null
-                    else -> waited.stopped
+                is StepOutcome.Done -> {
+                    last = res.exec
+                    if (res.cutShortBySteer) {
+                        stop = Stop(i, NEW_MESSAGE, JsonObject(res.entry + ("executed" to JsonPrimitive(true))), executed = true)
+                        break
+                    }
+                    entries += res.entry
+                    if (guards.stop != null && i < steps.size - 1) {
+                        stop = Stop(i + 1, "guard_stopped", entry(steps[i + 1].tool) { put("ok", false); put("error", "guard_stopped"); put("executed", false) }, executed = false)
+                        break
+                    }
                 }
-                review && waited?.met != true -> "screen_needs_review"
-                else -> null
-            }
-            val e = entry(s.tool) {
-                put("ok", reason == null)
-                exec.changed?.let { put("changed", it) }
-                effectKind(c)?.let { put("effect", it) }
-                (c["verification"] as? JsonPrimitive)?.let { put("verification", it) }
-                reason?.let { put("error", it) }
-                if (waited != null && !waited.met) s.until?.let { untilFields(it).forEach { (k, v) -> put(k, v) } }
-                waited?.let { w ->
-                    put("wait", buildJsonObject { put("met", w.met); w.stopped?.let { put("stopped", it) }; put("waited_ms", w.waitedMs) })
-                }
-                (c["app_switched"] as? JsonPrimitive)?.let { put("app_switched", it) }
-                (c["opened"] as? JsonObject)?.let { put("opened", it); (c["hint"] as? JsonPrimitive)?.let { h -> put("hint", h) } }
-                (c["chooser"] as? JsonObject)?.let { put("chooser", it) }
-                (c["limitReached"] as? JsonPrimitive)?.let { put("limitReached", it); (c["hint"] as? JsonPrimitive)?.let { h -> put("hint", h) } }
-                if (all.isNotEmpty()) put("guard", JsonArray(all.map { it.toJson() }))
-            }
-            if (reason != null) { stop = Stop(i, reason, JsonObject(e + ("executed" to JsonPrimitive(true))), executed = true); break }
-            // 等的时候用户插了话:后面的子步在下一轮开头照常跳过;这已是最后一步时就停在它这里
-            if (waited?.stopped == UntilOutcome.NEW_MESSAGE && i == steps.lastIndex) {
-                stop = Stop(i, NEW_MESSAGE, JsonObject(e + ("executed" to JsonPrimitive(true))), executed = true); break
-            }
-            entries += e
-            if (guards.stop != null && i < steps.size - 1) {
-                stop = Stop(i + 1, "guard_stopped", entry(steps[i + 1].tool) { put("ok", false); put("error", "guard_stopped"); put("executed", false) }, executed = false)
-                break
             }
         }
         return finish(steps, entries, stop, last, callId, step, seen)
+    }
+
+    /**
+     * 执行具名演化影子宏（先实例化参数再以受限条件/循环微流执行）。
+     */
+    suspend fun runMacro(
+        macro: ShadowMacroDef,
+        params: Map<String, String> = emptyMap(),
+        callId: String,
+        step: Int = 0,
+    ): ToolExecution {
+        val plan: ShadowMacroPlan = try {
+            macro.instantiate(params)
+        } catch (e: IllegalArgumentException) {
+            return ToolExecution(buildJsonObject {
+                put("ok", false)
+                put("error", "invalid_macro_params")
+                put("message", e.message ?: "invalid macro parameters")
+                put("macro", macro.name)
+            })
+        }
+        return runFlow(
+            nodes = plan.flow,
+            callId = callId,
+            step = step,
+            maxTotalSteps = plan.maxTotalSteps,
+            maxDurationMs = plan.maxDurationMs,
+            macroName = plan.macroName,
+        )
+    }
+
+    /**
+     * 受限条件/循环微流执行器：
+     * 支持基于当前 [ScreenSnapshot]（`UiTree` 文本/包名/resourceId）的 `If` 条件分支与 `RepeatUntil` 有界循环，
+     * 严格受总步数上限 [maxTotalSteps] 与全局超时 [maxDurationMs] 约束，每步仍走 [ActionExecutor] 守卫与确认门控。
+     */
+    suspend fun runFlow(
+        nodes: List<FlowNode>,
+        callId: String,
+        step: Int = 0,
+        maxTotalSteps: Int = MAX_FLOW_STEPS,
+        maxDurationMs: Long = MAX_FLOW_TIMEOUT_MS,
+        macroName: String? = null,
+    ): ToolExecution {
+        val stepLimit = maxTotalSteps.coerceIn(1, MAX_FLOW_STEPS)
+        val timeoutLimitMs = maxDurationMs.coerceIn(500L, MAX_FLOW_TIMEOUT_MS)
+        val startMs = executor.recorder.now()
+
+        val entries = mutableListOf<JsonElement>()
+        val seen = mutableListOf<Observation>()
+        var last: ToolExecution? = null
+        var stop: Stop? = null
+        var executedSteps = 0
+        var branchesTaken = 0
+        var loopIterations = 0
+        var subSeq = 0
+
+        fun remainingBudgetStop(toolName: String): Stop? {
+            if (executedSteps >= stepLimit) {
+                return Stop(executedSteps, "flow_step_limit_exceeded", entry(toolName) {
+                    put("ok", false); put("error", "flow_step_limit_exceeded"); put("executed", false)
+                }, executed = false)
+            }
+            if (executor.recorder.now() - startMs >= timeoutLimitMs) {
+                return Stop(executedSteps, "flow_timeout_exceeded", entry(toolName) {
+                    put("ok", false); put("error", "flow_timeout_exceeded"); put("executed", false)
+                }, executed = false)
+            }
+            if (executedSteps > 0 && steerWaiting()) {
+                return Stop(executedSteps, NEW_MESSAGE, entry(toolName) {
+                    put("ok", false); put("error", NEW_MESSAGE); put("executed", false)
+                }, executed = false)
+            }
+            return null
+        }
+
+        suspend fun peekScreen(): ScreenSnapshot? =
+            tools.interfaces.peek() ?: readRegisteredSnapshot(++subSeq)
+
+        suspend fun execBatchStep(bs: BatchStep, hasMore: Boolean, allowDialogContinuation: Boolean): Boolean {
+            remainingBudgetStop(bs.tool)?.let { stop = it; return false }
+            val idx = executedSteps
+            val res = executeOneStep(
+                s = bs,
+                index = idx,
+                hasMore = hasMore,
+                subCallId = "$callId.${++subSeq}",
+                step = step,
+                seen = seen,
+                settleBefore = idx > 0,
+                allowDialogContinuation = allowDialogContinuation,
+            )
+            return when (res) {
+                is StepOutcome.Stopped -> {
+                    last = res.exec ?: last
+                    stop = res.stop
+                    false
+                }
+                is StepOutcome.Done -> {
+                    last = res.exec
+                    executedSteps++
+                    entries += res.entry
+                    if (res.cutShortBySteer) {
+                        stop = Stop(executedSteps, NEW_MESSAGE, JsonObject(res.entry + ("executed" to JsonPrimitive(true))), executed = true)
+                        false
+                    } else if (guards.stop != null && hasMore) {
+                        stop = Stop(executedSteps, "guard_stopped", entry(bs.tool) {
+                            put("ok", false); put("error", "guard_stopped"); put("executed", false)
+                        }, executed = false)
+                        false
+                    } else {
+                        true
+                    }
+                }
+            }
+        }
+
+        suspend fun runNodes(list: List<FlowNode>, insideLoop: Boolean): Boolean {
+            for ((idx, node) in list.withIndex()) {
+                if (stop != null) return false
+                val hasMore = insideLoop || idx < list.lastIndex
+                when (node) {
+                    is FlowNode.Step -> {
+                        val until = if (
+                            node.expectText == null && node.expectGone == null && node.expectApp == null && !node.waitStable
+                        ) null else Until(node.expectText, node.expectGone, node.expectApp, node.waitStable, node.timeoutMs)
+                        if (!execBatchStep(BatchStep(node.tool, node.argsJson, until), hasMore = hasMore, allowDialogContinuation = insideLoop)) {
+                            return false
+                        }
+                    }
+                    is FlowNode.TapMatching -> {
+                        remainingBudgetStop("phone_tap")?.let { stop = it; return false }
+                        val snap = readRegisteredSnapshot(++subSeq) ?: peekScreen()
+                        if (snap == null) {
+                            stop = Stop(executedSteps, "screen_unreadable", entry("phone_tap") {
+                                put("ok", false); put("error", "screen_unreadable"); put("executed", false)
+                            }, executed = false)
+                            return false
+                        }
+                        val elem = MacroPredicate.findMatchingElement(snap, node.texts, node.resourceIdHints)
+                        val bs = if (elem != null) {
+                            val args = buildJsonObject {
+                                put("ref", elem.ref)
+                                put("snapshotId", snap.snapshotId)
+                            }.toString()
+                            BatchStep("phone_tap", args)
+                        } else if (node.fallbackBack) {
+                            BatchStep("phone_back", "{}")
+                        } else {
+                            stop = Stop(executedSteps, "matching_element_not_found", entry("phone_tap") {
+                                put("ok", false); put("error", "matching_element_not_found"); put("executed", false)
+                            }, executed = false)
+                            return false
+                        }
+                        if (!execBatchStep(bs, hasMore = hasMore, allowDialogContinuation = true)) {
+                            return false
+                        }
+                    }
+                    is FlowNode.If -> {
+                        val snap = peekScreen()
+                        if (snap == null) {
+                            stop = Stop(executedSteps, "screen_unreadable", entry("if") {
+                                put("ok", false); put("error", "screen_unreadable"); put("executed", false)
+                            }, executed = false)
+                            return false
+                        }
+                        branchesTaken++
+                        val branch = if (node.condition.evaluate(snap)) node.thenBranch else node.elseBranch
+                        if (!runNodes(branch, insideLoop = insideLoop)) return false
+                    }
+                    is FlowNode.RepeatUntil -> {
+                        val maxIter = node.maxIterations.coerceIn(1, FlowNode.MAX_LOOP_ITERATIONS)
+                        val loopTimeout = node.timeoutMs.coerceIn(500L, FlowNode.MAX_LOOP_TIMEOUT_MS)
+                        val loopStart = executor.recorder.now()
+                        var conditionMet = false
+                        for (iter in 0 until maxIter) {
+                            if (executor.recorder.now() - startMs >= timeoutLimitMs ||
+                                executor.recorder.now() - loopStart >= loopTimeout
+                            ) {
+                                stop = Stop(executedSteps, "flow_timeout_exceeded", entry("repeat_until") {
+                                    put("ok", false); put("error", "flow_timeout_exceeded"); put("executed", false)
+                                }, executed = false)
+                                return false
+                            }
+                            if (executedSteps >= stepLimit) {
+                                stop = Stop(executedSteps, "flow_step_limit_exceeded", entry("repeat_until") {
+                                    put("ok", false); put("error", "flow_step_limit_exceeded"); put("executed", false)
+                                }, executed = false)
+                                return false
+                            }
+                            val snap = peekScreen()
+                            if (snap == null) {
+                                stop = Stop(executedSteps, "screen_unreadable", entry("repeat_until") {
+                                    put("ok", false); put("error", "screen_unreadable"); put("executed", false)
+                                }, executed = false)
+                                return false
+                            }
+                            if (node.stopCondition.evaluate(snap)) {
+                                conditionMet = true
+                                break
+                            }
+                            loopIterations++
+                            if (!runNodes(node.body, insideLoop = true)) return false
+                        }
+                        if (!conditionMet) {
+                            val afterSnap = peekScreen()
+                            conditionMet = afterSnap != null && node.stopCondition.evaluate(afterSnap)
+                        }
+                        if (!conditionMet) {
+                            stop = Stop(executedSteps, "flow_loop_limit_exceeded", entry("repeat_until") {
+                                put("ok", false); put("error", "flow_loop_limit_exceeded"); put("executed", false)
+                            }, executed = false)
+                            return false
+                        }
+                    }
+                }
+            }
+            return true
+        }
+
+        runNodes(nodes, insideLoop = false)
+
+        executor.recorder.event(RunEvent.Batch(executor.recorder.now(), executedSteps, executedSteps.coerceAtLeast(1), stop != null, stop?.reason))
+        val screen = last?.content?.get("screen")
+        val content = buildJsonObject {
+            put("ok", stop == null)
+            macroName?.let { put("macro", it) }
+            put("completed", executedSteps)
+            put("branchesTaken", branchesTaken)
+            put("loopIterations", loopIterations)
+            put("steps", JsonArray(entries + listOfNotNull(stop?.entry)))
+            stop?.let { s ->
+                put("error", if (s.reason == "confirmation_required") "confirmation_required" else "flow_stopped")
+                put("reason", s.reason)
+                put("recoverable", true)
+            }
+            advice?.let { put("advice", it) }
+            screen?.let { put("screen", it) }
+        }
+        return ToolExecution(
+            content = content,
+            changed = last?.changed,
+            frame = if (!executor.recorder.savesScreens) last?.frame ?: last?.image else null,
+            screenElements = last?.screenElements,
+            images = last?.images.orEmpty(),
+            imageIds = last?.imageIds.orEmpty(),
+            place = last?.place,
+            observations = seen,
+        )
+    }
+
+    private suspend fun readRegisteredSnapshot(seqNum: Int): ScreenSnapshot? = try {
+        val dump = tools.index.nameOf(Verb.ListElements, tools.surface) ?: return null
+        val r = tools.executeRead(Part.ToolCall("flow-read-$seqNum", dump, "{}"), 0)
+        (r.content["snapshotId"] as? JsonPrimitive)?.contentOrNull?.let {
+            tools.interfaces.snapshotFor(tools.declared(dump), JsonObject(mapOf("snapshotId" to JsonPrimitive(it))))
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
+    private suspend fun executeOneStep(
+        s: BatchStep,
+        index: Int,
+        hasMore: Boolean,
+        subCallId: String,
+        step: Int,
+        seen: MutableList<Observation>,
+        settleBefore: Boolean,
+        allowDialogContinuation: Boolean,
+    ): StepOutcome {
+        // 采用 35ms 渲染平水期短路，杜绝 250ms 盲等
+        if (settleBefore) tools.settle(RENDER_SETTLE_WINDOW_MS)
+        val out = executor.run(Part.ToolCall(subCallId, s.tool, s.argsJson), Origin.Batch(step))
+        val before = out.before
+        note(s, null, before)
+        fun notRun(reason: String, extra: JsonObject = JsonObject(emptyMap()), message: String? = null) = Stop(index, reason, entry(s.tool) {
+            put("ok", false); put("error", reason); put("executed", false)
+            message?.let { put("message", it) }
+            if (before.isNotEmpty()) put("guard", JsonArray(before.map { it.toJson() }))
+        }, executed = false, extra = extra)
+
+        val exec = when (out) {
+            is ActionOutcome.Ran -> out.exec
+            is ActionOutcome.Refused -> {
+                val hit = out.hit
+                // 应用权限拒绝:把执行入口给的下一步说明一起交给模型,别让它只看到错误码
+                val message = (out.content["message"] as? JsonPrimitive)?.contentOrNull?.takeIf { appAccessDenied(out.code) }
+                val st = if (hit == null) notRun(out.code, message = message)
+                else notRun(out.code, buildJsonObject { put("action", hit.action.name); put("matched", hit.matched) }, message)
+                return StepOutcome.Stopped(st)
+            }
+            is ActionOutcome.Cancelled -> return StepOutcome.Stopped(notRun("cancelled"))
+        }
+        // 这一步之前的停留、间隔或这次等待被用户插话截断:这一步什么也没做,和后面的一起跳过,交给循环去送那句话
+        if (exec.content["error"] == JsonPrimitive(NEW_MESSAGE)) {
+            waitedMs += exec.waitMs
+            return StepOutcome.Stopped(notRun(NEW_MESSAGE), exec)
+        }
+        seen += exec.observations
+        // 子步里为节奏补的停留同样算这一批的等待
+        waitedMs += exec.waitMs
+        val afterVerdicts = out.after
+        note(s, exec, afterVerdicts)
+        val all = before + afterVerdicts
+        val c = exec.content
+        val screen = c["screen"] as? JsonObject
+        val failed = c["ok"] != JsonPrimitive(true)
+        val hard = when {
+            failed -> (c["error"] as? JsonPrimitive)?.contentOrNull ?: "failed"
+            c["verification"] == JsonPrimitive("mismatch") -> "action_not_applied"
+            c["app_switched"] != null -> "app_switched"
+            c["chooser"] != null && hasMore -> "chooser_opened"
+            screen?.get("dialog") != null && hasMore && !allowDialogContinuation -> "dialog_opened"
+            // 开到了用户的主屏上(挪回来了也是换了地方):后面的步骤是按原来那一屏排的
+            c["opened"] != null -> "opened_elsewhere"
+            // 网站、App 说到上限了:后面的步骤不再做
+            c["limitReached"] != null -> "limit_reached"
+            else -> null
+        }
+        val review = hasMore && screen != null &&
+            (screen["imageReason"] != null || screen["protected"] == JsonPrimitive(true) ||
+                screen["readable"] == JsonPrimitive(false) || (!allowDialogContinuation && screen["note"] != null))
+        // 动作自带的屏幕可能还是加载中的样子:等到要出现的字出现了,就不必再看图
+        val until = s.until?.takeIf { hard == null && (!review || it.appears != null) }
+        val waited = until?.let { tools.waitUntil(it, executor.recorder::now, steerWaiting) }
+        waited?.let { waitedMs += it.waitedMs }
+        val reason = hard ?: when {
+            waited != null && !waited.met -> when (waited.stopped) {
+                UntilOutcome.TIMEOUT -> "expectation_unmet"
+                UntilOutcome.NEW_MESSAGE -> null
+                else -> waited.stopped
+            }
+            review && waited?.met != true -> "screen_needs_review"
+            else -> null
+        }
+        val e = entry(s.tool) {
+            put("ok", reason == null)
+            exec.changed?.let { put("changed", it) }
+            effectKind(c)?.let { put("effect", it) }
+            (c["verification"] as? JsonPrimitive)?.let { put("verification", it) }
+            reason?.let { put("error", it) }
+            if (waited != null && !waited.met) s.until?.let { untilFields(it).forEach { (k, v) -> put(k, v) } }
+            waited?.let { w ->
+                put("wait", buildJsonObject { put("met", w.met); w.stopped?.let { put("stopped", it) }; put("waited_ms", w.waitedMs) })
+            }
+            (c["app_switched"] as? JsonPrimitive)?.let { put("app_switched", it) }
+            (c["opened"] as? JsonObject)?.let { put("opened", it); (c["hint"] as? JsonPrimitive)?.let { h -> put("hint", h) } }
+            (c["chooser"] as? JsonObject)?.let { put("chooser", it) }
+            (c["limitReached"] as? JsonPrimitive)?.let { put("limitReached", it); (c["hint"] as? JsonPrimitive)?.let { h -> put("hint", h) } }
+            if (all.isNotEmpty()) put("guard", JsonArray(all.map { it.toJson() }))
+        }
+        if (reason != null) {
+            return StepOutcome.Stopped(Stop(index, reason, JsonObject(e + ("executed" to JsonPrimitive(true))), executed = true), exec)
+        }
+        // 等的时候用户插了话:后面的子步在下一轮开头照常跳过;这已是最后一步时就停在它这里
+        val cutShort = waited?.stopped == UntilOutcome.NEW_MESSAGE && !hasMore
+        return StepOutcome.Done(e, exec, cutShortBySteer = cutShort)
     }
 
     private fun finish(
@@ -260,6 +559,10 @@ class BatchRunner(
     companion object {
         /** 子步因用户新插话没做时的停止原因。 */
         const val NEW_MESSAGE = SKIPPED_FOR_NEW_MESSAGE
+        /** 受限条件/循环微流的最大步数硬上限。 */
+        const val MAX_FLOW_STEPS = 30
+        /** 受限条件/循环微流的全局超时硬上限（毫秒）。 */
+        const val MAX_FLOW_TIMEOUT_MS = 30_000L
 
         /**
          * 校验 do_steps 的参数;[available] 是此刻提供给模型的工具名,[batchable] 是能放进一批的工具(按工具声明,

@@ -33,6 +33,7 @@ enum class Verb {
     Wait, AskUser, RequestConfirmation, HandToUser, HandleObstacle, EndNotDone,
     KnowledgeSearch, KnowledgeRead, SkillSearch, SkillRead, SkillSave, MemorySearch, MemorySave, ProfileEdit, HistoryRead,
     TaskMemorySearch, TaskMemoryStep, TaskMemoryTimeline,
+    FactAssert, FactQuery, RunMacro,
     ScheduleTask,
     SpawnAgent, SettingsList, SettingsSet,
 }
@@ -94,6 +95,12 @@ internal interface AgentTool : ToolInfo {
     val gateTarget: GateTarget? get() = null
     /** 自己不动界面,里面的动作一个个经执行入口回来(页面脚本):不过锁屏关卡,也不能作为只读调用。 */
     val composite: Boolean get() = false
+    /**
+     * 是否可在 [ToolDispatcher.executeRead] 上下文中被调用（即免过写屏幕守卫）。
+     * 默认 false；on-screen 只读工具通过 [readOnly] extension property 被允许；
+     * offScreen 的 MCP 只读工具覆盖此属性为 true 表明自己可在读上下文中运行。
+     */
+    val executableAsRead: Boolean get() = false
     /**
      * 能力那一组收着时也提供的入口(见 [ToolGroups]):收着时用短说明(prompts/entries/<工具名>.md),展开后换回全文。
      * 不是入口为 null。

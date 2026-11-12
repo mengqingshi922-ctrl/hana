@@ -55,6 +55,7 @@
     <string name="tool_observe">Посмотреть на экран</string>
     <string name="tool_list_elements">Прочитать элементы экрана</string>
     <string name="tool_screenshot">Снимок экрана</string>
+    <string name="tool_zoom_region">Масштабирование области</string>
     <string name="tool_scroll">Прокрутить</string>
     <string name="tool_swipe">Провести пальцем</string>
     <string name="tool_tap">Нажать</string>

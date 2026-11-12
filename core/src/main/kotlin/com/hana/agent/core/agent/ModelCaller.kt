@@ -1,6 +1,9 @@
 package com.hana.agent.core.agent
 
 import com.hana.agent.core.trace.RunTrace
+import com.hana.agent.core.memory.MemoryFlushHook
+import com.hana.agent.core.usage.BudgetBreaker
+import com.hana.agent.core.vision.ImageBudget
 import com.hana.agent.core.action.ConfirmDecision
 import com.hana.agent.core.model.Author
 import com.hana.agent.core.model.ChatModel
@@ -45,12 +48,15 @@ internal class ModelCaller(
     private val autonomous: Boolean = false,
     private val trace: RunTrace? = null,
     private val edgePort: com.hana.agent.core.edge.EdgeDecisionPort = com.hana.agent.core.edge.EdgeDecisionPort.NONE,
+    private val memoryFlushHook: MemoryFlushHook? = null,
+    private val budgetBreaker: BudgetBreaker? = null,
 ) {
     /** 每个模型一份压缩状态:各自的上下文、各自发出的那份历史,轻量模型那次压缩不连累主模型的请求前缀。 */
     private val compressors = java.util.IdentityHashMap<ChatModel, ContextCompressor>()
     private fun compressorFor(m: ChatModel) =
         compressors.getOrPut(m) { ContextCompressor(tools.index, structured = flags.structuredCompaction,
-            diffScreens = tools.inlineScreen, triggerOverride = m.capabilities.compactionTriggerTokens) }
+            diffScreens = tools.inlineScreen, triggerOverride = m.capabilities.compactionTriggerTokens,
+            memoryFlushHook = memoryFlushHook) }
     private val compactions = java.util.IdentityHashMap<ChatModel, CompactionState>()
     /** 本任务里已为重试等过的时间(对着 [RetryPolicy.taskWaitBudgetMs])。 */
     private var taskRetryWaitMs = 0L
@@ -122,10 +128,15 @@ internal class ModelCaller(
             }
         }
 
-        val r = router?.takeIf { routing } ?: return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
+        val budgetDowngrade = budgetBreaker?.shouldDowngradeToLight() == true
+        val r = router?.takeIf { routing || budgetDowngrade } ?: return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
         val latestHasImage = history.takeLast(2).any { m -> m.parts.any { it is Part.Image } }
         val ctx = track.context(step, latestHasImage)
-        val picked = r.pick(ctx)
+        val picked = if (budgetDowngrade) {
+            r.pickForScene(ModelScene.EdgeReflex, ctx).takeIf { r.isLight(it) } ?: r.pick(ctx)
+        } else {
+            r.pick(ctx)
+        }
         if (!r.isLight(picked)) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
 
         // 轻量模型的上下文可能更小:它报超长、它那次折叠多少,都不连累主模型(压缩状态按模型分开记)
@@ -238,10 +249,25 @@ internal class ModelCaller(
             // 决策当前步骤只需当前最新的一屏控件与全局 Goal，历史屏幕只需保留“动作与结局”，旧屏幕无须携带成百上千个死重控件。
             // 使用 HistoryPruner.LAST（Cut(1)）保留当前最新屏幕的全量控件树，脱水更早之前的历史屏幕，
             // 确保 Prompt 稳定在数千 tokens，消除 3.8 万 Token 带来的 40 秒 Prefill 与网关 503 排队爆满。
-            val optimizedMessages = if (flags.structuredCompaction) {
+            val prunedMessages = if (flags.structuredCompaction) {
                 val toolRounds = sent.messages.count { m -> m.role == Role.Assistant && m.parts.any { it is Part.ToolCall } }
-                HistoryPruner.prune(sent.messages, tools.index, HistoryPruner.steppedCut(toolRounds, stride = 3, minWindow = 1))
+                HistoryPruner.prune(
+                    sent.messages,
+                    tools.index,
+                    HistoryPruner.steppedCut(toolRounds, stride = 3, minWindow = 1),
+                    prePruneHook = memoryFlushHook,
+                )
             } else sent.messages
+            val imageLimits = ImageBudget.Limits(
+                maxTotalBytes = ImageBudget.DEFAULT_MAX_BYTES,
+                maxImages = if (flags.structuredCompaction) ImageBudget.DEFAULT_MAX_IMAGES else Int.MAX_VALUE,
+            )
+            val budgetResult = ImageBudget.enforce(prunedMessages, imageLimits)
+            if (budgetResult.foldedCount > 0) {
+                emit(RunEvent.State(now(), "image_budget_folded", "folded=${budgetResult.foldedCount} bytes=${budgetResult.foldedBytes}"))
+            }
+            val optimizedMessages = budgetResult.messages
+            budgetBreaker?.checkOrThrow()
             try {
                 // 差异的 base 被裁掉或折叠时,下一次写操作要发全量
                 if (tools.inlineScreen) tools.setVisibleObservations(visibleReads(optimizedMessages))

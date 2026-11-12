@@ -8,6 +8,7 @@ internal object GeneralGroup {
         Wait, ViewPastScreens, ViewUserScreen, AskUser, RequestConfirmation, HandToUser, HandleObstacle, EndNotDone,
         KnowledgeSearch, KnowledgeRead, SkillSearch, SkillRead, SkillSave, MemorySearch, MemorySave, ProfileEdit, HistoryRead,
         TaskMemorySearch, TaskMemoryStep, TaskMemoryTimeline,
+        FactAssert, FactQuery, RunMacro,
         ScheduleTask, SpawnAgent,
         com.hana.agent.core.settings.SettingsList, com.hana.agent.core.settings.SettingsSet,
     )

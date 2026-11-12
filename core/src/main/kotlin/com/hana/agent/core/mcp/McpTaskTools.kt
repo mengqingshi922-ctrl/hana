@@ -93,6 +93,63 @@ class McpTaskTools(
 
     fun has(name: String) = tools.any { it.name == name }
 
+    /** MCP 2026 `tasks/get`：查询任务当前状态并映射为标准 MCP Task 载荷。 */
+    internal fun getMcpTask(taskId: String): McpTaskInfo = try {
+        Mcp2026Codec.toTaskInfo(service.get(taskId))
+    } catch (e: RemoteTaskError) {
+        throw ToolError(mapRemoteError(e))
+    }
+
+    /** MCP 2026 `tasks/cancel`：取消指定任务并返回最新状态。 */
+    internal fun cancelMcpTask(taskId: String): McpTaskInfo = try {
+        val cancellation = service.cancel(taskId)
+        val task = service.get(taskId)
+        val statusOverride = if (cancellation.accepted) RemoteStatus.CANCELLED else cancellation.status
+        Mcp2026Codec.toTaskInfo(task, statusOverride = statusOverride)
+    } catch (e: RemoteTaskError) {
+        throw ToolError(mapRemoteError(e))
+    }
+
+    /** MCP 2026 `tasks/result`：获取已完成任务结果；若传 [waitMs] > 0 则先有界等待。 */
+    internal suspend fun getMcpTaskResult(taskId: String, waitMs: Long = 0L): JsonObject = try {
+        var task = service.get(taskId)
+        var status = RemoteStatus.of(task.state)
+        if (!RemoteStatus.finished(status) && waitMs > 0L) {
+            val sec = ((waitMs + 999L) / 1000L).toInt().coerceIn(1, MAX_WAIT_S)
+            task = service.wait(taskId, sec).task
+            status = RemoteStatus.of(task.state)
+        }
+        if (!RemoteStatus.finished(status)) {
+            val mcpStatus = McpTaskStatus.fromRemoteStatus(status).wire
+            throw ToolError("Task $taskId is not completed yet (status: $mcpStatus)")
+        }
+        val structured = describe(task)
+        val text = when (status) {
+            RemoteStatus.DONE -> (structured["answer"] as? JsonPrimitive)?.contentOrNull ?: structured.toString()
+            RemoteStatus.FAILED -> (structured["reason"] as? JsonPrimitive)?.contentOrNull ?: "Task failed"
+            RemoteStatus.CANCELLED -> "Task cancelled"
+            else -> structured.toString()
+        }
+        Mcp2026Codec.encodeTaskCallResult(
+            McpTaskCallResult(
+                text = text,
+                structuredContent = structured,
+                isError = status != RemoteStatus.DONE,
+                relatedTaskId = task.id,
+            ),
+        )
+    } catch (e: RemoteTaskError) {
+        throw ToolError(mapRemoteError(e))
+    }
+
+    private fun mapRemoteError(e: RemoteTaskError): String = when (e) {
+        is RemoteTaskError.NoSuchTask -> "No MCP task with id ${e.id}"
+        is RemoteTaskError.BadConversation -> "conversation must be one returned by an earlier MCP task (looks like mcp-<uuid>)"
+        is RemoteTaskError.NeedsPhone -> ON_PHONE_NOTE
+        is RemoteTaskError.QuestionClosed -> "The question is no longer open; check hana_task_status."
+        is RemoteTaskError.General -> e.message.orEmpty()
+    }
+
     /** 只做协议参数转换和 MCP 展示;业务规则由两个入口共用的 service 执行。 */
     suspend fun call(name: String, args: JsonObject): JsonObject = try {
         when (name) {

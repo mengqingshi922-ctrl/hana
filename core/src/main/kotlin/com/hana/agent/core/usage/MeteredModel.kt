@@ -48,8 +48,10 @@ private open class MeteredModel(private val inner: ChatModel, protected val sour
         counted { inner.complete(system, messages, tools) }
 
     protected suspend fun counted(call: suspend () -> ModelReply): ModelReply {
-        // 在一次运行里调用的,也记到这次运行名下(见 RunUsageTally)
+        // 在一次运行里调用的,也记到这次运行名下(见 RunUsageTally)与预算熔断器(见 BudgetBreaker)
         val tally = currentCoroutineContext()[RunUsageTally]
+        val breaker = currentCoroutineContext()[BudgetBreaker]
+        breaker?.checkOrThrow()
         val reply = try {
             call()
         } catch (e: Throwable) {
@@ -57,6 +59,7 @@ private open class MeteredModel(private val inner: ChatModel, protected val sour
             throw e
         }
         note(reply.usage, tally)
+        breaker?.recordModelCall(reply.usage)
         return reply
     }
 

@@ -1,10 +1,14 @@
 package com.hana.agent.core.agent
 
+import com.hana.agent.core.memory.FlushTriggerReason
+import com.hana.agent.core.memory.MemoryFlushHook
+import com.hana.agent.core.memory.PreCompactFlushRequest
 import com.hana.agent.core.model.Author
 import com.hana.agent.core.model.Message
 import com.hana.agent.core.model.Part
 import com.hana.agent.core.model.Role
 import com.hana.agent.core.observation.ObsForm
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -88,12 +92,37 @@ object HistoryPruner {
         return Cut(window)
     }
 
-    /** [tools]:按调用的工具名查它做的动作。 */
-    fun prune(input: List<Message>, tools: ToolIndex, cut: Cut): List<Message> {
+    /** [tools]:按调用的工具名查它做的动作;[prePruneHook]:在裁剪旧消息前先触发记忆刷盘。 */
+    @JvmOverloads
+    fun prune(
+        input: List<Message>,
+        tools: ToolIndex,
+        cut: Cut,
+        prePruneHook: MemoryFlushHook? = null,
+    ): List<Message> {
         val starts = input.indices.filter { i -> input[i].role == Role.Assistant && input[i].parts.any { it is Part.ToolCall } }
         val k = cut.before(starts.size)
         if (k == 0) return input
         val line = starts[k]
+        if (prePruneHook != null) {
+            try {
+                prePruneHook.onPreCompact(
+                    PreCompactFlushRequest(
+                        history = input,
+                        aboutToCompact = input.subList(0, line),
+                        contextTokens = 0,
+                        currentSize = TokenEstimate.of(input),
+                        trigger = 0,
+                        aggressive = false,
+                        reason = FlushTriggerReason.HistoryPrune,
+                    )
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // 刷盘失败不阻断裁剪
+            }
+        }
         val names = callVerbs(input, tools)
         val screens = screenResults(input)
         // 线之前最近的全量界面
@@ -108,12 +137,36 @@ object HistoryPruner {
      * 压到最重仍放不下时的兜底:从最新的开始,把超过 [BIG_RESULT_TOKENS] 个 token 的工具结果(不论哪种)的长字段换成 [OMITTED_READ],
      * 结局字段和观察编号留着,直到 [fits]。用户的话不动。
      */
-    fun shrinkOversized(messages: List<Message>, fits: (List<Message>) -> Boolean): List<Message> {
+    @JvmOverloads
+    fun shrinkOversized(
+        messages: List<Message>,
+        prePruneHook: MemoryFlushHook? = null,
+        fits: (List<Message>) -> Boolean,
+    ): List<Message> {
         val out = messages.toMutableList()
+        var flushed = false
         for (i in out.indices.reversed()) {
             if (fits(out)) break
             val m = out[i]
             if (m.author == Author.User || m.parts.none { it is Part.ToolResult && TokenEstimate.of(it.content) > BIG_RESULT_TOKENS }) continue
+            if (!flushed && prePruneHook != null) {
+                flushed = true
+                try {
+                    prePruneHook.onPreCompact(
+                        PreCompactFlushRequest(
+                            history = messages,
+                            aboutToCompact = messages,
+                            contextTokens = 0,
+                            currentSize = TokenEstimate.of(messages),
+                            trigger = 0,
+                            aggressive = true,
+                            reason = FlushTriggerReason.HistoryPrune,
+                        )
+                    )
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {}
+            }
             out[i] = m.copy(parts = m.parts.map { p ->
                 if (p is Part.ToolResult && TokenEstimate.of(p.content) > BIG_RESULT_TOKENS) withObsIds(p, shrinkRead(p.content)) else p
             })

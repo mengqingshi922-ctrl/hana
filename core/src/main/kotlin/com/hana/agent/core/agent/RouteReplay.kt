@@ -77,6 +77,7 @@ internal class RouteReplay(
             },
             clock = clock,
             edgePort = edgePort,
+            routeStore = routes.store,
         )
         val out = replayer.run(choice)
         replayed = choice.route to out

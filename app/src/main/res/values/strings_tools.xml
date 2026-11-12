@@ -55,6 +55,7 @@
     <string name="tool_observe">Look at screen</string>
     <string name="tool_list_elements">Read screen elements</string>
     <string name="tool_screenshot">Screenshot</string>
+    <string name="tool_zoom_region">Zoom region</string>
     <string name="tool_scroll">Scroll</string>
     <string name="tool_swipe">Swipe</string>
     <string name="tool_tap">Tap</string>

@@ -46,7 +46,10 @@ import com.hana.agent.ui.TaskActions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
@@ -147,6 +150,45 @@ class HanaApp : Application(), WebOwner, SandboxOwner, TaskEnvironment.Owner, Ph
 
     /** 经验路线。 */
     override val routes: FileRouteStore by lazy { FileRouteStore.create(this) }
+
+    /** 跨会话语义路由图谱缓存。 */
+    val semanticRouteCache: com.hana.agent.core.route.SemanticRouteCache by lazy {
+        com.hana.agent.core.route.SemanticRouteCache(java.io.File(filesDir, "semantic-route-cache.json"))
+    }
+
+    /** 端侧热状态与电量水位监听器。 */
+    val thermalMonitor: com.hana.agent.edge.DeviceThermalMonitor by lazy {
+        com.hana.agent.edge.DeviceThermalMonitor(this)
+    }
+
+    /** 跨会话数据污点外泄守卫。 */
+    val taintGuard: com.hana.agent.core.guard.TaintGuard by lazy {
+        com.hana.agent.core.guard.TaintGuard()
+    }
+
+    private val externalMcpRegistry = java.util.concurrent.CopyOnWriteArrayList<com.hana.agent.core.cap.mcp.McpConnection>()
+    val externalMcpConnections: List<com.hana.agent.core.cap.mcp.McpConnection>
+        get() = externalMcpRegistry.toList()
+
+    fun registerHttpMcpEndpoint(
+        config: com.hana.agent.mcp.McpHttpServerConfig,
+        trust: com.hana.agent.core.cap.mcp.McpTrust = com.hana.agent.core.cap.mcp.McpTrust.Restricted,
+    ): com.hana.agent.core.cap.mcp.McpConnection {
+        val endpoint = com.hana.agent.mcp.HttpMcpEndpoint(config)
+        val conn = com.hana.agent.core.cap.mcp.McpConnection(endpoint = endpoint, trust = trust)
+        externalMcpRegistry.removeAll { it.endpoint.serverId == config.serverId }
+        externalMcpRegistry.add(conn)
+        return conn
+    }
+
+    private val _voiceAmplitude = MutableStateFlow(0f)
+    val voiceAmplitude: StateFlow<Float> = _voiceAmplitude.asStateFlow()
+
+    fun updateVoiceAmplitude(amplitude: Float) {
+        val clamped = amplitude.coerceIn(0f, 1f)
+        _voiceAmplitude.value = clamped
+        capsule.updateAudioAmplitude(clamped)
+    }
 
     /** 异常退出后留下的系统改动的恢复;在跑的任务登记在这里。 */
     override val taskRecovery: TaskRecovery by lazy { TaskRecovery(this, phone.sharedShell) }
@@ -354,6 +396,10 @@ class HanaApp : Application(), WebOwner, SandboxOwner, TaskEnvironment.Owner, Ph
         // 初始化 MNN-Pocket 端侧神经引擎与内存水位监听 (仅在特性启用时加载)
         if (com.hana.agent.settings.FeatureFlags.get(this).edgePocketEnabled()) {
             com.hana.agent.edge.MnnPocketEngine.init(this)
+        }
+        // 调度后台睡眠期记忆整合与习惯挖掘任务
+        scope.launch(Dispatchers.IO) {
+            runCatching { com.hana.agent.memory.SleepConsolidationScheduler.schedule(this@HanaApp) }
         }
     }
 }

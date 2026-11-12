@@ -55,6 +55,7 @@
     <string name="tool_observe">Lihat layar</string>
     <string name="tool_list_elements">Baca elemen layar</string>
     <string name="tool_screenshot">Tangkapan layar</string>
+    <string name="tool_zoom_region">Area zoom</string>
     <string name="tool_scroll">Gulir</string>
     <string name="tool_swipe">Geser</string>
     <string name="tool_tap">Ketuk</string>

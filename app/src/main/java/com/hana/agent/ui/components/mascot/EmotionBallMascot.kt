@@ -51,14 +51,14 @@ import kotlin.math.sin
 import kotlin.random.Random
 
 /**
- * 情绪小球 —— 移植自开源项目 sam70361/aora-bot（Emotion Ball）。
- * 引擎与表情数据个人使用免费、商业需授权；**球形角色视觉形象禁止商用**。
+ * Hana 原创吉祥物「星灵花瓣」(Star-Petal Spirit) 动态表情渲染器。
  *
- * 动作分三层：
- *  1. 常驻：呼吸、眨眼、眼环池轮换（逐点弹簧插值）、思考光环、睡眠 zzz；
+ * 采用自研 48 点眼环 / 96 点星灵花瓣身体轮廓平滑插值引擎，支持全双工语音振幅响应与小窗吸附态：
+ *  1. 常驻：呼吸、眨眼、眼环池轮换（逐点弹簧插值）、思考流光轨道、睡眠 zzz；
  *  2. 进场演出：10 套表情带关键帧序列（惊讶弹一下、害羞渐变成粉、唤醒睁眼后自动回待机），
  *     播完按 settle 语义回落或定格；撒花/彩带在进入时触发；
- *  3. 待机小动作：antics 表情每 9~18 秒随机自旋或弹跳一次；切换造型时 96 点轮廓做变形过渡。
+ *  3. 待机小动作与全双工响应：antics 表情每 9~18 秒随机自旋或弹跳一次；
+ *     支持 [audioAmplitude] 语音振幅实时微跳动与声波晕环，以及 [pipDocked] 小窗吸附展示状态。
  */
 @Composable
 fun EmotionBallMascot(
@@ -67,6 +67,8 @@ fun EmotionBallMascot(
     modifier: Modifier = Modifier,
     shapeKey: String = "blob",
     isWorking: Boolean = false,
+    audioAmplitude: Float = 0f,
+    pipDocked: Boolean = false,
     onTap: (() -> Unit)? = null,
 ) {
     // 关键帧序列可以把表情"交给下一个"（例如 唤醒 → 待机放空）
@@ -75,9 +77,17 @@ fun EmotionBallMascot(
     val activeId = autoNext ?: emotionId
     val spec = remember(activeId) { MascotData.emotion(activeId) }
 
-    val targetShape = remember(shapeKey) { MascotData.shapes[shapeKey] ?: MascotData.shapes.getValue("blob") }
+    val targetShape = remember(shapeKey) { MascotData.resolveShape(shapeKey) }
     val c = HanaTheme.colors
     val isDark = c.bg.luminance() < 0.42f
+
+    // ---- 音频振幅响应式微跳动 ----
+    val clampedAmp = audioAmplitude.coerceIn(0f, 1f)
+    val smoothAmp by animateFloatAsState(
+        targetValue = clampedAmp,
+        animationSpec = spring(dampingRatio = 0.52f, stiffness = 460f),
+        label = "mascotAudioAmp",
+    )
 
     // ---- 造型变形：切形状时把 96 个轮廓点从旧形状插到新形状 ----
     var fromShape by remember { mutableStateOf(targetShape) }
@@ -208,14 +218,21 @@ fun EmotionBallMascot(
         val origin = -MascotData.VIEW_MIN * unit
         fun px(x: Float, y: Float) = Offset(origin + x * unit, origin + y * unit)
 
-        // 呼吸 + 表情姿态 + 关键帧 + 待机小动作
-        val breathe = 1f + spec.breathe * sin(t * 2f * PI.toFloat())
-        val scale = spec.bodyScale * breathe * (pose?.bodyScale ?: 1f)
-        val spin = spec.bodyRotate + (pose?.bodyRotate ?: 0f) + anticSpin.value
-        val offsetY = spec.bodyY + (pose?.bodyY ?: 0f) + anticHop.value
+        // 呼吸 + 表情姿态 + 关键帧 + 待机小动作 + 音频振幅微跳动 + 小窗吸附姿态
+        val breatheAmp = if (pipDocked) spec.breathe * 0.65f else spec.breathe
+        val breathe = 1f + breatheAmp * sin(t * 2f * PI.toFloat())
+        val audioScaleX = 1f + smoothAmp * 0.055f
+        val audioScaleY = 1f + smoothAmp * 0.105f
+        val scaleBase = spec.bodyScale * breathe * (pose?.bodyScale ?: 1f) * (if (pipDocked) 0.96f else 1f)
+        val scaleX = scaleBase * audioScaleX
+        val scaleY = scaleBase * audioScaleY
+        val dockedTilt = if (pipDocked && !isWorking) -5f else 0f
+        val spin = spec.bodyRotate + (pose?.bodyRotate ?: 0f) + anticSpin.value + dockedTilt
+        val audioHopY = -smoothAmp * 7.5f
+        val offsetY = spec.bodyY + (pose?.bodyY ?: 0f) + anticHop.value + audioHopY
         fun body(x: Float, y: Float): Offset {
-            val dx = (x - headCenter) * scale
-            val dy = (y - headCenter) * scale
+            val dx = (x - headCenter) * scaleX
+            val dy = (y - headCenter) * scaleY
             val rad = spin * PI.toFloat() / 180f
             return px(headCenter + dx * cos(rad) - dy * sin(rad), headCenter + dx * sin(rad) + dy * cos(rad) + offsetY)
         }
@@ -229,7 +246,19 @@ fun EmotionBallMascot(
         val faceFx = lerpF(fromShape.fx, targetShape.fx, mp)
         val faceFy = lerpF(fromShape.fy, targetShape.fy, mp)
 
-        if (!isDark) {
+        // 声波振幅光晕（全双工语音播放/交互反馈）
+        if (smoothAmp > 0.03f) {
+            val voiceCenter = body(headCenter, headCenter)
+            val voiceRadius = MascotData.VIEW_SIZE * (0.40f + smoothAmp * 0.09f) * unit
+            drawCircle(
+                color = c.accent.copy(alpha = (0.14f + smoothAmp * 0.28f).coerceAtMost(0.45f)),
+                radius = voiceRadius,
+                center = voiceCenter,
+                style = Stroke(width = (1.5f + smoothAmp * 2.2f) * unit * 1.5f),
+            )
+        }
+
+        if (!isDark && !pipDocked) {
             drawCircle(
                 brush = Brush.radialGradient(
                     listOf(Color.Black.copy(alpha = 0.07f), Color.Transparent),
@@ -348,7 +377,7 @@ fun EmotionBallMascot(
                 radius = MascotData.VIEW_SIZE * 0.62f * unit,
             ),
         )
-        drawPath(bodyPath, color = rimColor, style = Stroke(width = 1.1f * unit * 2.2f))
+        drawPath(bodyPath, color = if (pipDocked) c.accent.copy(alpha = 0.45f) else rimColor, style = Stroke(width = (if (pipDocked) 1.5f else 1.1f) * unit * 2.2f))
 
         // ---- 眼睛 ----
         val a = floor(morph).toInt().coerceIn(0, rings.lastIndex)
@@ -503,7 +532,7 @@ private fun parseHexColor(hex: String): Color = runCatching {
     Color(android.graphics.Color.parseColor(hex))
 }.getOrDefault(Color(0xFFF4ECDF))
 
-/** 原来的四种形状映射到开源数据里的身体轮廓。 */
+/** 四种逻辑形态映射到 Hana 星灵花瓣矢量轮廓家族。 */
 fun shapeKeyFor(shape: GrokBotShape): String = when (shape) {
     GrokBotShape.Circle -> "blob"
     GrokBotShape.Triangle -> "wedge"
@@ -511,7 +540,15 @@ fun shapeKeyFor(shape: GrokBotShape): String = when (shape) {
     GrokBotShape.Diamond -> "gem"
 }
 
-/** Hana 的工作状态映射到开源表情库里的 32 个 id 之一，打通 4 阶段动力学与自愈表情。 */
+/** 音频振幅微跳动几何参数（供渲染与单元测试校验）。 */
+internal fun computeAudioBounceScale(amplitude: Float): Pair<Float, Float> {
+    val a = amplitude.coerceIn(0f, 1f)
+    return (1f + a * 0.055f) to (1f + a * 0.105f)
+}
+
+internal fun computeAudioBounceOffsetY(amplitude: Float): Float = -amplitude.coerceIn(0f, 1f) * 7.5f
+
+/** Hana 的工作状态映射到 32 套情绪状态 id 之一，打通 4 阶段动力学与自愈表情。 */
 fun mascotEmotionId(
     mood: GrokBotMood,
     working: Boolean,

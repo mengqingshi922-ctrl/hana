@@ -55,6 +55,7 @@
     <string name="tool_observe">Mirar la pantalla</string>
     <string name="tool_list_elements">Leer elementos de la pantalla</string>
     <string name="tool_screenshot">Captura de pantalla</string>
+    <string name="tool_zoom_region">Región de zoom</string>
     <string name="tool_scroll">Desplazar</string>
     <string name="tool_swipe">Deslizar</string>
     <string name="tool_tap">Tocar</string>

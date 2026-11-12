@@ -475,6 +475,7 @@ class TaskRun(
         // 虚拟屏、网页显示等:建好当场归它,收尾时一起放掉;不经「建完再记到变量」,取消落在中间也不会漏
         val resources = ResourceScope()
         var watcher: DeviceStateWatcher? = null
+        var thermalBinding: AutoCloseable? = null
         var mute: AudioMute? = null
         // 模型标下的任务结束时各 App 的去留(在手机端口上);收尾时交给内置助手
         var afterTask: com.hana.agent.core.uistate.AfterTaskMarks? = null
@@ -782,8 +783,19 @@ class TaskRun(
                 // 用户要求时写下或改写个人技能(和自学收下的放在同一处,设置里立刻能看到)
                 personalSkills = memoryRuntime.skills(),
                 // 这个对话之前几轮的运行记录(只读;history_read 只认 runSpec 里这个对话的轮次)
-                runRecords = RunStore(service).reader())
+                runRecords = RunStore(service).reader(),
+                mcpServers = (service.application as? HanaApp)?.externalMcpConnections.orEmpty(),
+                taskMemories = memoryRuntime.taskMemoryStore(),
+                factGraph = memoryRuntime.factGraph(),
+                shadowMacros = listOf(
+                    com.hana.agent.core.replay.ShadowMacroLibrary.scrollUntilText(),
+                    com.hana.agent.core.replay.ShadowMacroLibrary.dismissPopupStack(),
+                ))
             dispatcher = tools
+            val hanaApp = service.application as? HanaApp
+            val modelRouter = light?.let { ModelRouter(model, it) }
+            thermalBinding = modelRouter?.let { hanaApp?.thermalMonitor?.bind(it) }
+            val budgetBreaker = com.hana.agent.core.usage.BudgetBreaker()
             val agent = AgentLoop(
                 model, tools,
                 PRODUCTION_BASE_PROMPT,
@@ -814,7 +826,7 @@ class TaskRun(
                 selfPackage = service.packageName,
                 flags = speed,
                 // 只在 lightSteps 打开、轻量模型能调工具时生效
-                router = light?.let { ModelRouter(model, it) },
+                router = modelRouter,
                 // 只有配了非端侧的专门轻量级模型才跑意图分类，端侧小模型专精于局部动作爆发，严禁用端侧小模型做意图分类避免误判
                 intentJudge = if (provenance.origin == RunOrigin.Ui && light != null && !light.name.contains("端侧") && !light.name.contains("qwen2.5")) light else null,
                 // 选路线是辅助判断:用轻量模型,没配用主模型
@@ -828,6 +840,10 @@ class TaskRun(
                 // 同一网站、App 里连着联系别人、提交:两次之间隔一段随机的时间
                 outwardPacing = OutwardPacing.human(),
                 edgePort = env.edgePortFactory(service),
+                budgetBreaker = budgetBreaker,
+                taintGuard = hanaApp?.taintGuard,
+                semanticRouteCache = hanaApp?.semanticRouteCache,
+                factGraph = memoryRuntime.factGraph(),
             )
             loop = agent
             liveFeed = agent.events.subscribe(liveEvents)
@@ -972,6 +988,13 @@ class TaskRun(
                     // 恢复抛错也要撤掉「在跑」的登记,否则这份记录永远不归恢复处理
                     try { mute?.restoreAll() } finally { recovery.endRun(key) }
                     watcher?.close()
+                    runCatching { thermalBinding?.close() }
+                    thermalBinding = null
+                    memoryRuntime.scope.launch(Dispatchers.IO) {
+                        runCatching {
+                            memoryRuntime.sleepConsolidationWorker().onIdleTick(isDeviceIdle = !service.taskState.busy.value)
+                        }
+                    }
                 } finally {
                     resources.close()
                 }

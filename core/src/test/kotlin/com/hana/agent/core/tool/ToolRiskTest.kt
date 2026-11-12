@@ -28,7 +28,7 @@ class ToolRiskTest {
     private val oldWeb = setOf(
         "web_navigate", "web_read_page", "web_evaluate_js", "web_run_site_command", "web_tabs", "web_downloads", "web_upload",
         "web_site_mode", "web_script", "web_interact", "web_capture", "web_wait_for", "web_keep_open",
-    ) + both("observe", "list_elements", "screenshot", "describe", "find_visually", "tap", "scroll", "swipe",
+    ) + both("observe", "list_elements", "screenshot", "zoom_region", "describe", "find_visually", "tap", "scroll", "swipe",
         "type_text", "clear_text", "back", "press_key", "diagnose").filter { it.startsWith("web_") }
     private val names = allTools().map { it.name }
 
@@ -43,7 +43,7 @@ class ToolRiskTest {
     }
 
     @Test fun readCallsRefuseWhatTheOldListsRefused() = runTest {
-        val refused = oldWriting + oldSandbox + WEB_SCRIPT_TOOL + setOf("phone_find", "phone_collect", "phone_dialog", "phone_run", "phone_system_command", "schedule_task", "spawn_agent", "settings_set", "phone_search", "phone_comment", "phone_social_interact")
+        val refused = oldWriting + oldSandbox + WEB_SCRIPT_TOOL + setOf("phone_find", "phone_collect", "phone_dialog", "phone_run", "phone_system_command", "schedule_task", "spawn_agent", "settings_set", "phone_search", "phone_comment", "phone_social_interact", "run_macro")
         assertEquals(refused, allTools().filter { !it.readOnly }.map { it.name }.toSet())
         val d = toolDispatcher(FakeScreen())
         for (name in names) {

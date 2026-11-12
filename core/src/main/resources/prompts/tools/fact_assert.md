@@ -1,0 +1,1 @@
+Assert or update a bi-temporal fact triple (subject -> relation -> objectValue) in the user's persistent entity-relation graph. Conflicting active facts with the same subject and relation are superseded automatically unless supersedeExisting is false. Never store passwords, verification codes, or card CVVs.

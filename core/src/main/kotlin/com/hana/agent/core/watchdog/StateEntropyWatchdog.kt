@@ -1,5 +1,6 @@
 package com.hana.agent.core.watchdog
 
+import com.hana.agent.core.tool.Verb
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -91,8 +92,10 @@ data class StructuralFrameFingerprint(
  */
 enum class WatchdogVerdict {
     HEALTHY,
-    STAGNATION,      // 原地踏步（最近3~4步视觉转移熵差值和 <= 0.05）
-    OSCILLATION,     // A-B-A-B 循环震荡死锁
+    STAGNATION,            // 原地踏步（最近3~4步视觉转移熵差值和 <= 0.05）
+    OSCILLATION,           // A-B-A-B 循环震荡死锁
+    NAVIGATION_DRIFT,      // 连续导航漂移（连续 4+ 步纯 swipe/back/wait 无业务交互）
+    FORM_VALIDATION_ERROR, // 表单提交后停滞且出现报错红字/异常新增文案
 }
 
 /**
@@ -105,13 +108,48 @@ enum class SelfHealingTier {
 }
 
 /**
- * 页面视觉状态转移熵看门狗
+ * 带视觉样式线索的表单文本观测条目（颜色十六进制或红字标记由端侧 OCR / 视觉通道提供）
+ */
+data class FormTextObservation(
+    val text: String,
+    val colorHex: String? = null,
+    val isRedOrErrorColor: Boolean = false,
+    val bounds: List<Int> = emptyList(),
+)
+
+/**
+ * 表单提交停滞后提取到的报错上下文告警
+ */
+data class FormValidationAlert(
+    val errorTexts: List<String>,
+    val prompt: String,
+    val isRedHighlighted: Boolean,
+)
+
+/**
+ * 三联防跑飞闭环综合诊断报告
+ */
+data class TripleWatchdogReport(
+    val verdict: WatchdogVerdict,
+    val healingTier: SelfHealingTier? = null,
+    val navigationDriftPrompt: String? = null,
+    val formValidationAlert: FormValidationAlert? = null,
+    val guidance: String? = null,
+)
+
+/**
+ * 页面视觉状态转移熵看门狗（三联防跑飞闭环：停滞/震荡 + 连续导航漂移 + 视觉表单报错自纠）
  */
 class StateEntropyWatchdog(
     private val stagnationWindow: Int = 4,
     private val oscillationWindow: Int = 8,
+    private val navigationDriftWindow: Int = 4,
 ) {
     private val frameHistory = mutableListOf<String>()
+    private val recentNavActions = mutableListOf<String>()
+    private var consecutiveNavActions: Int = 0
+    private var lastFormValidationAlert: FormValidationAlert? = null
+    private var lastScreenTexts: Set<String> = emptySet()
 
     /**
      * 记录当前画面的视觉指纹 (Visual Fingerprint)
@@ -121,6 +159,154 @@ class StateEntropyWatchdog(
         val maxKeep = maxOf(stagnationWindow, oscillationWindow) + 4
         if (frameHistory.size > maxKeep) {
             frameHistory.removeAt(0)
+        }
+    }
+
+    /**
+     * 记录单步动作以追踪连续导航漂移：
+     * 连续 [navigationDriftWindow] 步（默认 4 步）纯 swipe/back/wait 且无任何业务交互时触发漂移告警。
+     */
+    fun recordAction(toolName: String, verb: Verb? = null, isBusinessInteraction: Boolean? = null) {
+        val pureNav = if (isBusinessInteraction != null) {
+            !isBusinessInteraction
+        } else {
+            isNavigationOnlyAction(toolName, verb)
+        }
+        if (pureNav) {
+            consecutiveNavActions++
+            recentNavActions += toolName
+            if (recentNavActions.size > navigationDriftWindow + 4) {
+                recentNavActions.removeAt(0)
+            }
+        } else {
+            consecutiveNavActions = 0
+            recentNavActions.clear()
+            // 发生新的业务交互（如重新输入或点击其他控件）时清除上一轮已消费的表单报错锁定
+            lastFormValidationAlert = null
+        }
+    }
+
+    /**
+     * 当前是否处于连续导航漂移状态（连续 4+ 步纯 swipe/back/wait 无业务交互）。
+     */
+    fun detectNavigationDrift(): Boolean = consecutiveNavActions >= navigationDriftWindow
+
+    /**
+     * 返回连续导航漂移时的立即纠偏提醒文案；未触发时返回 null。
+     */
+    fun navigationDriftPrompt(): String? {
+        if (!detectNavigationDrift()) return null
+        val trail = recentNavActions.takeLast(navigationDriftWindow).joinToString(" -> ")
+        return "【连续导航漂移纠偏】已连续 $consecutiveNavActions 步执行纯导航/等待动作（$trail），期间无任何实质业务交互。" +
+            "请立即停止盲目滑动、返回或空等，重新核对当前界面控件树与目标路径，改用搜索直达、精准点击或说明受阻原因。"
+    }
+
+    /**
+     * 检测表单提交后停滞且出现报错红字/异常新增文案变化，并提取报错上下文。
+     */
+    fun detectFormValidationError(
+        beforeTexts: Collection<String>,
+        afterTexts: Collection<String>,
+        observations: List<FormTextObservation> = emptyList(),
+        stagnated: Boolean = true,
+    ): FormValidationAlert? {
+        if (!stagnated) {
+            lastFormValidationAlert = null
+            return null
+        }
+        val beforeSet = beforeTexts.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        val afterList = afterTexts.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+        val redObsTexts = observations
+            .filter { obs -> obs.text.isNotBlank() && (obs.isRedOrErrorColor || isRedColorHex(obs.colorHex)) }
+            .map { it.text.trim() }
+            .distinct()
+
+        val newlyAppearedRed = redObsTexts.filter { it !in beforeSet }
+        val newlyAppearedTexts = afterList.filter { it !in beforeSet }
+        val newlyAppearedErrorCopy = newlyAppearedTexts.filter(::looksLikeErrorCopy)
+
+        val extracted = linkedSetOf<String>()
+        extracted.addAll(newlyAppearedRed)
+        extracted.addAll(newlyAppearedErrorCopy)
+        // 若提交前已存在红字但本次新增提示未能命中关键词，仍保留新增的红字提示；若无新增红字但红字本身属于报错文案也提取出来
+        if (extracted.isEmpty()) {
+            extracted.addAll(redObsTexts.filter(::looksLikeErrorCopy))
+        }
+        // 兜底：若页面停滞且仅有少数新增短提示文案（如特定 App 自定义错误 toast/校验条），且红字或异常语义命中
+        if (extracted.isEmpty()) {
+            return null
+        }
+
+        val finalErrors = extracted.take(5)
+        val hasRed = newlyAppearedRed.isNotEmpty() || redObsTexts.any { it in finalErrors }
+        val prompt = buildString {
+            append("【视觉表单报错自纠】表单操作后页面停滞未跳转，检测到")
+            if (hasRed) append("红字/")
+            append("异常校验提示：")
+            append(finalErrors.joinToString("；"))
+            append("。请根据上述具体报错信息修正对应输入框参数或补全必填项后再重新提交。")
+        }
+        return FormValidationAlert(
+            errorTexts = finalErrors,
+            prompt = prompt,
+            isRedHighlighted = hasRed,
+        ).also { lastFormValidationAlert = it }
+    }
+
+    /**
+     * 记录当前界面文本序列并（在指定提交后停滞时）自动检测表单报错变化。
+     */
+    fun recordScreenTexts(
+        currentTexts: Collection<String>,
+        isPostSubmit: Boolean = false,
+        stagnated: Boolean = true,
+        observations: List<FormTextObservation> = emptyList(),
+    ): FormValidationAlert? {
+        val normalized = currentTexts.map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+        val alert = if (isPostSubmit) {
+            detectFormValidationError(lastScreenTexts, normalized, observations, stagnated)
+        } else {
+            null
+        }
+        lastScreenTexts = normalized
+        return alert
+    }
+
+    /**
+     * 综合评估三联防跑飞状态并生成结构化闭环诊断报告。
+     */
+    fun evaluateTripleLoop(consecutiveFailures: Int = 0): TripleWatchdogReport {
+        val verdict = evaluate()
+        return when (verdict) {
+            WatchdogVerdict.FORM_VALIDATION_ERROR -> {
+                val alert = lastFormValidationAlert
+                TripleWatchdogReport(
+                    verdict = verdict,
+                    formValidationAlert = alert,
+                    guidance = alert?.prompt ?: "【视觉表单报错自纠】检测到表单校验报错，请修正输入后重试。",
+                )
+            }
+            WatchdogVerdict.NAVIGATION_DRIFT -> {
+                val prompt = navigationDriftPrompt()
+                TripleWatchdogReport(
+                    verdict = verdict,
+                    healingTier = recommendHealing(consecutiveFailures),
+                    navigationDriftPrompt = prompt,
+                    guidance = prompt,
+                )
+            }
+            WatchdogVerdict.STAGNATION -> TripleWatchdogReport(
+                verdict = verdict,
+                healingTier = recommendHealing(consecutiveFailures),
+                guidance = "【自愈认知反思】连续操作未能产生界面有效状态改变（停滞死锁），请更换路径或重新观察界面。",
+            )
+            WatchdogVerdict.OSCILLATION -> TripleWatchdogReport(
+                verdict = verdict,
+                healingTier = recommendHealing(consecutiveFailures),
+                guidance = "【自愈认知反思】检测到界面在多状态间往复循环震荡，请放弃当前循环路径并采用替代方案。",
+            )
+            WatchdogVerdict.HEALTHY -> TripleWatchdogReport(verdict = WatchdogVerdict.HEALTHY)
         }
     }
 
@@ -164,6 +350,8 @@ class StateEntropyWatchdog(
      * 评估当前页面状态序列，返回看门狗健康裁定
      */
     fun evaluate(): WatchdogVerdict {
+        if (lastFormValidationAlert != null) return WatchdogVerdict.FORM_VALIDATION_ERROR
+        if (detectNavigationDrift()) return WatchdogVerdict.NAVIGATION_DRIFT
         if (frameHistory.size < 2) return WatchdogVerdict.HEALTHY
 
         // 1. 原地踏步检测 (Stagnation): 最近 stagnationWindow 帧之间转移差值和 <= 0.05 或平均单步 <= 0.018
@@ -223,5 +411,48 @@ class StateEntropyWatchdog(
      */
     fun reset() {
         frameHistory.clear()
+        recentNavActions.clear()
+        consecutiveNavActions = 0
+        lastFormValidationAlert = null
+        lastScreenTexts = emptySet()
+    }
+
+    companion object {
+        private val PURE_NAV_VERBS = setOf(Verb.Swipe, Verb.Back, Verb.Wait)
+        private val PURE_NAV_TOOLS = setOf(
+            "swipe", "phone_swipe", "back", "phone_back", "wait", "phone_wait", "phone_sleep", "sleep",
+        )
+        private val ERROR_KEYWORDS = listOf(
+            "错误", "失败", "无效", "不正确", "格式", "必填", "不能为空", "请输入", "请选择",
+            "超限", "不足", "已过期", "验证码", "太短", "太长", "不一致", "不支持", "异常",
+            "警告", "请检查", "不合法", "未通过", "不能超过", "至少", "最多", "有误", "被占用",
+            "error", "invalid", "required", "failed", "incorrect", "mismatch",
+            "too short", "too long", "must be", "cannot be empty", "please enter", "wrong",
+        )
+
+        internal fun isNavigationOnlyAction(toolName: String, verb: Verb? = null): Boolean {
+            if (verb != null && verb in PURE_NAV_VERBS) return true
+            return toolName.lowercase() in PURE_NAV_TOOLS
+        }
+
+        internal fun looksLikeErrorCopy(text: String): Boolean {
+            val low = text.trim().lowercase()
+            if (low.isEmpty()) return false
+            return ERROR_KEYWORDS.any { it in low }
+        }
+
+        internal fun isRedColorHex(hex: String?): Boolean {
+            if (hex.isNullOrBlank()) return false
+            val clean = hex.trim().removePrefix("#")
+            val rgb = when (clean.length) {
+                6 -> clean
+                8 -> clean.substring(2) // strip alpha AA
+                else -> return false
+            }
+            val r = rgb.substring(0, 2).toIntOrNull(16) ?: return false
+            val g = rgb.substring(2, 4).toIntOrNull(16) ?: return false
+            val b = rgb.substring(4, 6).toIntOrNull(16) ?: return false
+            return r >= 160 && (r - g) >= 60 && (r - b) >= 60
+        }
     }
 }

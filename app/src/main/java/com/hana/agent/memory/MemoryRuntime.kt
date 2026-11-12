@@ -2,10 +2,13 @@ package com.hana.agent.memory
 
 import android.content.Context
 import com.hana.agent.chat.ConversationStore
+import com.hana.agent.core.memory.MarkdownMemoryFile
 import com.hana.agent.core.memory.MemoryItem
 import com.hana.agent.core.memory.MemoryNote
 import com.hana.agent.core.memory.MemoryStore
 import com.hana.agent.core.memory.ProfileStore
+import com.hana.agent.core.memory.TaskMemoryStore
+import com.hana.agent.core.memory.TemporalFactGraph
 import com.hana.agent.core.skills.SkillNote
 import com.hana.agent.settings.KeystoreKeyCipher
 import com.hana.agent.settings.MemorySettings
@@ -43,7 +46,12 @@ class MemoryRuntime(context: Context) {
     private val app = context.applicationContext
 
     private var file: EncryptedMemoryFile? = null
+    private var archiveFile: EncryptedMemoryArchiveFile? = null
     private var store: MemoryStore? = null
+    private var taskMemoryStore: TaskMemoryStore? = null
+    private var factGraph: TemporalFactGraph? = null
+    private var markdownFile: MarkdownMemoryFile? = null
+    private var sleepWorker: SleepConsolidationWorker? = null
     private var skills: PersonalSkillFiles? = null
     private var settings: MemorySettings? = null
     private var profile: ProfileStore? = null
@@ -76,8 +84,34 @@ class MemoryRuntime(context: Context) {
     @Synchronized fun file(): EncryptedMemoryFile =
         file ?: EncryptedMemoryFile(app.filesDir, KeystoreKeyCipher(KEY_ALIAS), System::currentTimeMillis).also { file = it }
 
+    @Synchronized fun archiveFile(): EncryptedMemoryArchiveFile =
+        archiveFile ?: EncryptedMemoryArchiveFile(app.filesDir, KeystoreKeyCipher(KEY_ALIAS)).also { archiveFile = it }
+
     @Synchronized fun store(): MemoryStore =
-        store ?: MemoryStore(file(), System::currentTimeMillis, { UUID.randomUUID().toString() }).also { store = it }
+        store ?: MemoryStore(
+            persistence = file(),
+            clock = System::currentTimeMillis,
+            ids = { UUID.randomUUID().toString() },
+            archivePersistence = archiveFile(),
+        ).also { store = it }
+
+    @Synchronized fun taskMemoryStore(): TaskMemoryStore =
+        taskMemoryStore ?: TaskMemoryStore(File(app.filesDir, "memory/task_memory.json")).also { taskMemoryStore = it }
+
+    @Synchronized fun factGraph(): TemporalFactGraph =
+        factGraph ?: TemporalFactGraph(File(app.filesDir, "memory/fact_graph.json")).also { factGraph = it }
+
+    @Synchronized fun markdownFile(): MarkdownMemoryFile =
+        markdownFile ?: MarkdownMemoryFile(File(app.filesDir, "memory/MEMORY.md")).also { markdownFile = it }
+
+    @Synchronized fun sleepConsolidationWorker(): SleepConsolidationWorker =
+        sleepWorker ?: SleepConsolidationWorker(
+            memoryStore = store(),
+            taskMemoryStore = taskMemoryStore(),
+            factGraph = factGraph(),
+            markdownFile = markdownFile(),
+            routinesFile = File(app.filesDir, "memory/routines.json"),
+        ).also { sleepWorker = it }
 
     @Synchronized fun skills(): PersonalSkillFiles =
         skills ?: PersonalSkillFiles(app.filesDir).also { skills = it }
@@ -91,9 +125,14 @@ class MemoryRuntime(context: Context) {
     @Synchronized fun settings(): MemorySettings =
         settings ?: MemorySettings(File(app.filesDir, "memory_settings.json")).also { settings = it }
 
-    /** 「全部清除」:记忆、另存的坏文件、个人技能与草稿都删掉,并重建记忆密钥;对话里的记忆提示也去掉。 */
+    /** 「全部清除」:记忆、另存的坏文件、冷归档、双时态图谱、任务记忆、MEMORY.md、个人技能与草稿都删掉,并重建记忆密钥;对话里的记忆提示也去掉。 */
     @Synchronized fun wipeAll() {
         store().clearAll()
+        archiveFile().clearArchive()
+        taskMemoryStore?.clear()
+        factGraph?.clear()
+        markdownFile?.delete()
+        File(app.filesDir, "memory/routines.json").delete()
         file().wipe()
         runCatching { KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(KEY_ALIAS) }
         File(app.filesDir, "skills").deleteRecursively()

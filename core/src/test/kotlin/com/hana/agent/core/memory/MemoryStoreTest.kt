@@ -33,12 +33,21 @@ class MemoryStoreTest {
         assertEquals(MemoryStatus.pending, s.add(MemoryKind.procedure, "点外卖先比价", listOf("外卖"), said).getOrThrow().item.status)
     }
 
-    @Test fun limitEnforced() {
+    @Test fun limitArchivesOldestLowScoreInsteadOfRejecting() {
         val s = store(limit = 2)
-        s.add(MemoryKind.fact, "一", emptyList(), said).getOrThrow()
-        s.add(MemoryKind.procedure, "二", emptyList(), said).getOrThrow() // pending 也算
-        assertEquals("memory_full", rejectCode(s.add(MemoryKind.fact, "三", emptyList(), said)))
+        val first = s.add(MemoryKind.fact, "一", emptyList(), said).getOrThrow().item
+        now += 86_400_000L
+        val second = s.add(MemoryKind.procedure, "二", emptyList(), said).getOrThrow().item // pending 也算
+        now += 86_400_000L
+        val third = s.add(MemoryKind.fact, "三", emptyList(), said).getOrThrow().item
         assertEquals(2, s.items.value.size)
+        assertEquals(setOf(second.id, third.id), s.items.value.map { it.id }.toSet())
+        assertEquals(listOf(first.id), s.archivedItems().map { it.id })
+    }
+
+    @Test fun zeroLimitStillRejectsMemoryFull() {
+        val s = store(limit = 0)
+        assertEquals("memory_full", rejectCode(s.add(MemoryKind.fact, "一", emptyList(), said)))
     }
 
     @Test fun contentLengthEnforced() {

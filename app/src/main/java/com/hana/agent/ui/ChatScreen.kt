@@ -396,9 +396,15 @@ fun ChatScreen(
             onVoiceText = { input = HoldToTalk.join(input, it) },
             onPickSpeech = openSpeechModel,
             steerTarget = last?.goal?.let(ChatCopy::plainTitle),
-            onVoiceHolding = { voiceHolding = it },
+            onVoiceHolding = { holding ->
+                voiceHolding = holding
+                if (holding) (context as? MainActivity)?.stopVoiceAlert()
+            },
             editRequest = editRequest,
         )
+
+        val liveAudioAmplitude by (context.applicationContext as? com.hana.agent.HanaApp)?.voiceAmplitude?.collectAsState()
+            ?: remember { mutableStateOf(0f) }
 
         AgentPip(
             pip = ui.pip,
@@ -425,6 +431,7 @@ fun ChatScreen(
             },
             pipInput = (context.applicationContext as? com.hana.agent.HanaApp)?.taskState?.pipInput,
             pipTouchEnabled = remember { com.hana.agent.settings.FeatureFlags.get(context).pipTouchEnabled() },
+            audioAmplitude = liveAudioAmplitude,
         )
 
         // 长按消息的菜单盖在最上面:复制纯文字;引用放到输入框上方;选择文字让那条换回系统的长按选中
@@ -1150,15 +1157,30 @@ private fun StatusCard(
                 if (options.isEmpty()) CardButton(stringResource(R.string.action_cancel_task), onClick = vm::cancel)
             }
         }
-        // 关键高危操作（支付、转账、敏感授权等）：使用带物理阻尼与琥珀色呼吸光晕的滑动确认放行组件，杜绝单手握持误触
+        // 关键高危操作（支付、转账、敏感授权等）：T3 级别强制拉起硬件级生物特征/锁屏凭据门控，其余使用防误触滑动确认门控
         is ExchangeStatus.NeedsConfirmation -> {
-            com.hana.agent.ui.safegate.SlideToAuthorize(
+            val t3Category = com.hana.agent.ui.safegate.T3RiskClassifier.classify(
                 title = status.title,
-                riskDescription = status.body + "\n" + ConfirmationCopy.NOTE,
-                onAuthorized = { vm.approve(status.key) },
-                onRejected = { vm.decline(status.key) },
-                modifier = Modifier.padding(top = 8.dp, bottom = 12.dp)
+                description = status.body,
             )
+            if (t3Category != null) {
+                com.hana.agent.ui.safegate.BiometricSlideToAuthorize(
+                    onAuthorized = { _ -> vm.approve(status.key) },
+                    onRejected = { vm.decline(status.key) },
+                    title = status.title,
+                    riskDescription = status.body + "\n" + ConfirmationCopy.NOTE,
+                    riskCategory = t3Category,
+                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
+                )
+            } else {
+                com.hana.agent.ui.safegate.SlideToAuthorize(
+                    title = status.title,
+                    riskDescription = status.body + "\n" + ConfirmationCopy.NOTE,
+                    onAuthorized = { vm.approve(status.key) },
+                    onRejected = { vm.decline(status.key) },
+                    modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
+                )
+            }
         }
         is ExchangeStatus.Paused -> NeedCard(stringResource(if (status.resumable) R.string.chat_paused else R.string.chat_waiting_for_you), status.why) {
             CardButton(stringResource(R.string.action_cancel_task), onClick = vm::cancel)

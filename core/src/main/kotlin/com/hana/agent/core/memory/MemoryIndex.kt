@@ -47,7 +47,10 @@ object Tokenize {
  * 或唯一命中的词只有这一条有、且是它的检索词。
  * 单字只参与打分,不算进这三条判断。
  */
-class MemoryIndex(private val items: List<MemoryItem>) {
+class MemoryIndex(
+    private val items: List<MemoryItem>,
+    private val nowMs: Long = System.currentTimeMillis(),
+) {
     private val docs: List<Map<String, Int>> = items.map { item ->
         val counts = HashMap<String, Int>()
         Tokenize.terms(item.content).forEach { counts.merge(it, 1, Int::plus) }
@@ -86,11 +89,14 @@ class MemoryIndex(private val items: List<MemoryItem>) {
                 (multi.size == 1 && df.getValue(multi.single()) == 1 && multi.single() in keywordTerms[i])
             if (!relevant) return@mapNotNull null
             val norm = K1 * (1 - B + B * lengths[i] / avgLen.coerceAtLeast(1.0))
-            val score = matched.sumOf { t ->
+            val bm25 = matched.sumOf { t ->
                 val tf = doc.getValue(t)
                 idf.getValue(t) * tf * (K1 + 1) / (tf + norm)
             }
-            items[i] to score
+            val item = items[i]
+            val refTime = item.lastAccessedAt ?: item.lastUsedAt ?: item.updatedAt
+            val retention = EbbinghausRetention.retention(refTime, nowMs, item.strength)
+            item to (bm25 * retention)
         }.sortedByDescending { it.second }.take(limit)
     }
 

@@ -42,6 +42,7 @@ object MemoryContext {
         lastUserTurn: String?,
         rewrite: (String) -> String = { it },
         mode: Mode = Mode.Relevant,
+        nowMs: Long = System.currentTimeMillis(),
     ): MemoryBlock {
         val active = items.filter { it.status == MemoryStatus.active }
         if (active.isEmpty()) return MemoryBlock(null, emptyList())
@@ -50,7 +51,7 @@ object MemoryContext {
         if (mode == Mode.Auto) fullIfFits(active, rewrite)?.let { return it }
 
         val query = listOfNotNull(goal, lastUserTurn).joinToString("\n")
-        val ranked = MemoryIndex(active).search(query, limit = active.size)
+        val ranked = MemoryIndex(active, nowMs).search(query, limit = active.size)
         val score = ranked.associate { it.first.id to it.second }
 
         // 做法的上限把置顶的也算在内

@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.Role
 import com.hana.agent.ui.theme.HanaType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,21 +59,187 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.hana.agent.ui.PipPhysics.Corner
+import com.hana.agent.ui.components.GrokBotTheme
+import com.hana.agent.ui.components.floatShadow
+import com.hana.agent.ui.components.mascot.EmotionBallMascot
+import com.hana.agent.ui.components.mascot.shapeKeyFor
+import com.hana.agent.ui.theme.HanaIcons
+import com.hana.agent.ui.theme.HanaTheme
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
-import com.hana.agent.ui.theme.HanaTheme
-import com.hana.agent.ui.theme.HanaIcons
-import com.hana.agent.ui.components.floatShadow
+
+/**
+ * Hana Teleport 瞬移接管状态：
+ * 当任务遇到滑块、图形验证码或 2FA 拦截时，小窗自动高亮弹出并临时豁免 PipInput 触摸穿透，
+ * 用户动手完成后监测到虚拟屏画面发生变化即自动恢复常规小窗状态。
+ */
+data class TeleportTakeoverState(
+    val active: Boolean = false,
+    val reason: String = "",
+    val message: String = "",
+    val touchExempted: Boolean = false,
+    val userInteracted: Boolean = false,
+    val anchorFrameHash: Int = 0,
+    val lastFrameHash: Int = 0,
+    val autoRestored: Boolean = false,
+)
+
+/**
+ * Hana Teleport 接管状态协调器（可在 Compose 与 CapsuleController 间共享，也支持纯 JVM 单元测试）。
+ */
+class PipTeleportCoordinator {
+    private val _state = MutableStateFlow(TeleportTakeoverState())
+    val state: StateFlow<TeleportTakeoverState> = _state.asStateFlow()
+
+    /**
+     * 触发小窗瞬移接管：强制展开高亮，并临时豁免放行 PipInput 触摸穿透（无视设置总开关关闭状态）。
+     */
+    fun teleportForTakeover(
+        reason: String,
+        message: String = "",
+        currentFrame: Bitmap? = null,
+    ): TeleportTakeoverState {
+        val current = _state.value
+        val hash = computeFrameSignature(currentFrame)
+        if (current.active && current.reason == reason && !current.autoRestored) {
+            val next = if (current.anchorFrameHash == 0 && hash != 0) {
+                current.copy(anchorFrameHash = hash, lastFrameHash = hash, message = message.ifBlank { current.message })
+            } else if (message.isNotBlank() && current.message != message) {
+                current.copy(message = message)
+            } else {
+                current
+            }
+            _state.value = next
+            return next
+        }
+        val next = TeleportTakeoverState(
+            active = true,
+            reason = reason,
+            message = message,
+            touchExempted = true,
+            userInteracted = false,
+            anchorFrameHash = hash,
+            lastFrameHash = hash,
+            autoRestored = false,
+        )
+        _state.value = next
+        return next
+    }
+
+    /**
+     * 决定当前是否放行 PipInput 触摸：设置已打开，或处于 Teleport 临时豁免期。
+     */
+    fun isEffectiveTouchEnabled(settingEnabled: Boolean): Boolean {
+        val s = _state.value
+        return settingEnabled || (s.active && s.touchExempted)
+    }
+
+    /**
+     * 标记用户已在小窗虚拟屏上执行过点击/滑动/返回操作，开始监听画面变动以自动恢复。
+     */
+    fun onUserTouchInjected() {
+        val s = _state.value
+        if (!s.active) return
+        if (!s.userInteracted) {
+            _state.value = s.copy(userInteracted = true)
+        }
+    }
+
+    /**
+     * 喂入新帧画面，若用户已介入且画面签名发生变化，自动退出瞬移接管与触摸豁免。
+     * @return true 表示本次帧变化触发了自动恢复
+     */
+    fun onFrame(bitmap: Bitmap?): Boolean {
+        if (bitmap == null) return false
+        return onFrameHash(computeFrameSignature(bitmap))
+    }
+
+    /**
+     * 基于帧哈希判断画面是否变化，便于无 Android Bitmap 的单元测试直接驱动。
+     */
+    fun onFrameHash(frameHash: Int): Boolean {
+        val s = _state.value
+        if (!s.active || frameHash == 0) return false
+        if (s.anchorFrameHash == 0) {
+            _state.value = s.copy(anchorFrameHash = frameHash, lastFrameHash = frameHash)
+            return false
+        }
+        if (s.userInteracted && frameHash != s.anchorFrameHash) {
+            _state.value = s.copy(
+                active = false,
+                touchExempted = false,
+                lastFrameHash = frameHash,
+                autoRestored = true,
+            )
+            return true
+        }
+        _state.value = s.copy(lastFrameHash = frameHash)
+        return false
+    }
+
+    fun onTakeoverResolved() {
+        restore(autoRestored = false)
+    }
+
+    fun restore(autoRestored: Boolean = false) {
+        _state.value = TeleportTakeoverState(autoRestored = autoRestored)
+    }
+
+    companion object {
+        private val ELIGIBLE_KEYWORDS = listOf(
+            "captcha", "slider", "2fa", "otp", "mfa", "verify", "verification", "login", "auth",
+            "验证码", "滑块", "二次验证", "短信验证", "安全验证", "人脸", "人机",
+        )
+
+        fun isTeleportEligibleReason(reason: String?): Boolean {
+            if (reason.isNullOrBlank()) return false
+            val lower = reason.lowercase()
+            return ELIGIBLE_KEYWORDS.any { lower.contains(it) }
+        }
+
+        /**
+         * 采样 4x4 亮度网格生成紧凑画面签名，识别验证码通过后的页面切换，零位返回 0。
+         */
+        fun computeFrameSignature(bitmap: Bitmap?): Int {
+            if (bitmap == null) return 0
+            val w = runCatching { bitmap.width }.getOrDefault(0)
+            val h = runCatching { bitmap.height }.getOrDefault(0)
+            if (w <= 0 || h <= 0) return 0
+            return runCatching {
+                var acc = 17
+                for (gy in 0 until 4) {
+                    val y = ((gy + 0.5f) * h / 4f).toInt().coerceIn(0, h - 1)
+                    for (gx in 0 until 4) {
+                        val x = ((gx + 0.5f) * w / 4f).toInt().coerceIn(0, w - 1)
+                        val px = bitmap.getPixel(x, y)
+                        val r = (px shr 16) and 0xFF
+                        val g = (px shr 8) and 0xFF
+                        val b = px and 0xFF
+                        val luma = ((r * 30 + g * 59 + b * 11) / 100) shr 4
+                        acc = acc * 31 + luma
+                    }
+                }
+                if (acc == 0) 1 else acc
+            }.getOrDefault(0)
+        }
+    }
+}
 
 /** 小窗宽度:收起 / 展开。高度按画面(没有画面时按主屏)的长宽比算,整屏完整显示、不裁底部。 */
 private val CollapsedWidth = 96.dp
@@ -114,28 +281,62 @@ fun AgentPip(
     onReopen: () -> Unit = {},
     pipInput: PipInput? = null,
     pipTouchEnabled: Boolean = false,
+    teleportReason: String? = null,
+    teleportCoordinator: PipTeleportCoordinator? = null,
+    audioAmplitude: Float = 0f,
+    mascotEmotionId: String? = null,
 ) {
+    val activeCoordinator = teleportCoordinator ?: remember { PipTeleportCoordinator() }
+    val teleportState by activeCoordinator.state.collectAsState()
+
+    LaunchedEffect(teleportReason) {
+        if (!teleportReason.isNullOrBlank()) {
+            activeCoordinator.teleportForTakeover(teleportReason, currentFrame = frame)
+        } else if (teleportCoordinator == null) {
+            activeCoordinator.onTakeoverResolved()
+        }
+    }
+    LaunchedEffect(frame) {
+        if (frame != null) {
+            activeCoordinator.onFrame(frame)
+        }
+    }
+
+    val isTeleporting = teleportState.active
+    val effectivePip = if (isTeleporting) {
+        pip.copy(visible = true, closed = false, expanded = true, mode = PipMode.NeedsYou)
+    } else {
+        pip
+    }
+    val effectiveTouchEnabled = pipTouchEnabled || (isTeleporting && teleportState.touchExempted)
+
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val fade = if (reduceMotion) tween<Float>(150) else tween(300)
         // 关掉了:只留右下角的小按钮(任务做完那几秒不留)
         AnimatedVisibility(
-            pip.visible && pip.closed && pip.mode != PipMode.Done, Modifier.align(Alignment.BottomEnd),
-            enter = fadeIn(fade), exit = fadeOut(fade),
+            effectivePip.visible && effectivePip.closed && effectivePip.mode != PipMode.Done,
+            Modifier.align(Alignment.BottomEnd),
+            enter = fadeIn(fade),
+            exit = fadeOut(fade),
         ) {
             val bottom = with(LocalDensity.current) { bottomInset.toDp() }
-            ClosedPip(pip.mode == PipMode.NeedsYou, reduceMotion, Modifier.padding(end = 12.dp, bottom = bottom + 12.dp), onReopen, onAttention)
+            ClosedPip(effectivePip.mode == PipMode.NeedsYou, reduceMotion, Modifier.padding(end = 12.dp, bottom = bottom + 12.dp), onReopen, onAttention)
         }
-        AnimatedVisibility(pip.visible && !pip.closed && pip.expanded, enter = fadeIn(fade), exit = fadeOut(fade)) {
+        AnimatedVisibility(effectivePip.visible && !effectivePip.closed && effectivePip.expanded, enter = fadeIn(fade), exit = fadeOut(fade)) {
             Box(Modifier.fillMaxSize().background(HanaTheme.colors.floatShadow.copy(alpha = 0.12f)).pointerInput(Unit) { detectTapGestures { onCollapse() } })
         }
-        AnimatedVisibility(pip.visible && !pip.closed, enter = fadeIn(fade), exit = fadeOut(if (reduceMotion) tween(150) else tween(500))) {
+        AnimatedVisibility(effectivePip.visible && !effectivePip.closed, enter = fadeIn(fade), exit = fadeOut(if (reduceMotion) tween(150) else tween(500))) {
             PipWindow(
-                pip, frame, webContent, reduceMotion,
+                effectivePip, frame, webContent, reduceMotion,
                 areaWidth = constraints.maxWidth.toFloat(), areaHeight = constraints.maxHeight.toFloat(),
                 topInset = topInset, bottomInset = bottomInset, onExpand = onExpand, onCollapse = onCollapse, onAttention = onAttention,
                 onClose = onClose,
                 pipInput = pipInput,
-                pipTouchEnabled = pipTouchEnabled,
+                pipTouchEnabled = effectiveTouchEnabled,
+                teleportState = teleportState,
+                onTeleportTouch = { activeCoordinator.onUserTouchInjected() },
+                audioAmplitude = audioAmplitude,
+                mascotEmotionId = mascotEmotionId,
             )
         }
     }
@@ -187,6 +388,10 @@ private fun PipWindow(
     onClose: () -> Unit,
     pipInput: PipInput? = null,
     pipTouchEnabled: Boolean = false,
+    teleportState: TeleportTakeoverState = TeleportTakeoverState(),
+    onTeleportTouch: () -> Unit = {},
+    audioAmplitude: Float = 0f,
+    mascotEmotionId: String? = null,
 ) {
     val density = LocalDensity.current
     val sizeSpec = if (reduceMotion) snap() else tween<androidx.compose.ui.unit.Dp>(350, easing = Ease)
@@ -271,18 +476,28 @@ private fun PipWindow(
     val pos = free ?: bounds.position(corner).let { (x, y) -> Offset(x, y) }
     val outer = RoundedCornerShape(if (pip.expanded) 26.dp else 16.dp)
     val inner = RoundedCornerShape(if (pip.expanded) 22.dp else 13.dp)
-    val breath = if (pip.mode == PipMode.NeedsYou && !reduceMotion) {
+    val breath = if ((pip.mode == PipMode.NeedsYou || teleportState.active) && !reduceMotion) {
         rememberInfiniteTransition(label = "breathe").animateFloat(
             1f, 0.55f, infiniteRepeatable(tween(1000), RepeatMode.Reverse), label = "breathe",
         ).value
     } else 1f
+    val activeBotShape by GrokBotTheme.currentShape.collectAsState()
+    val botShapeKey = remember(activeBotShape) { shapeKeyFor(activeBotShape) }
+    val resolvedEmotionId = mascotEmotionId ?: when {
+        teleportState.active -> "alert"
+        pip.mode == PipMode.NeedsYou -> "curious"
+        pip.mode == PipMode.Done -> "happy"
+        else -> "working"
+    }
+    val screenInsetPx = with(density) { (if (pip.expanded) 4.dp else 3.dp).toPx() }
+    val currentTouchPass by rememberUpdatedState(pipTouchEnabled && pipInput != null && pip.expanded)
 
     Box(Modifier.offset { IntOffset(pos.x.roundToInt(), pos.y.roundToInt()) }) {
-        if (pip.mode == PipMode.NeedsYou) {
+        if (pip.mode == PipMode.NeedsYou || teleportState.active) {
             // 橙色光晕:比窗口大一圈,模糊后透出边缘(安卓 12 以下不模糊,只是一圈淡橙色)
             Box(
                 Modifier.offset((-5).dp, (-5).dp).size(w + 10.dp, h + 10.dp).alpha(breath)
-                    .blur(10.dp).background(HanaTheme.colors.warnSolid.copy(alpha = 0.55f), outer),
+                    .blur(10.dp).background(HanaTheme.colors.warnSolid.copy(alpha = if (teleportState.active) 0.72f else 0.55f), outer),
             )
         }
         Box(
@@ -291,12 +506,19 @@ private fun PipWindow(
                 .floatShadow(HanaTheme.colors, outer)
                 .background(HanaTheme.colors.glass, outer)
                 .border(0.5.dp, HanaTheme.colors.glassEdge, outer)
-                .pointerInput(Unit) {
+                .pointerInput(currentTouchPass) {
                     val tracker = VelocityTracker()
                     // 自己数位移而不用 detectDragGestures:越过触摸阈值时把阈值内的那段也补上,
                     // 窗口始终保持按下时的抓取位置,真正 1:1 跟手
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
+                        // 触摸穿透激活时，落在内屏区域的手势优先给虚拟屏滑块/点击，不拖拽小窗本身
+                        if (currentTouchPass &&
+                            down.position.x in screenInsetPx..(size.width - screenInsetPx) &&
+                            down.position.y in screenInsetPx..(size.height - screenInsetPx)
+                        ) {
+                            return@awaitEachGesture
+                        }
                         val origin = free ?: currentBounds.position(corner).let { (x, y) -> Offset(x, y) }
                         var total = Offset.Zero
                         var dragging = false
@@ -304,7 +526,7 @@ private fun PipWindow(
                         tracker.addPosition(down.uptimeMillis, origin + down.position)
                         while (true) {
                             val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) break
+                            if (!change.pressed || change.isConsumed) break
                             total += change.positionChange()
                             if (!dragging && total.getDistance() > viewConfiguration.touchSlop) {
                                 dragging = true
@@ -319,7 +541,10 @@ private fun PipWindow(
                         if (dragging) tracker.calculateVelocity().let { v -> release(v.x, v.y) }
                     }
                 }
-                .pointerInput(Unit) { detectTapGestures { if (needsYou) attend() else if (!expanded) expand() } }
+                .pointerInput(currentTouchPass) {
+                    if (currentTouchPass) return@pointerInput
+                    detectTapGestures { if (needsYou) attend() else if (!expanded) expand() }
+                }
                 .padding(if (pip.expanded) 4.dp else 3.dp),
         ) {
             Box(
@@ -382,6 +607,7 @@ private fun PipWindow(
                                 down.consume()
                                 val fx = (startX / w).coerceIn(0f, 1f)
                                 val fy = (startY / h).coerceIn(0f, 1f)
+                                onTeleportTouch()
                                 scope.launch {
                                     pipInput.tap(fx, fy)
                                 }
@@ -389,6 +615,7 @@ private fun PipWindow(
                                 val totalDx = lastX - startX
                                 val totalDy = kotlin.math.abs(lastY - startY)
                                 val isLeftEdgeSwipe = (startX / w) <= 0.15f && totalDx > 30f && totalDx > totalDy * 1.2f
+                                onTeleportTouch()
                                 if (isLeftEdgeSwipe) {
                                     scope.launch {
                                         pipInput.back()
@@ -430,6 +657,7 @@ private fun PipWindow(
                         Modifier.align(Alignment.BottomStart).padding(6.dp).size(26.dp)
                             .floatShadow(HanaTheme.colors, CircleShape).background(HanaTheme.colors.glass, CircleShape).clip(CircleShape)
                             .clickable(onClickLabel = stringResource(R.string.back)) {
+                                onTeleportTouch()
                                 scope.launch { pipInput.back() }
                             }
                             .testTag("pip-back"),
@@ -439,11 +667,46 @@ private fun PipWindow(
             }
         }
         // 边框微光画在玻璃框外沿:运行中为轻盈细致的科技微蓝描边，需要接管时为呼吸暖橙
-        val glow = when (pip.mode) {
-            PipMode.Running -> HanaTheme.colors.accent.copy(alpha = 0.45f) to 1.dp
-            PipMode.NeedsYou -> HanaTheme.colors.warnSolid.copy(alpha = breath) to 1.5.dp
-            PipMode.Done -> null
+        val glow = when {
+            teleportState.active -> HanaTheme.colors.warnSolid.copy(alpha = breath) to 2.dp
+            pip.mode == PipMode.Running -> HanaTheme.colors.accent.copy(alpha = 0.45f) to 1.dp
+            pip.mode == PipMode.NeedsYou -> HanaTheme.colors.warnSolid.copy(alpha = breath) to 1.5.dp
+            else -> null
         }
         if (glow != null) Box(Modifier.size(w, h).border(glow.second, glow.first, outer))
+
+        // 小窗外缘右下角吸附 Hana 原创星灵花瓣精灵（不遮挡虚拟屏像素）
+        EmotionBallMascot(
+            size = if (pip.expanded) 34.dp else 26.dp,
+            emotionId = resolvedEmotionId,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .offset(x = 8.dp, y = 8.dp)
+                .testTag("pip-docked-mascot"),
+            shapeKey = botShapeKey,
+            isWorking = pip.mode == PipMode.Running || teleportState.active,
+            audioAmplitude = audioAmplitude,
+            pipDocked = true,
+        )
+
+        if (teleportState.active) {
+            Row(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .offset(y = (-24).dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(HanaTheme.colors.warnSolid.copy(alpha = 0.94f))
+                    .padding(horizontal = 10.dp, vertical = 3.dp)
+                    .testTag("pip-teleport-badge"),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = if (teleportState.userInteracted) "已接管 · 画面更新后自动恢复" else "Hana 瞬移接管 · 触控已放行",
+                    style = HanaType.Label.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                    color = Color.White,
+                )
+            }
+        }
     }
 }
