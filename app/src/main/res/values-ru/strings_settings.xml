@@ -55,6 +55,8 @@
     <string name="settings_keep_on_sub">Пока выполняется задача, экран не гаснет (без действий он, как обычно, затемняется), а потом всё возвращается как было</string>
     <string name="settings_mute">Отключать звук используемого приложения</string>
     <string name="settings_mute_sub">Приложения, с которыми работает Hana, молчат; звук возвращается, когда вы берёте управление на себя</string>
+    <string name="settings_pip_touch">Прямое сенсорное управление в PiP</string>
+    <string name="settings_pip_touch_sub">Нажимайте, свайпайте и возвращайтесь назад на виртуальном экране прямо в плавающем окне</string>
     <string name="settings_pace">Темп работы</string>
     <string name="settings_pace_fast">Быстрый</string>
     <string name="settings_pace_fast_detail">Без пауз между шагами; текст вводится сразу</string>

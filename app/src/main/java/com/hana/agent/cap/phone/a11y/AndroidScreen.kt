@@ -546,7 +546,24 @@ class AndroidScreen(
         if (!hasDisplay) return@withContext NO_APP_OPEN
         when (val target = resolve(ref, snapshotId)) {
             null -> ActionResult.Failed("ref_expired")
-            else -> verified(relocatedTo = target.second) { click(target.first) }
+            else -> {
+                val primary = verified(relocatedTo = target.second) { click(target.first) }
+                // 双通道点击互备自愈（A11y ↔ Touch Fallback）：
+                // 增加执行后画面/节点变动检测。若上报点击成功但画面或无障碍焦点未发生任何变化，
+                // 自动降级改走底层物理触摸注入通道进行二次补偿点击
+                if (primary is ActionResult.Ok && primary.changed == false && primary.opened == null) {
+                    val rect = android.graphics.Rect().also { target.first.getBoundsInScreen(it) }
+                    if (rect.width() > 0 && rect.height() > 0) {
+                        val fallback = verified(relocatedTo = target.second) {
+                            touch(rect.centerX() to rect.centerY())
+                        }
+                        if (fallback is ActionResult.Ok && (fallback.changed == true || fallback.opened != null)) {
+                            return@withContext fallback
+                        }
+                    }
+                }
+                primary
+            }
         }
     }
 
@@ -559,7 +576,18 @@ class AndroidScreen(
         if (!hasDisplay) return@withContext NO_APP_OPEN
         val target = resolve(ref, snapshotId) ?: return@withContext ActionResult.Failed("ref_expired")
         val rect = android.graphics.Rect().also { target.first.getBoundsInScreen(it) }
-        verified(relocatedTo = target.second) { doubleTapAt(pacing.within(rect.left, rect.top, rect.right, rect.bottom)) }
+        val primary = verified(relocatedTo = target.second) { doubleTapAt(pacing.within(rect.left, rect.top, rect.right, rect.bottom)) }
+        if (primary is ActionResult.Ok && primary.changed == false && primary.opened == null) {
+            if (rect.width() > 0 && rect.height() > 0) {
+                val fallback = verified(relocatedTo = target.second) {
+                    doubleTapAt(rect.centerX() to rect.centerY())
+                }
+                if (fallback is ActionResult.Ok && (fallback.changed == true || fallback.opened != null)) {
+                    return@withContext fallback
+                }
+            }
+        }
+        primary
     }
 
     override suspend fun doubleTapXY(x: Int, y: Int): ActionResult = withContext(Dispatchers.IO) {
@@ -694,7 +722,7 @@ class AndroidScreen(
         // 写不进、框不接受半截字时停下,下面照旧整段写入并读回核对
         typing(field.packageName?.toString()).forField(web, field.isPassword).leadIn(io, text)
         var frozen = false
-        val verification = typeAndVerify(
+        var verification = typeAndVerify(
             io, text, TYPE_ATTEMPTS,
             settle = { withEventClock { clock -> clock.awaitQuiet(READBACK_QUIET_MS, READBACK_CAP_MS).also { if (it) markSettled() } } },
             // 读回一直不变时,看界面上有没有冒出含所输文字的新文字(联想词等)
@@ -705,11 +733,37 @@ class AndroidScreen(
             },
             secret = field.isPassword,
         )
+        // 自绘引擎/安全控件 Native Paste 回退：
+        // 当遇到自绘引擎（如 Flutter/Webview/特定安全键盘）导致标准字符注入失败或丢字时，
+        // 支持通过系统剪贴板原生粘贴（Paste）操作回退，并在写入后及时清空剪贴板隐私数据
+        var fallbackPasted = false
+        if (verification == Verification.MISMATCH && !field.isPassword) {
+            fallbackPasted = pasteNative(field, text)
+            if (fallbackPasted) {
+                field.refresh()
+                val readBack = io.read()
+                val normRead = readBack?.filterNot { it.isWhitespace() }
+                val normWant = text.filterNot { it.isWhitespace() }
+                if (normRead != null && normRead == normWant) {
+                    verification = Verification.MATCH
+                } else {
+                    invalidateReadCache()
+                    val typed = text.filterNot { it.isWhitespace() }
+                    if ((read().texts.toSet() - textsBefore).any { typed in it.filterNot { c -> c.isWhitespace() } }) {
+                        verification = Verification.MATCH
+                        frozen = true
+                    } else if (normRead != null && normRead.contains(normWant)) {
+                        verification = Verification.MATCH
+                    }
+                }
+            }
+        }
         invalidateReadCache()
         val hint = listOfNotNull(
             HINT_TAPPED_TO_FOCUS.takeIf { found.tapped },
             HINT_READBACK_FROZEN.takeIf { frozen },
             HINT_PASTE_UNAVAILABLE.takeIf { pasteUnavailable },
+            "native_paste_fallback".takeIf { fallbackPasted },
         ).joinToString(" ").ifEmpty { null }
         // 字可能只是显示出来、App 并没收到:不能报「一致」
         val reported = if (pasteUnavailable && verification != Verification.MISMATCH) Verification.UNKNOWN else verification
@@ -2213,6 +2267,46 @@ class AndroidScreen(
     private fun setText(node: AccessibilityNodeInfo, text: String): Boolean {
         val args = Bundle().apply { putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text) }
         return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    /**
+     * 自绘引擎/安全控件 Native Paste 回退：
+     * 当遇到自绘引擎（如 Flutter/Webview/特定安全键盘）导致标准字符注入失败或丢字时，
+     * 通过系统剪贴板原生粘贴（Paste）操作回退，并在写入后及时清空剪贴板隐私数据。
+     */
+    private fun pasteNative(node: AccessibilityNodeInfo, text: String): Boolean {
+        if (node.isPassword) return false
+        clipLock.lock()
+        clipHeld(true)
+        try {
+            if (runCatching { shell.setClipText(text) }.getOrDefault(ShellService.CLIP_FAILED) != ShellService.CLIP_SET) return false
+            runCatching { shell.savedClipText() }.getOrNull()?.let { clipSaved(it, text) }
+            node.refresh()
+            node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            val before = node.text?.toString().orEmpty()
+            if (before.isNotEmpty()) {
+                val range = Bundle().apply {
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+                    putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, before.length)
+                }
+                node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, range)
+            }
+            var pasted = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
+            if (!pasted) {
+                ctrlKey(KeyEvent.KEYCODE_A)
+                pasted = ctrlKey(KeyEvent.KEYCODE_V)
+            }
+            val deadline = SystemClock.uptimeMillis() + PASTE_WAIT_MS
+            while (SystemClock.uptimeMillis() < deadline) {
+                if (node.refresh() && node.text?.toString().orEmpty() != before) break
+                Thread.sleep(POLL_MS)
+            }
+            return pasted
+        } finally {
+            runCatching { shell.restoreClip() }
+            clipHeld(false)
+            clipLock.unlock()
+        }
     }
 
     private inline fun ancestorOrSelf(node: AccessibilityNodeInfo, test: (AccessibilityNodeInfo) -> Boolean): AccessibilityNodeInfo? {

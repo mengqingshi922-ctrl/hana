@@ -154,7 +154,7 @@ internal object LaunchApp : PhoneTool {
         val r = ctx.action(opened)
         if (r.content["ok"] != JsonPrimitive(true)) return r
         ctx.appOpened = true
-        return unreadable(ctx, p, r)
+        return unreadable(ctx, p, r.with(content = JsonObject(r.content + ("package" to JsonPrimitive(p)))))
     }
 
     override fun logTarget(o: JsonObject, r: ToolExecution, ctx: ToolContext) =

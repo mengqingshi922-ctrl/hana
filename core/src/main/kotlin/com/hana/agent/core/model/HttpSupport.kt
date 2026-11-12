@@ -5,6 +5,12 @@ import com.hana.agent.core.net.ProxyFailure
 import com.hana.agent.core.trace.TraceCall
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
@@ -135,5 +141,123 @@ internal object HttpSupport {
         })
     }
 
-    fun retryAfterMs(header: String?): Long? = header?.trim()?.toDoubleOrNull()?.let { (it * 1000).toLong() }
+    fun retryAfterMs(header: String?, body: String? = null): Long? {
+        parseHeader(header)?.let { return it }
+        if (!body.isNullOrBlank()) {
+            parseBody(body)?.let { return it }
+        }
+        return null
+    }
+
+    private fun parseHeader(header: String?): Long? {
+        if (header.isNullOrBlank()) return null
+        val h = header.trim()
+        val secStr = if (h.endsWith("s", ignoreCase = true)) h.dropLast(1).trim() else h
+        secStr.toDoubleOrNull()?.let { return (it * 1000).toLong().coerceAtLeast(0) }
+        try {
+            val epoch = java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME
+                .parse(h, java.time.Instant::from)
+                .toEpochMilli()
+            val diff = epoch - System.currentTimeMillis()
+            return diff.coerceAtLeast(0)
+        } catch (_: Exception) {}
+        return null
+    }
+
+    private val jsonParser = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    private fun parseBody(body: String): Long? {
+        val b = body.trim()
+        if (b.isEmpty()) return null
+        // 1. JSON 结构化提取 (Google RPC RetryInfo, OpenAI, Anthropic 等)
+        try {
+            val jsonElement = jsonParser.parseToJsonElement(b)
+            if (jsonElement is JsonObject) {
+                findRetryDelayInJson(jsonElement)?.let { return it }
+            } else if (jsonElement is JsonArray) {
+                for (item in jsonElement) {
+                    if (item is JsonObject) {
+                        findRetryDelayInJson(item)?.let { return it }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        // 2. 正则表达式兜底提取错误描述中的时长
+        val patterns = listOf(
+            Regex("""(?i)(?:retry|try\s+again)\s+(?:after|in)\s+([0-9]+(?:\.[0-9]+)?)\s*(s|sec|seconds|ms|milliseconds|m|min|minutes)?"""),
+            Regex("""(?i)wait\s+([0-9]+(?:\.[0-9]+)?)\s*(s|sec|seconds|ms|milliseconds|m|min|minutes)"""),
+            Regex("""(?i)rate\s+limit.*?in\s+([0-9]+(?:\.[0-9]+)?)\s*(s|sec|seconds|ms|milliseconds|m|min|minutes)"""),
+            Regex("""(?i)quota\s+reset.*?in\s+([0-9]+(?:\.[0-9]+)?)\s*(s|sec|seconds|ms|milliseconds|m|min|minutes)"""),
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(b)
+            if (match != null) {
+                val num = match.groupValues[1].toDoubleOrNull() ?: continue
+                val unit = match.groupValues.getOrNull(2)?.lowercase().orEmpty()
+                val ms = when {
+                    unit.startsWith("m") && !unit.startsWith("ms") -> (num * 60 * 1000).toLong()
+                    unit == "ms" || unit == "milliseconds" -> num.toLong()
+                    else -> (num * 1000).toLong()
+                }
+                return ms.coerceAtLeast(0)
+            }
+        }
+        return null
+    }
+
+    private fun findRetryDelayInJson(obj: JsonObject): Long? {
+        val keys = listOf("retry_after", "retryAfter", "retryDelay", "retry_delay_seconds")
+        for (key in keys) {
+            obj[key]?.let { elem ->
+                parseJsonDuration(elem)?.let { return it }
+            }
+        }
+        (obj["error"] as? JsonObject)?.let { err ->
+            for (key in keys) {
+                err[key]?.let { elem ->
+                    parseJsonDuration(elem)?.let { return it }
+                }
+            }
+            (err["details"] as? JsonArray)?.forEach { item ->
+                if (item is JsonObject) {
+                    item["retryDelay"]?.let { parseJsonDuration(it)?.let { ms -> return ms } }
+                }
+            }
+            (err["message"] as? JsonPrimitive)?.contentOrNull?.let { msg ->
+                val match = Regex("""(?i)(?:retry|try\s+again)\s+(?:after|in)\s+([0-9]+(?:\.[0-9]+)?)\s*(s|sec|seconds|ms|milliseconds|m|min|minutes)?""").find(msg)
+                if (match != null) {
+                    val num = match.groupValues[1].toDoubleOrNull()
+                    val unit = match.groupValues.getOrNull(2)?.lowercase().orEmpty()
+                    if (num != null) {
+                        val ms = when {
+                            unit.startsWith("m") && !unit.startsWith("ms") -> (num * 60 * 1000).toLong()
+                            unit == "ms" || unit == "milliseconds" -> num.toLong()
+                            else -> (num * 1000).toLong()
+                        }
+                        return ms.coerceAtLeast(0)
+                    }
+                }
+            }
+        }
+        (obj["details"] as? JsonArray)?.forEach { item ->
+            if (item is JsonObject) {
+                item["retryDelay"]?.let { parseJsonDuration(it)?.let { ms -> return ms } }
+            }
+        }
+        return null
+    }
+
+    private fun parseJsonDuration(elem: JsonElement): Long? {
+        if (elem is JsonPrimitive) {
+            val content = elem.content
+            content.toDoubleOrNull()?.let { return (it * 1000).toLong().coerceAtLeast(0) }
+            val trimmed = content.trim()
+            if (trimmed.endsWith("s", ignoreCase = true) && !trimmed.endsWith("ms", ignoreCase = true)) {
+                trimmed.dropLast(1).trim().toDoubleOrNull()?.let { return (it * 1000).toLong().coerceAtLeast(0) }
+            } else if (trimmed.endsWith("ms", ignoreCase = true)) {
+                trimmed.dropLast(2).trim().toDoubleOrNull()?.let { return it.toLong().coerceAtLeast(0) }
+            }
+        }
+        return null
+    }
 }

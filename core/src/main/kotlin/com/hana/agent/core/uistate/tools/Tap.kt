@@ -75,11 +75,39 @@ internal class Tap(f: ScreenFamily) : ScreenTool(f, "tap") {
         if (ref != null) {
             if (LOCATED_REF.matches(ref.first)) return tapLocated(ref.first, ref.second, twice, ctx)
             return ctx.withPortRef(ref) { r ->
-                ctx.action(if (twice) ctx.screen.doubleTapRef(r!!.first, r.second) else ctx.screen.tapRef(r!!.first, r.second))
+                val primaryResult = if (twice) ctx.screen.doubleTapRef(r!!.first, r.second) else ctx.screen.tapRef(r!!.first, r.second)
+                // 双通道点击互备自愈（A11y ↔ Touch Fallback）：
+                // 增加执行后画面/节点变动检测。若上报点击成功但画面或无障碍焦点未发生任何变化，
+                // 自动降级改走底层物理触摸注入通道进行二次补偿点击
+                if (primaryResult is com.hana.agent.core.uistate.ActionResult.Ok && primaryResult.changed == false && primaryResult.opened == null) {
+                    val element = (ctx.lastSnapshot ?: ctx.session.lastSnapshot)?.elements?.firstOrNull { it.ref == r.first }
+                    if (element != null) {
+                        val fallbackResult = if (twice) ctx.screen.doubleTapXY(element.centerX, element.centerY)
+                                              else ctx.screen.tapXY(element.centerX, element.centerY)
+                        if (fallbackResult is com.hana.agent.core.uistate.ActionResult.Ok && (fallbackResult.changed == true || fallbackResult.opened != null)) {
+                            return@withPortRef ctx.action(fallbackResult)
+                        }
+                    }
+                }
+                ctx.action(primaryResult)
             }
         }
         val s = ctx.lastOrSnapshot()
-        return ctx.action(tapAt(ctx, toPx(x!!, s.width), toPx(y!!, s.height), twice))
+        val pxX = toPx(x!!, s.width)
+        val pxY = toPx(y!!, s.height)
+        val primaryResult = tapAt(ctx, pxX, pxY, twice)
+        if (primaryResult is com.hana.agent.core.uistate.ActionResult.Ok && primaryResult.changed == false && primaryResult.opened == null) {
+            val element = (ctx.lastSnapshot ?: ctx.session.lastSnapshot)?.elements?.firstOrNull { e ->
+                x in e.bounds[0]..e.bounds[2] && y in e.bounds[1]..e.bounds[3]
+            }
+            if (element != null && (element.centerX != pxX || element.centerY != pxY)) {
+                val fallbackResult = tapAt(ctx, element.centerX, element.centerY, twice)
+                if (fallbackResult is com.hana.agent.core.uistate.ActionResult.Ok && (fallbackResult.changed == true || fallbackResult.opened != null)) {
+                    return ctx.action(fallbackResult)
+                }
+            }
+        }
+        return ctx.action(primaryResult)
     }
 
     private suspend fun tapAt(ctx: ToolContext, x: Int, y: Int, twice: Boolean) =

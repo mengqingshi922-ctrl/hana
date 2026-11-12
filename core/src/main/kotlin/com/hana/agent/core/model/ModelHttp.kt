@@ -26,7 +26,7 @@ object ModelHttp {
         ModelAccessErrors.of(status, body, model) ?: when {
             status == 401 -> ModelError.Auth()
             status == 402 || body.contains("insufficient_quota") -> ModelError.QuotaExceeded()
-            status == 429 -> ModelError.RateLimited(HttpSupport.retryAfterMs(retryAfter))
+            status == 429 -> ModelError.RateLimited(HttpSupport.retryAfterMs(retryAfter, body))
             status == 400 && (body.contains("context_length") || body.contains("maximum context")) -> ModelError.ContextTooLong()
             status == 404 -> ModelError.ModelNotFound(model, ModelAccessErrors.jsonDetail(body))
             status in 500..599 -> ModelError.Server(status)
@@ -46,7 +46,7 @@ object ModelHttp {
         return when {
             status == 401 || status == 403 -> ModelError.Auth()
             // 这个模型额度为零的 429 上面已认成用不了;其余 429 按可重试限流处理(其限流与额度文案混用,无法可靠区分)
-            status == 429 || st == "RESOURCE_EXHAUSTED" -> ModelError.RateLimited(HttpSupport.retryAfterMs(retryAfter))
+            status == 429 || st == "RESOURCE_EXHAUSTED" -> ModelError.RateLimited(HttpSupport.retryAfterMs(retryAfter, body))
             status == 404 -> ModelError.ModelNotFound(model, ModelAccessErrors.jsonDetail(body))
             status == 413 || (status == 400 && lower.contains("token") &&
                 (lower.contains("exceed") || lower.contains("too long") || lower.contains("maximum"))) -> ModelError.ContextTooLong()

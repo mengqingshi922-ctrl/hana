@@ -110,14 +110,15 @@ internal class TypeText(f: ScreenFamily) : ScreenTool(f, "type_text") {
         val (target, failed) = aim(a, ctx)
         failed?.let { return it }
         return when (target) {
-            is FieldAim.Point -> located(ctx, target, typeInto(ctx, text, enter) { ctx.screen.typeAt(target.x, target.y, text) })
+            is FieldAim.Point -> located(ctx, target, typeInto(ctx, text, enter, null) { ctx.screen.typeAt(target.x, target.y, text) })
             else -> {
-                val exec = ctx.withPortRef((target as FieldAim.Ref).ref) { ref -> typeInto(ctx, text, enter) { ctx.screen.typeText(ref?.first, ref?.second, text) } }
+                val refPair = (target as FieldAim.Ref).ref
+                val exec = ctx.withPortRef(refPair) { ref -> typeInto(ctx, text, enter, ref) { ctx.screen.typeText(ref?.first, ref?.second, text) } }
                 if (exec.content["ok"] == JsonPrimitive(false) && exec.content["error"] == JsonPrimitive("ref_expired")) {
                     val currentElements = (ctx.lastSnapshot ?: ctx.session.lastSnapshot)?.elements
                     val hasActiveFocus = currentElements?.any { it.focused && (it.editable || it.role == "EditText" || it.role == "input" || it.role == "textarea") } == true
                     if (hasActiveFocus) {
-                        val fallback = typeInto(ctx, text, enter) { ctx.screen.typeText(null, null, text) }
+                        val fallback = typeInto(ctx, text, enter, null) { ctx.screen.typeText(null, null, text) }
                         if (fallback.content["ok"] == JsonPrimitive(true)) return fallback
                     }
                 }
@@ -126,16 +127,37 @@ internal class TypeText(f: ScreenFamily) : ScreenTool(f, "type_text") {
         }
     }
 
-    private suspend fun typeInto(ctx: ToolContext, text: String, enter: Boolean, type: suspend () -> ActionResult): ToolExecution {
+    private suspend fun typeInto(ctx: ToolContext, text: String, enter: Boolean, targetRef: Pair<String, String>? = null, type: suspend () -> ActionResult): ToolExecution {
         val screen = ctx.screen
         val typed = type()
         if (typed !is ActionResult.Ok) return ctx.action(typed)
+        var v = typed.verification
+        if (v == Verification.MISMATCH && !typed.secret) {
+            // 自绘输入框/安全控件 Native Paste 回退:
+            // 当遇到自绘引擎（如 Flutter/Webview/特定安全键盘）导致标准字符注入失败或丢字时，
+            // 支持通过系统剪贴板原生粘贴（Paste）操作回退，并在写入后及时清空剪贴板隐私数据
+            val currentElements = (ctx.lastSnapshot ?: ctx.session.lastSnapshot)?.elements
+            val element = currentElements?.firstOrNull {
+                (targetRef != null && it.ref == targetRef.first) || it.focused
+            }
+            if (element != null) {
+                val fallbackTyped = screen.typeAt(element.centerX, element.centerY, text)
+                if (fallbackTyped is ActionResult.Ok && fallbackTyped.verification != Verification.MISMATCH) {
+                    return renderTypeSuccess(ctx, fallbackTyped, text, enter)
+                }
+            }
+            return ToolExecution(buildJsonObject {
+                put("ok", false); put("error", "action_not_applied"); put("verification", v.wire)
+                put("message", Feedback["type.not_applied"])
+                put("recoverable", true)
+            })
+        }
+        return renderTypeSuccess(ctx, typed, text, enter)
+    }
+
+    private suspend fun renderTypeSuccess(ctx: ToolContext, typed: ActionResult.Ok, text: String, enter: Boolean): ToolExecution {
+        val screen = ctx.screen
         val v = typed.verification
-        if (v == Verification.MISMATCH) return ToolExecution(buildJsonObject {
-            put("ok", false); put("error", "action_not_applied"); put("verification", v.wire)
-            put("message", Feedback["type.not_applied"])
-            put("recoverable", true)
-        })
         val switched = typed.appSwitched
         // 读不回来就不按回车:可能把没打进去的内容提交出去;前台被切走时回车会打到别的 App 上
         val pressEnter = enter && v != Verification.UNKNOWN && switched == null

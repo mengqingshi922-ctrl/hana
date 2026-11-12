@@ -60,6 +60,23 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         prefs.edit().putBoolean(MUTE_TARGET, on).commit()
     }
 
+    /** 允许在悬浮小窗中直接用手指操作虚拟屏；默认关闭。 */
+    fun pipTouchEnabled(): Boolean = prefs.getBoolean(PIP_TOUCH_ENABLED, false)
+
+    fun setPipTouchEnabled(on: Boolean) {
+        prefs.edit().putBoolean(PIP_TOUCH_ENABLED, on).commit()
+    }
+
+    /** 小窗手势操作开关的当前值，之后每次改动再发一次。 */
+    fun pipTouchEnabledChanges(): Flow<Boolean> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == PIP_TOUCH_ENABLED) trySend(pipTouchEnabled())
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        send(pipTouchEnabled())
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
+
     /** 在 App 里操作的节奏:快、标准(默认)、像人(见 [OperatingPace])。 */
     fun operatingPace(): OperatingPace = OperatingPace.parse(prefs.getString(OPERATING_PACE, null)) ?: OperatingPace.DEFAULT
 
@@ -119,6 +136,13 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         prefs.edit().putBoolean(EDGE_POCKET_ENABLED, on).apply()
     }
 
+    /** 允许外部广播创建任务（如 Tasker、Termux、ADB 脚本等）; 默认关，防止外部恶意脚本循环轰炸。 */
+    fun externalBroadcastEnabled(): Boolean = prefs.getBoolean(EXTERNAL_BROADCAST_ENABLED, false)
+
+    fun setExternalBroadcastEnabled(on: Boolean) {
+        prefs.edit().putBoolean(EXTERNAL_BROADCAST_ENABLED, on).apply()
+    }
+
     /** 胶囊停在哪:左边还是右边、高度占可摆范围的比例;没拖过时在右上角。 */
     fun capsuleDock(): CapsuleDock = CapsuleDock(
         if (prefs.getString(CAPSULE_SIDE, null) == DockSide.Left.name) DockSide.Left else DockSide.Right,
@@ -157,9 +181,11 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         )
         private const val PARALLEL_MAX = "parallel_max"
         private const val EDGE_POCKET_ENABLED = "edge_pocket_enabled"
+        const val EXTERNAL_BROADCAST_ENABLED = "external_broadcast_enabled"
         private const val RUN_IN_BACKGROUND = "run_in_background"
         private const val KEEP_SCREEN_ON = "keep_screen_on"
         private const val MUTE_TARGET = "mute_target"
+        private const val PIP_TOUCH_ENABLED = "pip_touch_enabled"
         private const val OPERATING_PACE = "operating_pace"
         private const val SELF_CONFIG = "self_config"
         private const val THEME_MODE = "theme_mode"

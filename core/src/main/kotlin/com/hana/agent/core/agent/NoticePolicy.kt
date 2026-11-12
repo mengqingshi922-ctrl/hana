@@ -18,6 +18,9 @@ internal sealed interface KnowledgeLookup {
  * 一个工具结果之后跟什么:附图配哪句说明、到了哪里要找哪份参考资料。纯函数。
  */
 internal object NoticePolicy {
+    /** 在 App 里看界面、启动 App、打开链接:到了那个 App。 */
+    private val APP_RESULT_VERBS = setOf(Verb.Observe, Verb.ListElements, Verb.LaunchApp, Verb.OpenLink)
+
     /** 在网页上看界面、读页、打开网页:到了那个站点。 */
     private val SITE_RESULT_VERBS = setOf(Verb.Observe, Verb.ListElements, Verb.Navigate, Verb.ReadPage)
 
@@ -32,12 +35,12 @@ internal object NoticePolicy {
     }
 
     /**
-     * 到了 [place] 之后要找的参考资料:看了一个 App 的界面就找这个 App 的;在网页上看界面、读页、打开网页就按域名找这个站点的。
+     * 到了 [place] 之后要找的参考资料:看了一个 App 的界面或打开了 App 就找这个 App 的;在网页上看界面、读页、打开网页就按域名找这个站点的。
      * 同一个站点是否已找过由调用方记。[ok] 是这次调用成没成。
      */
     fun knowledgeAfter(verb: Verb?, place: Place?, ok: Boolean): List<KnowledgeLookup> = when {
         place == null -> emptyList()
-        place.kind == PlaceKind.App && (verb == Verb.Observe || verb == Verb.ListElements) -> listOf(KnowledgeLookup.App(place.name))
+        place.kind == PlaceKind.App && (verb == Verb.Observe || verb == Verb.ListElements || (verb in APP_RESULT_VERBS && ok)) -> listOf(KnowledgeLookup.App(place.name))
         place.kind == PlaceKind.Site && verb in SITE_RESULT_VERBS && ok -> listOf(KnowledgeLookup.Site(place.name.lowercase().removePrefix("www.")))
         else -> emptyList()
     }

@@ -1,6 +1,7 @@
 package com.hana.agent.ui
 
 import com.hana.agent.R
+import com.hana.agent.cap.phone.display.PipInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.LocalContext
 import android.view.Display
@@ -111,6 +112,8 @@ fun AgentPip(
     onAttention: () -> Unit,
     onClose: () -> Unit = {},
     onReopen: () -> Unit = {},
+    pipInput: PipInput? = null,
+    pipTouchEnabled: Boolean = false,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val fade = if (reduceMotion) tween<Float>(150) else tween(300)
@@ -131,6 +134,8 @@ fun AgentPip(
                 areaWidth = constraints.maxWidth.toFloat(), areaHeight = constraints.maxHeight.toFloat(),
                 topInset = topInset, bottomInset = bottomInset, onExpand = onExpand, onCollapse = onCollapse, onAttention = onAttention,
                 onClose = onClose,
+                pipInput = pipInput,
+                pipTouchEnabled = pipTouchEnabled,
             )
         }
     }
@@ -180,6 +185,8 @@ private fun PipWindow(
     onCollapse: () -> Unit,
     onAttention: () -> Unit,
     onClose: () -> Unit,
+    pipInput: PipInput? = null,
+    pipTouchEnabled: Boolean = false,
 ) {
     val density = LocalDensity.current
     val sizeSpec = if (reduceMotion) snap() else tween<androidx.compose.ui.unit.Dp>(350, easing = Ease)
@@ -315,7 +322,86 @@ private fun PipWindow(
                 .pointerInput(Unit) { detectTapGestures { if (needsYou) attend() else if (!expanded) expand() } }
                 .padding(if (pip.expanded) 4.dp else 3.dp),
         ) {
-            Box(Modifier.fillMaxSize().clip(inner).background(HanaTheme.colors.surface)) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .clip(inner)
+                    .background(HanaTheme.colors.surface)
+                    .testTag("pip-screen-box")
+                    .pointerInput(pipTouchEnabled, pipInput) {
+                        if (!pipTouchEnabled || pipInput == null) return@pointerInput
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val startX = down.position.x
+                            val startY = down.position.y
+                            val startTime = down.uptimeMillis
+                            val w = size.width.toFloat()
+                            val h = size.height.toFloat()
+                            if (w <= 0f || h <= 0f) return@awaitEachGesture
+
+                            var moved = false
+                            val points = mutableListOf(Pair((startX / w).coerceIn(0f, 1f), (startY / h).coerceIn(0f, 1f)))
+                            var lastX = startX
+                            var lastY = startY
+                            var lastTime = startTime
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    lastTime = change.uptimeMillis
+                                    break
+                                }
+                                val curX = change.position.x
+                                val curY = change.position.y
+                                val dx = curX - startX
+                                val dy = curY - startY
+                                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                                if (dist > viewConfiguration.touchSlop) {
+                                    moved = true
+                                }
+                                if (moved) {
+                                    change.consume()
+                                    val curTime = change.uptimeMillis
+                                    if (curTime - lastTime >= 16L || dist > 10f) {
+                                        points.add(Pair((curX / w).coerceIn(0f, 1f), (curY / h).coerceIn(0f, 1f)))
+                                        lastX = curX
+                                        lastY = curY
+                                        lastTime = curTime
+                                    }
+                                }
+                            }
+
+                            val durationMs = maxOf(30L, lastTime - startTime)
+                            val endPoint = Pair((lastX / w).coerceIn(0f, 1f), (lastY / h).coerceIn(0f, 1f))
+                            if (points.lastOrNull() != endPoint) {
+                                points.add(endPoint)
+                            }
+
+                            if (!moved) {
+                                down.consume()
+                                val fx = (startX / w).coerceIn(0f, 1f)
+                                val fy = (startY / h).coerceIn(0f, 1f)
+                                scope.launch {
+                                    pipInput.tap(fx, fy)
+                                }
+                            } else {
+                                val totalDx = lastX - startX
+                                val totalDy = kotlin.math.abs(lastY - startY)
+                                val isLeftEdgeSwipe = (startX / w) <= 0.15f && totalDx > 30f && totalDx > totalDy * 1.2f
+                                if (isLeftEdgeSwipe) {
+                                    scope.launch {
+                                        pipInput.back()
+                                    }
+                                } else {
+                                    scope.launch {
+                                        pipInput.swipe(points, durationMs)
+                                    }
+                                }
+                            }
+                        }
+                    }
+            ) {
                 if (frame != null) {
                     val image = remember(frame) { frame.asImageBitmap() }
                     Image(image, stringResource(R.string.pip_screen), Modifier.fillMaxSize(), alignment = Alignment.TopCenter,
@@ -337,6 +423,19 @@ private fun PipWindow(
                         .clickable(onClickLabel = stringResource(R.string.collapse), onClick = onCollapse),
                     contentAlignment = Alignment.Center,
                 ) { Icon(HanaIcons.Close, stringResource(R.string.collapse), Modifier.size(12.dp), tint = HanaTheme.colors.ink) }
+
+                if (pipTouchEnabled && pipInput != null) {
+                    // 返回按键：向虚拟屏注入 KEYCODE_BACK
+                    Box(
+                        Modifier.align(Alignment.BottomStart).padding(6.dp).size(26.dp)
+                            .floatShadow(HanaTheme.colors, CircleShape).background(HanaTheme.colors.glass, CircleShape).clip(CircleShape)
+                            .clickable(onClickLabel = stringResource(R.string.back)) {
+                                scope.launch { pipInput.back() }
+                            }
+                            .testTag("pip-back"),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(HanaIcons.Back, stringResource(R.string.back), Modifier.size(13.dp), tint = HanaTheme.colors.ink) }
+                }
             }
         }
         // 边框微光画在玻璃框外沿:运行中为轻盈细致的科技微蓝描边，需要接管时为呼吸暖橙

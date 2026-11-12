@@ -138,6 +138,9 @@ class LoopPoliciesTest {
 
     @Test fun knowledgeLookups() {
         assertEquals(listOf(KnowledgeLookup.App("com.x")), NoticePolicy.knowledgeAfter(Verb.Observe, Place.app("com.x"), true))
+        assertEquals(listOf(KnowledgeLookup.App("com.x")), NoticePolicy.knowledgeAfter(Verb.LaunchApp, Place.app("com.x"), true))
+        assertEquals(emptyList<KnowledgeLookup>(), NoticePolicy.knowledgeAfter(Verb.LaunchApp, Place.app("com.x"), false))
+        assertEquals(listOf(KnowledgeLookup.App("com.x")), NoticePolicy.knowledgeAfter(Verb.OpenLink, Place.app("com.x"), true))
         assertEquals(listOf(KnowledgeLookup.Site("example.com")), NoticePolicy.knowledgeAfter(Verb.Observe, Place.site("WWW.Example.com"), true))
         assertEquals(listOf(KnowledgeLookup.Site("shop.example.com")), NoticePolicy.knowledgeAfter(Verb.Navigate, Place.site("shop.example.com"), true))
         assertEquals(emptyList<KnowledgeLookup>(), NoticePolicy.knowledgeAfter(Verb.Navigate, Place.site("shop.example.com"), false))

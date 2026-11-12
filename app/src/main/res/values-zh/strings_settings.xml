@@ -49,6 +49,8 @@
     <string name="settings_keep_on_sub">任务进行时屏幕不熄灭(没在用时照常变暗),结束后恢复</string>
     <string name="settings_mute">被操作的 App 静音</string>
     <string name="settings_mute_sub">Hana 操作的 App 不出声,你接手时恢复声音</string>
+    <string name="settings_pip_touch">允许在小窗里直接操作虚拟屏</string>
+    <string name="settings_pip_touch_sub">在悬浮小窗中直接用手指点击、滑动或返回操作虚拟屏</string>
     <string name="settings_pace">操作节奏</string>
     <string name="settings_pace_fast">快</string>
     <string name="settings_pace_fast_detail">步与步之间不停，文字一次填好</string>

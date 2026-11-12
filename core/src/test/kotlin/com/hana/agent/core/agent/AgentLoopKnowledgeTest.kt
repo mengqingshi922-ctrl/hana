@@ -53,6 +53,14 @@ class AgentLoopKnowledgeTest {
         assertEquals(1, msgs.refs().size)
     }
 
+    @Test fun injectsOnLaunchApp() {
+        val store = KnowledgeStore(listOf(e("beta", "p.b", body = "正文beta")))
+        val msgs = run("随便", store, FakeScreen(),
+            reply(call("phone_launch_app", """{"package":"p.b"}""")), finish)
+        assertEquals(1, msgs.refs().size)
+        assertTrue(msgs.refs().first().contains("正文beta"))
+    }
+
     @Test fun neverMoreThanThree() {
         val store = KnowledgeStore((1..5).map { e("app$it", "p.$it") })
         val msgs = run("app1 app2", store, PkgScreen(listOf("p.3", "p.4", "p.5")),

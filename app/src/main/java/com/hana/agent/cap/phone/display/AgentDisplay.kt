@@ -31,6 +31,7 @@ class AgentDisplay(
     private val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
 
     val displayId: Int
+    val pipInput: PipInput by lazy { DisplayPipInput(shell, this) }
 
     private val _frames = MutableStateFlow<Bitmap?>(null)
     /** 实时画面:限速 ≤10 帧/秒,缩到宽 ≤360。 */

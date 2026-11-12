@@ -1336,6 +1336,9 @@ class CapsuleController(
                     holding = talking && talk.byTouch,
                     onTalk = if (canTalk()) ::toggleTalk else null,
                     talkLabel = tr(if (talking && !talk.byTouch) R.string.capsule_voice_send else R.string.capsule_voice_talk),
+                    virtualScreenFrame = preview,
+                    pipInput = tasks.pipInput,
+                    pipTouchEnabled = flags.pipTouchEnabled(),
                 )
             }
         }

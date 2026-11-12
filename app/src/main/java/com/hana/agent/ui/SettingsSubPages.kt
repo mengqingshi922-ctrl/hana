@@ -212,6 +212,7 @@ fun DuringWorkScreen(
     operatingPace: OperatingPace = OperatingPace.DEFAULT, onOperatingPace: (OperatingPace) -> Unit = {},
     selfConfig: Boolean = false, onSelfConfig: (Boolean) -> Unit = {},
     runInBackground: Boolean = true, onRunInBackground: (Boolean) -> Unit = {},
+    pipTouchEnabled: Boolean = false, onPipTouchEnabled: (Boolean) -> Unit = {},
 ) {
     PageScaffold(stringResource(R.string.settings_during_work), onBack) {
         GroupCard {
@@ -232,6 +233,12 @@ fun DuringWorkScreen(
                 onClick = { onMuteTarget(!muteTarget) },
             ) {
                 HanaSwitch(muteTarget, onMuteTarget, Modifier.testTag("work-mute-target"))
+            }
+            ListRow(
+                HanaIcons.Screens, stringResource(R.string.settings_pip_touch), stringResource(R.string.settings_pip_touch_sub),
+                onClick = { onPipTouchEnabled(!pipTouchEnabled) },
+            ) {
+                HanaSwitch(pipTouchEnabled, onPipTouchEnabled, Modifier.testTag("work-pip-touch"))
             }
             parallel?.let { ParallelRow(it, onParallelMax) }
         }

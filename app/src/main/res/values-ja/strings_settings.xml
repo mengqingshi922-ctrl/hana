@@ -49,6 +49,8 @@
     <string name="settings_keep_on_sub">タスクの実行中は画面をオンのままにし(操作していないときは通常どおり暗くなります)、終わると通常に戻します</string>
     <string name="settings_mute">使用中のアプリをミュート</string>
     <string name="settings_mute_sub">Hana が使っているアプリは無音になり、あなたが操作を引き継ぐと音が戻ります</string>
+    <string name="settings_pip_touch">PiP 小窓で仮想画面を直接操作</string>
+    <string name="settings_pip_touch_sub">小窓画面上でタップ、スワイプ、または戻る操作を直接行えます</string>
     <string name="settings_pace">操作のペース</string>
     <string name="settings_pace_fast">速い</string>
     <string name="settings_pace_fast_detail">ステップの間に間を置かず、テキストは一度に入力します</string>

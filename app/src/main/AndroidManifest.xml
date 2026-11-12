@@ -30,6 +30,11 @@
     <uses-permission
         android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
+    <!-- 允许外部系统（Tasker/Termux/ADB 脚本等）向 Hana 派发自动化任务 -->
+    <permission
+        android:name="com.hana.agent.permission.CREATE_TASK"
+        android:protectionLevel="normal" />
+    <uses-permission android:name="com.hana.agent.permission.CREATE_TASK" />
 
     <!-- 对话页附件可以拍照(走系统相机),声明用到相机、但不是必需:没有相机的设备照常安装。
          有的系统按 APK 特征给应用分类,不声明时 Hana 可能被当成游戏、限制刷新率;这条声明要留着 -->
@@ -276,6 +281,14 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".task.TriggerAlarmReceiver" android:exported="false" />
+        <!-- 外部自动化任务广播接收器（Tasker/Termux/ADB 脚本/快捷指令）：导出接收器，内置特性开关与频次限流保护 -->
+        <receiver
+            android:name=".task.HanaTaskReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.hana.agent.ACTION_CREATE_TASK" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>

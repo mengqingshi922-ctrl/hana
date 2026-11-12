@@ -228,6 +228,10 @@ class TaskRun(
     val displayId: StateFlow<Int> = _displayId.flow
     /** 此刻在用内置浏览器(工具的界面是网页);没用、任务结束后为 false。 */
     val webOpen: StateFlow<Boolean> = _webOpen.flow
+    @Volatile private var activePipInput: com.hana.agent.cap.phone.display.PipInput? = null
+    /** 虚拟屏小窗手势反向注入接口。 */
+    val pipInput: com.hana.agent.cap.phone.display.PipInput?
+        get() = activePipInput
     /** 本任务进行中插的话和它们的去向;悬浮胶囊的对话卡片按任务取。 */
     val steers: StateFlow<List<SteerNote>> = _steers.flow
     // 带对话编号的那份先写:收不带编号的状态时读到的编号就已经是这个任务的(界面据此不把别的对话的状态接到屏上)
@@ -568,6 +572,7 @@ class TaskRun(
                         create()
                     }.also { d ->
                         _displayId.value = d.displayId
+                        activePipInput = d.pipInput
                         side.launch { d.frames.collect { if (dispatcher?.surface != WEB) _frames.value = if (previewAllowed()) it else null } }
                         side.launch { appAccess.state.collect { if (dispatcher?.surface != WEB && !previewAllowed()) _frames.value = null } }
                     }
@@ -973,6 +978,7 @@ class TaskRun(
             }
             // 屏释放后、对外报结束前清掉:界面看到任务结束时已经没有屏了
             _displayId.value = -1
+            activePipInput = null
             _appShown.value = false
             if (connection != null) phoneServices.sharedShell.release()
         }

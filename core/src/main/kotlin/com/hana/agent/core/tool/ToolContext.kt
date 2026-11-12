@@ -44,6 +44,8 @@ internal class ToolConfig(
     val selfConfig: com.hana.agent.core.settings.SelfConfig? = null,
     /** 存下的运行记录;给了、而这个对话之前有记过运行的轮次时提供 history_read。 */
     val runRecords: com.hana.agent.core.record.RunRecords? = null,
+    /** 跨会话长期任务记忆存储;给了才提供 task_memory_search、task_memory_step、task_memory_timeline。 */
+    val taskMemoryStore: com.hana.agent.core.memory.TaskMemoryStore? = null,
 )
 
 /**

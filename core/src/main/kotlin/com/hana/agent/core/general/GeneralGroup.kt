@@ -6,7 +6,9 @@ import com.hana.agent.core.tool.AgentTool
 internal object GeneralGroup {
     val tools: List<AgentTool> = listOf(
         Wait, ViewPastScreens, ViewUserScreen, AskUser, RequestConfirmation, HandToUser, HandleObstacle, EndNotDone,
-        KnowledgeSearch, KnowledgeRead, SkillSearch, SkillRead, SkillSave, MemorySearch, MemorySave, ProfileEdit, HistoryRead, ScheduleTask, SpawnAgent,
+        KnowledgeSearch, KnowledgeRead, SkillSearch, SkillRead, SkillSave, MemorySearch, MemorySave, ProfileEdit, HistoryRead,
+        TaskMemorySearch, TaskMemoryStep, TaskMemoryTimeline,
+        ScheduleTask, SpawnAgent,
         com.hana.agent.core.settings.SettingsList, com.hana.agent.core.settings.SettingsSet,
     )
 }

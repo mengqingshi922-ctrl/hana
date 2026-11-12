@@ -49,6 +49,8 @@
     <string name="settings_keep_on_sub">작업이 실행되는 동안 화면이 켜져 있고(사용하지 않을 때는 평소처럼 어두워져요), 끝나면 원래대로 돌아가요</string>
     <string name="settings_mute">사용 중인 앱 음소거</string>
     <string name="settings_mute_sub">Hana가 쓰는 앱은 소리가 나지 않고, 내가 직접 처리하면 소리가 돌아와요</string>
+    <string name="settings_pip_touch">PiP 창에서 가상 화면 직접 조작</string>
+    <string name="settings_pip_touch_sub">플로팅 창 화면에서 탭, 스와이프 또는 뒤로 가기를 직접 조작할 수 있어요</string>
     <string name="settings_pace">조작 속도</string>
     <string name="settings_pace_fast">빠르게</string>
     <string name="settings_pace_fast_detail">단계 사이에 쉬지 않고 텍스트를 한 번에 입력해요</string>

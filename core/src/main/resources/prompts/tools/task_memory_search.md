@@ -1,0 +1,1 @@
+Search Hana's long-term cross-session task memories by goal keywords or specific app package. Returns past matching tasks with their goals, conclusions, apps, and task IDs. Use task_memory_step to view exact step sequences for a specific task.

@@ -16,6 +16,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.Image
@@ -188,6 +194,8 @@ fun CapsuleContent(
     speedEnabled: Boolean = false,
     virtualScreenFrame: android.graphics.Bitmap? = null,
     onStateChange: ((CapsuleState) -> Unit)? = null,
+    pipInput: com.hana.agent.cap.phone.display.PipInput? = null,
+    pipTouchEnabled: Boolean = false,
 ) {
     // 淡下去、恢复都慢慢来;关了动画时直接换
     val shown = if (HanaTheme.reduceMotion) alpha else animateFloatAsState(alpha, tween(FADE_MS), label = "fade").value
@@ -210,6 +218,8 @@ fun CapsuleContent(
                 onSpeedToggle = onSpeedToggle,
                 speedEnabled = speedEnabled,
                 virtualScreenFrame = virtualScreenFrame,
+                pipInput = pipInput,
+                pipTouchEnabled = pipTouchEnabled,
             )
             else -> Capsule(
                 view = view,
@@ -413,8 +423,11 @@ fun ExpandedCockpit(
     speedEnabled: Boolean,
     virtualScreenFrame: android.graphics.Bitmap?,
     modifier: Modifier = Modifier,
+    pipInput: com.hana.agent.cap.phone.display.PipInput? = null,
+    pipTouchEnabled: Boolean = false,
 ) {
     val c = HanaTheme.colors
+    val scope = rememberCoroutineScope()
     val activeBotShape by GrokBotTheme.currentShape.collectAsState()
     val botShapeKey = remember(activeBotShape) { shapeKeyFor(activeBotShape) }
     val isWorking = view.kind == CapsuleKind.Running
@@ -501,7 +514,81 @@ fun ExpandedCockpit(
                     .clip(RoundedCornerShape(10.dp))
                     .background(androidx.compose.ui.graphics.Color.Black)
                     .border(0.5.dp, c.edge, RoundedCornerShape(10.dp))
-                    .testTag("capsule-virtual-screen"),
+                    .testTag("capsule-virtual-screen")
+                    .pointerInput(pipTouchEnabled, pipInput) {
+                        if (!pipTouchEnabled || pipInput == null) return@pointerInput
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val startX = down.position.x
+                            val startY = down.position.y
+                            val startTime = down.uptimeMillis
+                            val boundsSize: IntSize = this@awaitEachGesture.size
+                            val w = boundsSize.width.toFloat()
+                            val h = boundsSize.height.toFloat()
+                            if (w <= 0f || h <= 0f) return@awaitEachGesture
+
+                            var moved = false
+                            val points = mutableListOf(Pair((startX / w).coerceIn(0f, 1f), (startY / h).coerceIn(0f, 1f)))
+                            var lastX = startX
+                            var lastY = startY
+                            var lastTime = startTime
+
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    lastTime = change.uptimeMillis
+                                    break
+                                }
+                                val curX = change.position.x
+                                val curY = change.position.y
+                                val dx = curX - startX
+                                val dy = curY - startY
+                                val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                                if (dist > viewConfiguration.touchSlop) {
+                                    moved = true
+                                }
+                                if (moved) {
+                                    change.consume()
+                                    val curTime = change.uptimeMillis
+                                    if (curTime - lastTime >= 16L || dist > 10f) {
+                                        points.add(Pair((curX / w).coerceIn(0f, 1f), (curY / h).coerceIn(0f, 1f)))
+                                        lastX = curX
+                                        lastY = curY
+                                        lastTime = curTime
+                                    }
+                                }
+                            }
+
+                            val durationMs = maxOf(30L, lastTime - startTime)
+                            val endPoint = Pair((lastX / w).coerceIn(0f, 1f), (lastY / h).coerceIn(0f, 1f))
+                            if (points.lastOrNull() != endPoint) {
+                                points.add(endPoint)
+                            }
+
+                            if (!moved) {
+                                down.consume()
+                                val fx = (startX / w).coerceIn(0f, 1f)
+                                val fy = (startY / h).coerceIn(0f, 1f)
+                                scope.launch {
+                                    pipInput.tap(fx, fy)
+                                }
+                            } else {
+                                val totalDx = lastX - startX
+                                val totalDy = kotlin.math.abs(lastY - startY)
+                                val isLeftEdgeSwipe = (startX / w) <= 0.15f && totalDx > 25f && totalDx > totalDy * 1.2f
+                                if (isLeftEdgeSwipe) {
+                                    scope.launch {
+                                        pipInput.back()
+                                    }
+                                } else {
+                                    scope.launch {
+                                        pipInput.swipe(points, durationMs)
+                                    }
+                                }
+                            }
+                        }
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 if (virtualScreenFrame != null) {
@@ -511,6 +598,21 @@ fun ExpandedCockpit(
                         modifier = Modifier.matchParentSize(),
                         contentScale = ContentScale.Fit,
                     )
+                    if (pipTouchEnabled && pipInput != null) {
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(4.dp)
+                                .size(20.dp)
+                                .clip(RoundedCornerShape(4.dp))
+                                .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.6f))
+                                .clickable { scope.launch { pipInput.back() } }
+                                .testTag("capsule-screen-back"),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text("◀", style = TextStyle(fontSize = 10.sp), color = androidx.compose.ui.graphics.Color.White)
+                        }
+                    }
                 } else {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,

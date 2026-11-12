@@ -31,7 +31,7 @@ class RetryPolicy(
      */
     fun delayFor(e: Throwable, retriesSoFar: Int, waitedInTaskMs: Long = 0): Long? {
         if (retriesSoFar >= maxRetries || !transient(e)) return null
-        val wait = (e as? ModelError.RateLimited)?.retryAfterMs?.coerceIn(0, retryAfterCapMs) ?: run {
+        val wait = (e as? ModelError.RateLimited)?.retryAfterMs?.takeIf { it > 0 }?.coerceIn(0, retryAfterCapMs) ?: run {
             val ceiling = minOf(maxBackoffMs, baseMs shl minOf(retriesSoFar, 20))
             // 一半固定、一半随机:同时出错的几个任务不会在同一刻再撞上去
             ceiling / 2 + (ceiling / 2 * jitter().coerceIn(0.0, 1.0)).toLong()

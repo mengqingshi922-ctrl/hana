@@ -133,6 +133,7 @@ fun SettingsScreen(
     var runInBackground by remember { mutableStateOf(flags.runInBackground()) }
     var keepScreenOn by remember { mutableStateOf(flags.keepScreenOn()) }
     var muteTarget by remember { mutableStateOf(flags.muteTarget()) }
+    var pipTouchEnabled by remember { mutableStateOf(flags.pipTouchEnabled()) }
     var operatingPace by remember { mutableStateOf(flags.operatingPace()) }
     var selfConfig by remember { mutableStateOf(flags.selfConfig()) }
     var capsuleMode by remember { mutableStateOf(flags.capsuleMode()) }
@@ -231,6 +232,7 @@ fun SettingsScreen(
             operatingPace = operatingPace, onOperatingPace = { flags.setOperatingPace(it); operatingPace = it },
             selfConfig = selfConfig, onSelfConfig = { flags.setSelfConfig(it); selfConfig = it },
             runInBackground = runInBackground, onRunInBackground = { flags.setRunInBackground(it); runInBackground = it },
+            pipTouchEnabled = pipTouchEnabled, onPipTouchEnabled = { flags.setPipTouchEnabled(it); pipTouchEnabled = it },
         )
         SettingsPage.Language -> LanguageScreen(language, onLanguage = { AppLanguage.set(context, it) }, onBack = toHome)
         SettingsPage.Capsule -> CapsuleScreen(capsuleMode, onMode = { flags.setCapsuleMode(it); capsuleMode = it }, onBack = toHome)

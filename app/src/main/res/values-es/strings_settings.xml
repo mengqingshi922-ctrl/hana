@@ -53,6 +53,8 @@
     <string name="settings_keep_on_sub">La pantalla se queda encendida mientras se ejecuta una tarea (se atenúa como siempre si no la usas) y luego vuelve a la normalidad</string>
     <string name="settings_mute">Silenciar la app en uso</string>
     <string name="settings_mute_sub">Las apps que Hana usa se quedan en silencio; el sonido vuelve cuando tomas el control</string>
+    <string name="settings_pip_touch">Control táctil directo en PiP</string>
+    <string name="settings_pip_touch_sub">Toca, desliza y vuelve atrás en la pantalla virtual directamente en la ventana flotante</string>
     <string name="settings_pace">Ritmo de manejo</string>
     <string name="settings_pace_fast">Rápido</string>
     <string name="settings_pace_fast_detail">Sin pausas entre pasos; el texto se rellena de golpe</string>
