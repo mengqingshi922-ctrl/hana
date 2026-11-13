@@ -1,5 +1,6 @@
 package com.hana.agent.ui
 
+import android.os.Build
 import com.hana.agent.i18n.tr
 import com.hana.agent.i18n.trPlural
 import com.hana.agent.R
@@ -24,7 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -140,7 +141,7 @@ fun PhoneOpsScreen(
         }
     }
     if (confirmUnpair) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { confirmUnpair = false },
             title = { Text(PhoneSetupCopy.UNPAIR_TITLE) },
             text = { Text(PhoneSetupCopy.UNPAIR_BODY) },
@@ -450,6 +451,7 @@ fun LanguageScreen(language: AppLanguage, onLanguage: (AppLanguage) -> Unit, onB
     val flags = remember { FeatureFlags.get(context) }
     // 跟着设置走:任务里改了外观,这页也对得上
     val themeMode by remember(flags) { flags.themeModeChanges() }.collectAsState(flags.themeMode())
+    val dynamicColor by remember(flags) { flags.dynamicColorChanges() }.collectAsState(flags.dynamicColor())
     PageScaffold(stringResource(R.string.appearance_title), onBack) {
         // 语言和外观放在同一页:都是「界面长什么样」
         GroupLabel(stringResource(R.string.appearance_group))
@@ -464,6 +466,19 @@ fun LanguageScreen(language: AppLanguage, onLanguage: (AppLanguage) -> Unit, onB
         }
         if (themeMode == ThemeMode.System) {
             FooterNote(stringResource(R.string.appearance_system_detail))
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            GroupCard {
+                ListRow(
+                    HanaIcons.Spark,
+                    stringResource(R.string.appearance_dynamic_color),
+                    stringResource(R.string.appearance_dynamic_color_detail),
+                    first = true,
+                    onClick = { flags.setDynamicColor(!dynamicColor) },
+                ) {
+                    HanaSwitch(dynamicColor, { flags.setDynamicColor(it) }, Modifier.testTag("appearance-dynamic-color"))
+                }
+            }
         }
 
         GroupLabel(stringResource(R.string.language_title))
@@ -637,7 +652,7 @@ fun RoutesScreen(count: Int?, onClear: () -> Unit, onBack: () -> Unit) {
         }
     }
     if (confirmClear) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text(stringResource(R.string.routes_clear_title)) },
             text = { Text(stringResource(R.string.routes_clear_body)) },

@@ -1,5 +1,6 @@
 package com.hana.agent.core.remote
 
+import com.hana.agent.core.net.NetProxy
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -65,7 +66,8 @@ class RelayGateway(val url: HttpUrl, private val http: OkHttpClient) {
             return u
         }
 
-        fun http(): OkHttpClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+        /** 远程网关 OkHttpClient，收编至全局共享连接池并继承代理路由 */
+        fun http(): OkHttpClient = NetProxy.sharedClientBuilder().followRedirects(false).followSslRedirects(false)
             .callTimeout(java.time.Duration.ofSeconds(20)).build()
     }
 }

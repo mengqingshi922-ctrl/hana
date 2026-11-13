@@ -22,6 +22,7 @@ import com.hana.agent.HanaApp
 import com.hana.agent.R
 import com.hana.agent.core.trace.TraceArchive
 import com.hana.agent.core.trace.TraceRow
+import com.hana.agent.ui.components.HanaDialog
 import com.hana.agent.ui.components.GroupCard
 import com.hana.agent.ui.components.ListRow
 import com.hana.agent.ui.components.HanaSwitch
@@ -174,7 +175,7 @@ internal fun TraceSettingsRows() {
     if (editingLimit) {
         var text by rememberSaveable { mutableStateOf(traceLimitMiB.toString()) }
         val limit = text.toIntOrNull()?.takeIf { it > 0 }
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { editingLimit = false },
             title = { Text(stringResource(R.string.trace_storage_limit)) },
             text = {

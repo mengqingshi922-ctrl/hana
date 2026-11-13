@@ -69,4 +69,6 @@
     <string name="speech_doubao_plan">요금 방식</string>
     <string name="speech_doubao_duration_note">인식한 시간만큼 과금</string>
     <string name="speech_doubao_concurrent_note">동시 연결 수만큼 과금</string>
+    <string name="appearance_dynamic_color">다이나믹 컬러</string>
+    <string name="appearance_dynamic_color_detail">배경화면에서 강조 색상 추출(Android 12 이상)</string>
 </resources>

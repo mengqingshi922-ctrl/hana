@@ -69,4 +69,6 @@
     <string name="speech_doubao_plan">Facturación</string>
     <string name="speech_doubao_duration_note">Se cobra por tiempo reconocido</string>
     <string name="speech_doubao_concurrent_note">Se cobra por conexiones simultáneas</string>
+    <string name="appearance_dynamic_color">Color dinámico</string>
+    <string name="appearance_dynamic_color_detail">Adaptar el color de énfasis al fondo de pantalla (Android 12+)</string>
 </resources>

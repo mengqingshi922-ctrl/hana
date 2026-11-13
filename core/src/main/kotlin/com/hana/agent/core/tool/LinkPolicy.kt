@@ -1,5 +1,7 @@
 package com.hana.agent.core.tool
 
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * open_link 能打开什么。分发器执行前查一次,外壳服务启动前再查一次。
@@ -24,6 +26,20 @@ object LinkPolicy {
         "qqmusic", "orpheus", "sinaweibo", "snssdk141",
         "eleme", "pinduoduo", "dianping"
     )
+
+    /** 动态注册的包名 -> 默认 Scheme 前缀（如 "com.example.app" -> "exampleapp"） */
+    val dynamicPackageToDefaultScheme = ConcurrentHashMap<String, String>()
+
+    /** 动态注册的包名 -> 完整可用 Scheme 列表 */
+    val dynamicPackageToSchemes = ConcurrentHashMap<String, List<String>>()
+
+    /** 动态发现模板列表 */
+    val dynamicRouteTemplates = CopyOnWriteArrayList<DeepLinkRouteTemplate>()
+
+    /** 动态注册的可信自定义 Scheme 集合 */
+    @Volatile
+    var dynamicTrustedSchemes: Set<String> = emptySet()
+        private set
 
     /** 常用中国头部 App 深度快捷直达 DeepLink 路由映射表（直达目标功能页，绕过开屏广告与弹窗） */
     val COMMON_SHORTCUTS: Map<String, String> = mapOf(
@@ -90,6 +106,43 @@ object LinkPolicy {
         DeepLinkRouteTemplate("zhihu_search", "com.zhihu.android", Regex("(?:知乎搜索|知乎搜)\\s*(.+)"), "zhihu://search?q={keyword}"),
     )
 
+    /**
+     * 注册运行时动态发现的自定义 Scheme 与包名路由映射。
+     * 自动排除 file/content/javascript/intent 等高危 scheme 及 http/https 等通用 scheme。
+     */
+    fun registerDynamicRoutes(schemes: Set<String>, packageToSchemes: Map<String, List<String>>) {
+        val validFromSchemes = schemes
+            .map { it.trim().lowercase() }
+            .filter { it.isNotEmpty() && it !in BLOCKED_SCHEMES && it !in DISALLOWED_DYNAMIC_SCHEMES }
+            .toSet()
+
+        val validFromPkgs = mutableSetOf<String>()
+        for ((pkg, list) in packageToSchemes) {
+            val valid = list
+                .map { it.trim().lowercase() }
+                .filter { it.isNotEmpty() && it !in BLOCKED_SCHEMES && it !in DISALLOWED_DYNAMIC_SCHEMES }
+            if (valid.isNotEmpty()) {
+                dynamicPackageToSchemes[pkg] = valid
+                dynamicPackageToDefaultScheme[pkg] = valid.first()
+                validFromPkgs.addAll(valid)
+            }
+        }
+        dynamicTrustedSchemes = (dynamicTrustedSchemes + validFromSchemes + validFromPkgs).toSet()
+    }
+
+    /** 动态注册自定义路由模板 */
+    fun registerDynamicRouteTemplate(template: DeepLinkRouteTemplate) {
+        dynamicRouteTemplates.add(template)
+    }
+
+    /** 清空动态注册的路由与 Scheme（主要用于测试重置或重新发现） */
+    fun clearDynamicRoutes() {
+        dynamicTrustedSchemes = emptySet()
+        dynamicPackageToDefaultScheme.clear()
+        dynamicPackageToSchemes.clear()
+        dynamicRouteTemplates.clear()
+    }
+
     fun resolveShortcut(name: String): String? {
         val trimmed = name.trim()
         val direct = COMMON_SHORTCUTS[trimmed]
@@ -100,18 +153,50 @@ object LinkPolicy {
             if (matched != null) return matched
         }
 
+        for (template in dynamicRouteTemplates) {
+            val matched = template.resolve(trimmed)
+            if (matched != null) return matched
+        }
+
         val partial = COMMON_SHORTCUTS.entries.firstOrNull { (k, _) -> trimmed.contains(k) }?.value
         if (partial != null) return partial
+
+        // 未命中时继续检索动态注册的 packageToSchemes（支持传入 <packageName> 或 <packageName>:<path> 自动拼接可信自定义 Scheme DeepLink）
+        if (PACKAGE.matches(trimmed)) {
+            val scheme = dynamicPackageToDefaultScheme[trimmed]
+            if (scheme != null) return "$scheme://"
+        } else if (trimmed.contains(':')) {
+            val pkgCandidate = trimmed.substringBefore(':').trim()
+            if (PACKAGE.matches(pkgCandidate)) {
+                val scheme = dynamicPackageToDefaultScheme[pkgCandidate]
+                if (scheme != null) {
+                    val pathPart = trimmed.substringAfter(':').trim().trimStart('/')
+                    return "$scheme://$pathPart"
+                }
+            }
+        } else if (trimmed.contains('/') || trimmed.contains('?')) {
+            val delimiter = if (trimmed.contains('/')) '/' else '?'
+            val pkgCandidate = trimmed.substringBefore(delimiter).trim()
+            if (PACKAGE.matches(pkgCandidate)) {
+                val scheme = dynamicPackageToDefaultScheme[pkgCandidate]
+                if (scheme != null) {
+                    val remainder = trimmed.substring(pkgCandidate.length).trim()
+                    val pathPart = remainder.trimStart('/')
+                    return if (remainder.startsWith("?")) "$scheme://$remainder" else "$scheme://$pathPart"
+                }
+            }
+        }
 
         return null
     }
 
     fun isTrustedAppUri(uri: String): Boolean {
         val s = SCHEME.find(uri)?.groupValues?.get(1)?.lowercase() ?: return false
-        return s in TRUSTED_SCHEMES
+        return s in TRUSTED_SCHEMES || s in dynamicTrustedSchemes
     }
 
     private val BLOCKED_SCHEMES = setOf("intent", "file", "content", "javascript")
+    private val DISALLOWED_DYNAMIC_SCHEMES = setOf("http", "https", "package", "android")
     private val SCHEME = Regex("^([A-Za-z][A-Za-z0-9+.-]*):")
     /** 安卓包名的形状;分发器检查 package / app 参数也用它。 */
     val PACKAGE = Regex("^[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+$")

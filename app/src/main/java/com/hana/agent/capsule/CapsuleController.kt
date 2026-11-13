@@ -25,6 +25,7 @@ import androidx.compose.ui.graphics.TransformOrigin
 import android.graphics.Rect
 import com.hana.agent.record.RunStore
 import com.hana.agent.R
+import com.hana.agent.ui.components.DesignSystemGateway
 import com.hana.agent.cap.web.KeptPage
 import com.hana.agent.core.cap.web.KeptPageClose
 import com.hana.agent.i18n.tr
@@ -549,7 +550,7 @@ class CapsuleController(
         val access = (context.applicationContext as HanaApp).appAccess.current()
         if (shot.sourcePackages.isEmpty() || shot.sourcePackages.any { !access.canShare(it) }) {
             inputUi = inputUi.copy(screen = null)
-            android.widget.Toast.makeText(context, tr(R.string.appaccess_share_expired), android.widget.Toast.LENGTH_SHORT).show()
+            DesignSystemGateway.toast(context, R.string.appaccess_share_expired)
             return
         }
         val conversationId = CapsuleCards.conversationOf(c) ?: ConversationStore.shared(context).newConversation()
@@ -559,7 +560,7 @@ class CapsuleController(
             val latest = (context.applicationContext as HanaApp).appAccess.current()
             if (shot.sourcePackages.any { !latest.canShare(it) }) {
                 inputUi = inputUi.copy(screen = null)
-                android.widget.Toast.makeText(context, tr(R.string.appaccess_share_expired), android.widget.Toast.LENGTH_SHORT).show()
+                DesignSystemGateway.toast(context, R.string.appaccess_share_expired)
                 return@launch
             }
             submit(c, kind, UserScreenMessage.compose(saved.id, words), conversationId)

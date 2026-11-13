@@ -3,7 +3,7 @@ package com.hana.agent.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -178,7 +178,7 @@ private fun render(s: SelfCheckState) = SelfCheckReport.render(s, Diagnostics::s
 
 private fun copyReport(context: Context, text: String, toast: String) {
     context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(SelfCheckReport.HEADER, text))
-    Toast.makeText(context, toast, Toast.LENGTH_LONG).show()
+    DesignSystemGateway.toast(context, toast, isLong = true)
 }
 
 /** 不带状态的自检页,便于测试:顶上一段说明和开始 / 取消,下面每项一行;跑完后给出报告全文和复制、去 GitHub 两个按钮。 */

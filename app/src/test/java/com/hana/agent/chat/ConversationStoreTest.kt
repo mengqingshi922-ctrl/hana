@@ -1,14 +1,15 @@
 package com.hana.agent.chat
 
 import com.hana.agent.core.agent.Turn
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
-import kotlinx.coroutines.launch
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 class ConversationStoreTest {
     @get:Rule val tmp = TemporaryFolder()
@@ -35,7 +36,7 @@ class ConversationStoreTest {
         assertEquals(listOf("course.example.com", null), ConversationStore(dir).turns(id).map { it.keptPage })
         a.updateTurn(id, "r1") { it.copy(keptPageClosed = "expired") }
         assertEquals("expired", ConversationStore(dir).turns(id).first().keptPageClosed)
-        assertFalse("keptPage" in java.io.File(dir, "$id.json").readText().substringAfter("谢谢"))
+        assertFalse("keptPage" in File(dir, "$id.jsonl").readText().substringAfter("谢谢"))
     }
 
     /** 这一轮用过的能力组跟着存下(下一轮开局据此预先展开);没用过的不写这个字段。 */
@@ -46,7 +47,7 @@ class ConversationStoreTest {
         a.append(id, Turn("打开设置", "好了", "succeeded", groups = listOf("phone", "web")))
         a.append(id, Turn("谢谢", "不客气", "succeeded"))
         assertEquals(listOf(listOf("phone", "web"), emptyList()), ConversationStore(dir).turns(id).map { it.groups })
-        assertFalse("groups" in java.io.File(dir, "$id.json").readText().substringAfter("谢谢"))
+        assertFalse("groups" in File(dir, "$id.jsonl").readText().substringAfter("谢谢"))
     }
 
     /** 插话打断的那段回复和插话一一对应存下;没打断过的轮次不写这个字段,旧文件读出来是空的。 */
@@ -59,7 +60,7 @@ class ConversationStoreTest {
         val read = ConversationStore(dir).turns(id)
         assertEquals(listOf(listOf("今天晴", ""), emptyList()), read.map { it.interruptedReplies })
         assertEquals(listOf("改成查明天", "顺便看看后天"), read.first().steers)
-        assertFalse("interruptedReplies" in java.io.File(dir, "$id.json").readText().substringAfter("谢谢"))
+        assertFalse("interruptedReplies" in File(dir, "$id.jsonl").readText().substringAfter("谢谢"))
     }
 
     /** 插话之前已经说完的回复同样一一对应存下;没有时不写这个字段。 */
@@ -70,7 +71,7 @@ class ConversationStoreTest {
         a.append(id, Turn("查天气", "明天多云", "succeeded", steers = listOf("改成查明天"), finishedReplies = listOf("今天晴,最高 25 度。")))
         a.append(id, Turn("谢谢", "不客气", "succeeded", steers = listOf("好")))
         assertEquals(listOf(listOf("今天晴,最高 25 度。"), emptyList()), ConversationStore(dir).turns(id).map { it.finishedReplies })
-        assertFalse("finishedReplies" in java.io.File(dir, "$id.json").readText().substringAfter("谢谢"))
+        assertFalse("finishedReplies" in File(dir, "$id.jsonl").readText().substringAfter("谢谢"))
     }
 
     /** 删对话:对话文件、标题、挪到一边的损坏文件、临时文件都删掉,列表里没有了,别的对话不动;删完发一次改动。 */
@@ -82,8 +83,8 @@ class ConversationStoreTest {
         store.append(id, Turn("查天气", "晴", "succeeded"))
         store.setTitle(id, "天气")
         store.setPinned(id, true, at = 5L)
-        java.io.File(dir, "$id.json.corrupt-1").writeText("x")
-        java.io.File(dir, "$id.json.tmp").writeText("x")
+        File(dir, "$id.json.corrupt-1").writeText("x")
+        File(dir, "$id.jsonl.tmp").writeText("x")
         store.append(other, Turn("订票", "好了", "succeeded"))
         val changes = mutableListOf<String>()
         val deletions = mutableListOf<String>()
@@ -95,7 +96,7 @@ class ConversationStoreTest {
         gone.cancel()
         assertEquals(listOf(id), changes)
         assertEquals(listOf(id), deletions)
-        assertEquals(listOf("$other.json"), dir.list()!!.sorted())
+        assertEquals(setOf("$other.jsonl", "index.json"), dir.list()!!.toSet())
         assertEquals(listOf(other), store.list().map { it.id })
         assertEquals(emptyList<Turn>(), store.turns(id))
         assertEquals(null, store.title(id))
@@ -137,7 +138,7 @@ class ConversationStoreTest {
         assertEquals(mapOf("a" to 123L, "b" to null), again.list().associate { it.id to it.pinnedAt })
         assertTrue(again.setPinned("a", false))
         assertEquals(null, again.pinnedAt("a"))
-        assertFalse(java.io.File(dir, "a.pin").exists())
+        assertFalse(File(dir, "a.pin").exists())
         // 删掉的对话不再置顶回来
         again.delete("b")
         assertFalse(again.setPinned("b", true))
@@ -152,7 +153,7 @@ class ConversationStoreTest {
         store.delete(id)
         assertFalse(store.setTitle(id, "天气"))
         store.updateTurn(id, "r1") { it.copy(outcome = "补上的") }
-        assertTrue(dir.list()!!.isEmpty())
+        assertTrue(dir.list()!!.none { it.startsWith(id) })
 
         store.append(id, Turn("再来", "好", "succeeded"))
         assertTrue(store.setTitle(id, "再来"))
@@ -162,7 +163,7 @@ class ConversationStoreTest {
     @Test fun corruptFileReadsAsEmpty() {
         val dir = tmp.newFolder("c")
         val s = ConversationStore(dir)
-        java.io.File(dir, "x.json").writeText("{not json")
+        File(dir, "x.json").writeText("{not json")
         assertEquals(emptyList<Turn>(), s.turns("x"))
         s.append("x", Turn("a", "b", "cancelled"))
         assertEquals(1, s.turns("x").size)
@@ -171,7 +172,7 @@ class ConversationStoreTest {
     @Test fun corruptFileIsMovedAsideNotOverwritten() {
         val dir = tmp.newFolder("c")
         val s = ConversationStore(dir)
-        java.io.File(dir, "x.json").writeText("{not json")
+        File(dir, "x.json").writeText("{not json")
         s.append("x", Turn("a", "b", "cancelled"))
         val aside = dir.listFiles().orEmpty().filter { it.name.startsWith("x.json.corrupt-") }
         assertEquals(1, aside.size)
@@ -188,9 +189,9 @@ class ConversationStoreTest {
         s.append(a, Turn("查天气", "晴", "succeeded"))
         s.append(b, Turn("订票", "好了", "succeeded"))
         s.append(b, Turn("改签", "好了", "succeeded"))
-        java.io.File(dir, "$a.json").setLastModified(1_000)
-        java.io.File(dir, "$b.json").setLastModified(2_000)
-        java.io.File(dir, "broken.json").writeText("{")
+        File(dir, "$a.jsonl").setLastModified(1_000)
+        File(dir, "$b.jsonl").setLastModified(2_000)
+        File(dir, "broken.json").writeText("{")
         assertEquals(listOf(b to "订票", a to "查天气"), s.list().map { it.id to it.title })
     }
 
@@ -216,7 +217,7 @@ class ConversationStoreTest {
         val other = com.hana.agent.core.memory.MemoryNote(com.hana.agent.core.memory.NoteKind.pending, "m2", "t2", "m2")
         store.append("c1", Turn("点外卖", "ok", "succeeded", runId = "r1"))
         store.updateTurn("c1", "r1") { it.copy(memoryNotes = listOf(note, other), usedMemory = listOf("m1", "m3")) }
-        val raw = java.io.File(dir, "c1.json").readText()
+        val raw = File(dir, "c1.jsonl").readText()
         assertTrue(raw.contains("\"memoryId\":\"m1\""))
         assertFalse(raw.contains("text"))
         assertEquals(listOf(note, other), ConversationStore(dir).turns("c1").single().memoryNotes)
@@ -287,12 +288,12 @@ class ConversationStoreTest {
         assertEquals("shop.example.com", listed.getValue(paged).page?.host)
         assertEquals(null, listed.getValue(plain).page)
         // 对话文件的格式不变:没有多出来的字段
-        assertFalse(java.io.File(dir, "$paged.json").readText().contains("shop.example.com"))
+        assertFalse(File(dir, "$paged.jsonl").readText().contains("shop.example.com"))
         // 坏了的 .page 当作没有
-        java.io.File(dir, "$plain.page").writeText("{not json")
+        File(dir, "$plain.page").writeText("{not json")
         assertEquals(null, b.pageOrigin(plain))
         b.delete(paged)
-        assertFalse(java.io.File(dir, "$paged.page").exists())
+        assertFalse(File(dir, "$paged.page").exists())
         assertFalse(b.setPageOrigin(paged, PageOrigin("https://a.example/", "a.example")))
     }
 
@@ -317,7 +318,7 @@ class ConversationStoreTest {
         assertEquals(CurrentChat.Open(id), ConversationStore(dir).currentChat())
         assertEquals(CurrentChat.Open(id), ConversationStore(dir).current.value)
         // 记在旁边的 current 文件里,不动对话文件、不进列表
-        assertEquals(setOf("$id.json", "current"), dir.list()!!.toSet())
+        assertEquals(setOf("$id.jsonl", "current", "index.json"), dir.list()!!.toSet())
         assertEquals(listOf(id), a.list().map { it.id })
 
         // 删掉这个对话:指向它的记录一起清掉,胶囊回落到最近那个
@@ -331,10 +332,10 @@ class ConversationStoreTest {
         val store = ConversationStore(benchDir)
         for (i in 1..50) {
             val id = "conv_$i"
-            java.io.File(benchDir, "$id.json").writeText("""[{"userText":"测试会话$i","outcome":"ok","status":"succeeded"}]""")
-            java.io.File(benchDir, "$id.title").writeText("标题 $i")
-            java.io.File(benchDir, "$id.pin").writeText("1731218000000")
-            java.io.File(benchDir, "$id.page").writeText("""{"url":"https://example.com","host":"example.com","title":"测试"}""")
+            File(benchDir, "$id.json").writeText("""[{"userText":"测试会话$i","outcome":"ok","status":"succeeded"}]""")
+            File(benchDir, "$id.title").writeText("标题 $i")
+            File(benchDir, "$id.pin").writeText("1731218000000")
+            File(benchDir, "$id.page").writeText("""{"url":"https://example.com","host":"example.com","title":"测试"}""")
         }
 
         // 首次加载预热并建立索引缓存
@@ -349,5 +350,125 @@ class ConversationStoreTest {
         val cachedTimeMs = (System.nanoTime() - t1) / 1_000_000.0
         assertEquals(50, cachedList.size)
         assertTrue("Cached list should be ultra fast (< 10ms), was ${cachedTimeMs}ms", cachedTimeMs < 10.0)
+    }
+
+    /**
+     * 验证旧版 .json 格式对话文件能够无缝读取并在 append 后自动平滑迁移至 .jsonl。
+     */
+    @Test
+    fun migratesLegacyJsonToJsonlOnAppend() {
+        val dir = tmp.newFolder("legacy")
+        val id = "legacy_conv"
+        val legacyFile = File(dir, "$id.json")
+        val jsonlFile = File(dir, "$id.jsonl")
+
+        // 手动构造旧版 JSON 数组文件
+        val legacyJson = """
+            [
+                {"userText":"第一句","outcome":"结果1","status":"succeeded"},
+                {"userText":"第二句","outcome":"结果2","status":"succeeded"}
+            ]
+        """.trimIndent()
+        legacyFile.writeText(legacyJson)
+
+        val store = ConversationStore(dir)
+        // 1. 验证旧文件在尚未迁移前可正常完整读取
+        val turns = store.turns(id)
+        assertEquals(2, turns.size)
+        assertEquals("第一句", turns[0].userText)
+        assertEquals("第二句", turns[1].userText)
+        assertTrue(legacyFile.exists())
+        assertFalse(jsonlFile.exists())
+
+        // 2. 追加新轮次，触发迁移至 .jsonl
+        store.append(id, Turn("第三句", "结果3", "succeeded"))
+
+        // 3. 验证旧 .json 文件已被删除，.jsonl 已建立
+        assertFalse(legacyFile.exists())
+        assertTrue(jsonlFile.exists())
+
+        // 4. 验证全部 3 条历史无缝串联保留
+        val allTurns = store.turns(id)
+        assertEquals(3, allTurns.size)
+        assertEquals(listOf("第一句", "第二句", "第三句"), allTurns.map { it.userText })
+    }
+
+    /**
+     * 验证新建 ConversationStore(dir) 实例模拟冷启动时能直接从 index.json 恢复完整摘要，
+     * 并且经过多次追加后元数据（标题、置顶、页面来源）不丢失。
+     */
+    @Test
+    fun coldStartRecoversFromIndexJson() {
+        val dir = tmp.newFolder("cold_start")
+        val a = ConversationStore(dir)
+        val id = a.newConversation()
+        a.append(id, Turn("你好", "你好呀", "succeeded"))
+        a.setTitle(id, "打招呼")
+        a.setPinned(id, true, at = 9999L)
+        a.setPageOrigin(id, PageOrigin("https://example.com/hello", "example.com", "首页"))
+
+        assertTrue(File(dir, "index.json").exists())
+
+        // 新建实例模拟冷启动
+        val b = ConversationStore(dir)
+        val list = b.list()
+        assertEquals(1, list.size)
+        val summary = list.first()
+        assertEquals(id, summary.id)
+        assertEquals("打招呼", summary.title)
+        assertEquals(9999L, summary.pinnedAt)
+        assertEquals("example.com", summary.page?.host)
+
+        // 多次追加写，验证元数据不被冲刷丢失
+        b.append(id, Turn("吃了么", "吃了", "succeeded"))
+        b.append(id, Turn("再见", "拜拜", "succeeded"))
+
+        val c = ConversationStore(dir)
+        val listAfter = c.list()
+        assertEquals(1, listAfter.size)
+        val summaryAfter = listAfter.first()
+        assertEquals("打招呼", summaryAfter.title)
+        assertEquals(9999L, summaryAfter.pinnedAt)
+        assertEquals("example.com", summaryAfter.page?.host)
+        assertEquals(3, c.turns(id).size)
+    }
+
+    /**
+     * 验证 summaries StateFlow 与 list() 在各种变更操作下均保持完全一致。
+     */
+    @Test
+    fun summariesStateFlowKeepsInSyncWithList() = kotlinx.coroutines.test.runTest {
+        val dir = tmp.newFolder("sync")
+        val store = ConversationStore(dir)
+        val id1 = store.newConversation()
+        val id2 = store.newConversation()
+
+        assertEquals(emptyList<ConversationSummary>(), store.summaries.value)
+        assertEquals(store.list(), store.summaries.value)
+
+        store.append(id1, Turn("问天气", "晴", "succeeded"))
+        assertEquals(store.list(), store.summaries.value)
+        assertEquals(1, store.summaries.value.size)
+
+        store.append(id2, Turn("订外卖", "好了", "succeeded"))
+        assertEquals(store.list(), store.summaries.value)
+        assertEquals(2, store.summaries.value.size)
+
+        store.setTitle(id1, "天气预报")
+        assertEquals(store.list(), store.summaries.value)
+        assertEquals("天气预报", store.summaries.value.find { it.id == id1 }?.title)
+
+        store.setPinned(id1, true, at = 888L)
+        assertEquals(store.list(), store.summaries.value)
+        assertEquals(888L, store.summaries.value.find { it.id == id1 }?.pinnedAt)
+
+        store.setPageOrigin(id2, PageOrigin("https://food.com", "food.com", "美食"))
+        assertEquals(store.list(), store.summaries.value)
+        assertEquals("food.com", store.summaries.value.find { it.id == id2 }?.page?.host)
+
+        store.delete(id1)
+        assertEquals(store.list(), store.summaries.value)
+        assertEquals(1, store.summaries.value.size)
+        assertEquals(id2, store.summaries.value.single().id)
     }
 }

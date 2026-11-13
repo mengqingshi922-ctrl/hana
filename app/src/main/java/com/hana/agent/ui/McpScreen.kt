@@ -3,10 +3,10 @@ package com.hana.agent.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.widget.Toast
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.DesignSystemGateway
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -83,7 +83,7 @@ fun McpScreen(runtime: McpRuntime, onBack: () -> Unit) {
         deviceSettings = { DeviceAccessSection(runtime.device.settings) },
         relayGuide = { mcp -> RelaySection(runtime, mcp) { copy(context, it) } },
     )
-    if (confirmRegenerate) AlertDialog(
+    if (confirmRegenerate) HanaDialog(
         onDismissRequest = { confirmRegenerate = false },
         title = { Text(stringResource(R.string.mcp_regenerate_title)) },
         text = { Text(stringResource(R.string.mcp_regenerate_body)) },
@@ -291,5 +291,5 @@ private fun clock(ms: Long): String =
 
 private fun copy(context: Context, text: String) {
     context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Hana", text))
-    Toast.makeText(context, context.getString(R.string.mcp_copied), Toast.LENGTH_SHORT).show()
+    DesignSystemGateway.toast(context, R.string.mcp_copied)
 }

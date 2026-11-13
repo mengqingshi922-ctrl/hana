@@ -10,6 +10,7 @@ import com.hana.agent.core.mcp.McpElicitationRequest
 import com.hana.agent.core.mcp.McpElicitationResponse
 import com.hana.agent.core.mcp.McpRpc
 import com.hana.agent.core.mcp.McpTaskInfo
+import com.hana.agent.core.net.NetProxy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -912,8 +913,9 @@ class HttpMcpEndpoint(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private val json = Json { ignoreUnknownKeys = true }
 
+        /** 使用全局共享 OkHttpClient 配置 MCP 客户端超时与代理 */
         fun defaultHttpClient(timeoutMs: Long = 30_000L): OkHttpClient =
-            OkHttpClient.Builder()
+            NetProxy.sharedClientBuilder()
                 .connectTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .readTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .writeTimeout(timeoutMs, TimeUnit.MILLISECONDS)

@@ -1,11 +1,10 @@
 package com.hana.agent.ui
 
 import com.hana.agent.R
-import com.hana.agent.i18n.tr
+import com.hana.agent.ui.components.DesignSystemGateway
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -26,8 +25,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.platform.LocalContext
@@ -40,18 +41,32 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import com.hana.agent.ui.theme.HanaTheme
 
 /** 按 Markdown 显示一段回答；流式草稿用临时闭合的语法预览。 */
 @Composable
 fun MarkdownText(markdown: String, style: TextStyle, modifier: Modifier = Modifier, streaming: Boolean = false) {
-    // 流式片段更新频繁，在后台解析；上一帧保留到新片段准备好，避免主线程卡顿和文字闪空。
+    // 流式片段更新频繁，在后台微批防抖（约 48ms 节流）解析；上一帧保留到新片段准备好，避免每吐 1 个 token 造成重组雪崩。
     val colors = HanaTheme.colors
     val styles = remember(colors) { MarkdownModel.Styles.of(colors) }
     val blocks = if (streaming) {
-        val parsed by produceState<List<MdBlock>>(emptyList(), markdown, styles) {
-            value = withContext(Dispatchers.Default) { MarkdownModel.parseStreamingCached(markdown, styles) }
+        val parsed by produceState<List<MdBlock>>(emptyList(), styles) {
+            var lastParsedTime = 0L
+            snapshotFlow { markdown }
+                .collectLatest { md ->
+                    val now = android.os.SystemClock.uptimeMillis()
+                    val elapsed = now - lastParsedTime
+                    if (lastParsedTime > 0L && elapsed < 48L) {
+                        delay(48L - elapsed)
+                    }
+                    value = withContext(Dispatchers.Default) {
+                        MarkdownModel.parseStreamingCached(md, styles)
+                    }
+                    lastParsedTime = android.os.SystemClock.uptimeMillis()
+                }
         }
         parsed
     } else remember(markdown, styles) { MarkdownModel.parse(markdown, styles) }
@@ -62,7 +77,7 @@ fun MarkdownText(markdown: String, style: TextStyle, modifier: Modifier = Modifi
                 try {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 } catch (e: ActivityNotFoundException) {
-                    Toast.makeText(context, tr(R.string.no_app_for_link), Toast.LENGTH_SHORT).show()
+                    DesignSystemGateway.toast(context, R.string.no_app_for_link)
                 }
             }
         }
@@ -75,8 +90,22 @@ fun MarkdownText(markdown: String, style: TextStyle, modifier: Modifier = Modifi
 @Composable
 private fun Blocks(blocks: List<MdBlock>, style: TextStyle, modifier: Modifier = Modifier, depth: Int, gap: Int = 8) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(gap.dp)) {
-        blocks.forEach { Block(it, style, depth) }
+        blocks.forEachIndexed { index, b ->
+            key(index, blockSignature(b)) {
+                Block(b, style, depth)
+            }
+        }
     }
+}
+
+private fun blockSignature(b: MdBlock): Any = when (b) {
+    is MdBlock.Para -> b.text.text
+    is MdBlock.Heading -> b.level to b.text.text
+    is MdBlock.Code -> b.info to b.code
+    is MdBlock.Quote -> b.blocks.map(::blockSignature)
+    is MdBlock.ListBlock -> Triple(b.start, b.tight, b.items.map { it.map(::blockSignature) })
+    is MdBlock.Table -> b.header.map { it.text } to b.rows.map { r -> r.map { it.text } }
+    MdBlock.Rule -> "rule"
 }
 
 @Composable

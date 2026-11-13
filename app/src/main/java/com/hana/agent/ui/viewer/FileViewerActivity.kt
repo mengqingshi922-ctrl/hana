@@ -9,7 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -82,7 +82,7 @@ object FileViewer {
         try {
             context.startActivity(chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         } catch (e: ActivityNotFoundException) {
-            Toast.makeText(context, failure, Toast.LENGTH_SHORT).show()
+            DesignSystemGateway.toast(context, failure)
         }
     }
 }

@@ -9,7 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -165,12 +165,12 @@ internal fun AttachPanelHost(
             try { camera.launch(uri) } catch (e: ActivityNotFoundException) {
                 cameraUri = null
                 AttachFiles.discardCamera(context, uri)
-                Toast.makeText(context, AttachCopy.NO_CAMERA, Toast.LENGTH_SHORT).show()
+                DesignSystemGateway.toast(context, AttachCopy.NO_CAMERA)
             }
         },
         onAlbum = openAlbum,
         onFiles = { files.launch(arrayOf("*/*")) },
-        onToggle = { if (!onToggle(it)) Toast.makeText(context, AttachCopy.FULL, Toast.LENGTH_SHORT).show() },
+        onToggle = { if (!onToggle(it)) DesignSystemGateway.toast(context, AttachCopy.FULL) },
         onGrant = {
             val activity = context.findActivity()
             val blocked = access == PhotoAccess.None && RecentPhotos.asked(context) && activity != null &&

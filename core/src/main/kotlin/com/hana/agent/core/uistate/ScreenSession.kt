@@ -16,6 +16,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlin.math.roundToInt
+import com.hana.agent.core.vision.ImageOps
 import com.hana.agent.core.vision.LocateRegistry
 import com.hana.agent.core.vision.Locator
 import com.hana.agent.core.vision.VisionService
@@ -72,6 +73,7 @@ internal class ScreenSession(
     vision: VisionService? = null,
     private val adaptiveVision: Boolean = false,
     private val uiTreeFormat: UiTreeFormat = UiTreeFormat.JSON,
+    private val imageOps: ImageOps? = null,
 ) {
     /** 限制单屏传递元素上限为 250，兼顾长列表完整呈现与病态超长树的剪枝，减少 Token 开销并防止 GC 停顿与模型超时。 */
     private val modelElementsLimit get() = 250
@@ -295,6 +297,44 @@ internal class ScreenSession(
     suspend fun peek(): ScreenSnapshot? =
         if (isFrozen && frozenSnapshot != null) frozenSnapshot else screenAttempt { screen.peek() }
 
+    /**
+     * 当处于手机屏幕且 UI 树质量较差 (poor tree) 时，为模型构建 Set-of-Marks (SoM) 标注数据，并在即将发给模型的图像副本上绘制数字标牌。
+     * [rawPng] 是原始无标牌图像，仅对模型图像绘制标牌；原始字节留给回看与看门狗。
+     */
+    private fun applyVisualMarksIfNeeded(
+        rawPng: ByteArray?,
+        tree: TreeCheck,
+        ocr: List<VisibleTextLine>?,
+    ): Pair<ByteArray?, JsonArray?> {
+        if (surface.id != "phone" || !tree.poor || ocr.isNullOrEmpty()) {
+            return rawPng to null
+        }
+        val visualMarks = buildJsonArray {
+            ocr.forEachIndexed { i, line ->
+                add(buildJsonObject {
+                    put("ref", "@v_txt$i")
+                    put("text", line.text)
+                    put("bounds", JsonArray(line.bounds.map(::JsonPrimitive)))
+                    if (line.bounds.size == 4) {
+                        val cx = (line.bounds[0] + line.bounds[2]) / 2
+                        val cy = (line.bounds[1] + line.bounds[3]) / 2
+                        put("center", buildJsonObject { put("x", cx); put("y", cy) })
+                    }
+                })
+            }
+        }
+        val marks: List<Pair<Int, IntArray>> = ocr.mapIndexedNotNull { i, line ->
+            if (line.bounds.size == 4) i to line.bounds.toIntArray() else null
+        }
+        val ops = imageOps
+        val markedImage = if (rawPng != null && marks.isNotEmpty() && ops != null) {
+            runCatching { ops.drawVisualMarks(rawPng, marks) }.getOrElse { rawPng }
+        } else {
+            rawPng
+        }
+        return markedImage to visualMarks
+    }
+
     suspend fun observe(withImage: Boolean, adaptiveImage: Boolean = false, recordFrame: Boolean = true): ToolExecution {
         val s = snapshot()
         val (tree, ocr, ocrStatus) = readTree(s)
@@ -305,6 +345,12 @@ internal class ScreenSession(
         val seen = interfaceRead(s, ocr.orEmpty())
         val (elements, hidden) = ScreenJson.elements(s, modelElementsLimit)
         val shotId = shots.next()
+        // 防截屏页面截到的是黑图,给模型只会误导
+        val png = if ((sendImage && textOnlyDepth == 0 || (recordFrames && recordFrame && textOnlyDepth == 0)) && !s.protected) screenshotPngCached() else null
+        // 只有主模型能看图才留图；付款页和普通页面按同一规则处理
+        val kept = png?.takeIf { visionEnabled }
+        shots.remember(Recall(shotId, shots.step, s.packageName, kept, observationText(s, ocr.orEmpty())))
+        val (image, visualMarks) = applyVisualMarksIfNeeded(png.takeIf { sendImage }, tree, ocr)
         val content = okObj {
             val w = s.web
             if (w == null) put("currentApp", s.packageName ?: s.unreadableApp)
@@ -332,32 +378,11 @@ internal class ScreenSession(
             }
             ocr?.let { put("visibleText", VisibleText.json(it)) }
             if (surface.id == "phone") ScreenMap.json(s, ocr.orEmpty())?.let { put("screenMap", it) }
-            if (surface.id == "phone" && tree.poor && !ocr.isNullOrEmpty()) {
-                put("visualMarks", buildJsonArray {
-                    ocr.forEachIndexed { i, line ->
-                        add(buildJsonObject {
-                            put("ref", "@v_txt$i")
-                            put("text", line.text)
-                            put("bounds", JsonArray(line.bounds.map(::JsonPrimitive)))
-                            if (line.bounds.size == 4) {
-                                val cx = (line.bounds[0] + line.bounds[2]) / 2
-                                val cy = (line.bounds[1] + line.bounds[3]) / 2
-                                put("center", buildJsonObject { put("x", cx); put("y", cy) })
-                            }
-                        })
-                    }
-                })
-            }
+            visualMarks?.let { put("visualMarks", it) }
             val omitted = s.web?.omitted ?: 0
             put("truncated", hidden > 0 || omitted > 0)
             if (omitted > 0) put("omitted", hidden + omitted)
         }
-        // 防截屏页面截到的是黑图,给模型只会误导
-        val png = if ((sendImage && textOnlyDepth == 0 || (recordFrames && recordFrame && textOnlyDepth == 0)) && !s.protected) screenshotPngCached() else null
-        // 只有主模型能看图才留图；付款页和普通页面按同一规则处理
-        val kept = png?.takeIf { visionEnabled }
-        shots.remember(Recall(shotId, shots.step, s.packageName, kept, observationText(s, ocr.orEmpty())))
-        val image = png.takeIf { sendImage }
         return ToolExecution(content, image = image, frame = png, imageIds = listOfNotNull(image?.let { shotId }), observations = listOf(seen))
     }
 
@@ -404,7 +429,8 @@ internal class ScreenSession(
         if (png != null) recalls.indexOfLast { it.id == shotId }.takeIf { it >= 0 }?.let { i ->
             val r = recalls[i]; recalls[i] = Recall(r.id, r.step, r.app, png, r.elementsText)
         }
-        return ToolDispatcher.Glance(JsonObject(obs.content - "ok"), png, shotId, obs.observations)
+        val (markedImage, _) = applyVisualMarksIfNeeded(png, lastTree ?: TreeAdequacy.ofTree(s), lastOcrText)
+        return ToolDispatcher.Glance(JsonObject(obs.content - "ok"), markedImage, shotId, obs.observations)
     }
 
     /** 动作成功后附上此刻的一屏(端口在动作里已等过界面变化):元素表放进 screen 字段,画面另附,结果里写上它的 screenshotId。 */
@@ -437,6 +463,7 @@ internal class ScreenSession(
         val s = cur.screen
         val (tree, ocr, ocrStatus) = readTree(s)
         val shotId = shots.next()
+        val (_, visualMarks) = applyVisualMarksIfNeeded(null, tree, ocr)
         val diff = if (s.protected) {
             // 受保护页面看不到画面和元素；下一次从全量重新开始
             shown = null; chain.clear()
@@ -446,13 +473,14 @@ internal class ScreenSession(
                 put("screenshotId", shotId)
             }
         } else {
-            val d = InterfaceUpdate.between(shown, cur, seen, modelElementsLimit)
+            val d = InterfaceUpdate.between(shown, cur, seen, modelElementsLimit, treeFormat = uiTreeFormat)
             shown = cur
             if (d["full"] == JsonPrimitive(true)) chain.clear()
             chain += cur.snapshotId
             JsonObject(d + ("screenshotId" to JsonPrimitive(shotId)) +
                 (ocr?.let { mapOf("visibleText" to VisibleText.json(it)) } ?: emptyMap()) +
                 (if (surface.id == "phone") ScreenMap.json(s, ocr.orEmpty())?.let { mapOf("screenMap" to it) } ?: emptyMap() else emptyMap()) +
+                (visualMarks?.let { mapOf("visualMarks" to it) } ?: emptyMap()) +
                 (if (s.changedDuringRead) mapOf("note" to JsonPrimitive(NOTE_CHANGED_DURING_READ)) else emptyMap()) +
                 (s.opened?.let { mapOf("opened" to openedJson(it)) } ?: emptyMap()) +
                 (s.web?.dialog?.let { mapOf("dialog" to dialogJson(it)) } ?: emptyMap()) +
@@ -474,10 +502,11 @@ internal class ScreenSession(
         shots.remember(Recall(shotId, shots.step, s.packageName, kept, text))
         // 旧模式总附画面；分级模式只在元素明显不足时附画面。
         val attach = kept?.takeIf { sendImage && r.images.isEmpty() }
+        val (markedAttach, _) = applyVisualMarksIfNeeded(attach, tree, ocr)
         val shownDiff = if (imageReason == null) diff else JsonObject(diff + ("imageReason" to JsonPrimitive(imageReason)))
         return r.with(content = JsonObject(r.content + ("screen" to onSurface(shownDiff))),
-            frame = r.frame ?: png?.takeIf { recordFrames }, images = attach?.let { listOf(it) } ?: r.images,
-            screenElements = ScreenJson.elements(s, modelElementsLimit).first, imageIds = if (attach != null) listOf(shotId) else r.imageIds).observing(read)
+            frame = r.frame ?: png?.takeIf { recordFrames }, images = markedAttach?.let { listOf(it) } ?: r.images,
+            screenElements = ScreenJson.elements(s, modelElementsLimit).first, imageIds = if (markedAttach != null) listOf(shotId) else r.imageIds).observing(read)
     }
 
     /** 动作之前的界面状态(不登记编号)和一帧画面,判效果用;读不到的为 null。 */

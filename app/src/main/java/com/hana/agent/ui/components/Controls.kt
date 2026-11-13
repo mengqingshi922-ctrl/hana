@@ -35,6 +35,9 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import com.hana.agent.ui.haptic.HapticManager
+import com.hana.agent.ui.haptic.HapticPattern
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
@@ -65,6 +68,7 @@ fun HanaSwitch(
     enabled: Boolean = true,
 ) {
     val c = HanaTheme.colors
+    val context = LocalContext.current
     val reduce = HanaTheme.reduceMotion
     val position by animateFloatAsState(if (checked) 1f else 0f, HanaMotion.switch(reduce), label = "switch")
     val track by animateColorAsState(if (checked) c.accent else c.greySoft, HanaMotion.switch(reduce), label = "switch-track")
@@ -74,7 +78,17 @@ fun HanaSwitch(
         modifier
             .then(
                 if (onCheckedChange != null) Modifier.minimumInteractiveComponentSize()
-                    .toggleable(checked, enabled = enabled, role = Role.Switch, interactionSource = null, indication = null, onValueChange = onCheckedChange)
+                    .toggleable(
+                        checked,
+                        enabled = enabled,
+                        role = Role.Switch,
+                        interactionSource = null,
+                        indication = null,
+                        onValueChange = {
+                            HapticManager.trigger(context, HapticPattern.ElasticSnap)
+                            onCheckedChange(it)
+                        },
+                    )
                 else Modifier,
             )
             .size(44.dp, 26.dp)
@@ -136,6 +150,7 @@ fun HanaButton(
     enabled: Boolean = true,
 ) {
     val c = HanaTheme.colors
+    val context = LocalContext.current
     val shape = size.shape
     val (bg, fg) = when (kind) {
         ButtonKind.Primary -> c.accent to c.onAccent
@@ -147,7 +162,10 @@ fun HanaButton(
         modifier
             .then(if (kind == ButtonKind.Secondary) Modifier.cardSurface(c, shape) else Modifier.background(bg, shape))
             .clip(shape)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .clickable(enabled = enabled, role = Role.Button, onClick = {
+                HapticManager.trigger(context, HapticPattern.LightTick)
+                onClick()
+            })
             .alpha(if (enabled) 1f else 0.45f)
             .height(size.height)
             .padding(horizontal = size.padding),
@@ -169,6 +187,7 @@ fun SegmentedControl(
     tags: List<String>? = null,
 ) {
     val c = HanaTheme.colors
+    val context = LocalContext.current
     Row(modifier.fillMaxWidth().background(c.fill, SegmentOuter).padding(2.dp)) {
         options.forEachIndexed { i, label ->
             val on = i == selected
@@ -180,7 +199,12 @@ fun SegmentedControl(
                         else Modifier,
                     )
                     .clip(SegmentInner)
-                    .selectable(on, role = Role.Tab) { onSelect(i) }
+                    .selectable(on, role = Role.Tab) {
+                        if (!on) {
+                            HapticManager.trigger(context, HapticPattern.LightTick)
+                            onSelect(i)
+                        }
+                    }
                     .then(if (tags != null) Modifier.testTag(tags[i]) else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
@@ -210,11 +234,15 @@ fun BarIconButton(
     badge: Boolean = false,
 ) {
     val c = HanaTheme.colors
+    val context = LocalContext.current
     Box(
         Modifier.size(HanaSize.IconButton)
             .then(if (glass) Modifier.floatShadow(c, CircleShape).background(c.surface, CircleShape) else Modifier)
             .clip(CircleShape)
-            .clickable(enabled = enabled, onClickLabel = label, role = Role.Button, onClick = onClick),
+            .clickable(enabled = enabled, onClickLabel = label, role = Role.Button, onClick = {
+                HapticManager.trigger(context, HapticPattern.LightTick)
+                onClick()
+            }),
         contentAlignment = Alignment.Center,
     ) {
         Icon(icon, label, Modifier.size(HanaSize.Icon).alpha(if (enabled) 1f else 0.35f), tint = c.ink)
@@ -276,6 +304,7 @@ fun TopBar(
 @Composable
 fun SelectChip(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, small: Boolean = false) {
     val c = HanaTheme.colors
+    val context = LocalContext.current
     val shape = if (small) SmallChipShape else HanaShapes.Pill
     Box(
         modifier
@@ -287,7 +316,12 @@ fun SelectChip(text: String, selected: Boolean, onClick: () -> Unit, modifier: M
                 },
             )
             .clip(shape)
-            .selectable(selected, role = Role.RadioButton, onClick = onClick)
+            .selectable(selected, role = Role.RadioButton, onClick = {
+                if (!selected) {
+                    HapticManager.trigger(context, HapticPattern.LightTick)
+                }
+                onClick()
+            })
             .height(if (small) 28.dp else 34.dp)
             .padding(horizontal = if (small) 10.dp else 14.dp),
         contentAlignment = Alignment.Center,

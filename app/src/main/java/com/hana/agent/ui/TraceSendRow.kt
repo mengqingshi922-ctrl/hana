@@ -22,6 +22,7 @@ import com.hana.agent.R
 import com.hana.agent.core.trace.TraceArchive
 import com.hana.agent.record.OtlpReceipt
 import com.hana.agent.record.OtlpSender
+import com.hana.agent.ui.components.HanaDialog
 import com.hana.agent.ui.components.ListRow
 import com.hana.agent.ui.components.RowChevron
 import com.hana.agent.ui.theme.HanaType
@@ -75,7 +76,7 @@ internal fun TraceSendRow(archive: TraceArchive) {
         var value by remember { mutableStateOf("") }
         val validAddress = OtlpSender.endpoint(address) != null
         val validHeader = OtlpSender.validHeader(name, value)
-        AlertDialog(onDismissRequest = { dialog = false }, title = { Text(stringResource(R.string.trace_send)) },
+        HanaDialog(onDismissRequest = { dialog = false }, title = { Text(stringResource(R.string.trace_send)) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     OutlinedTextField(address, { address = it }, Modifier.testTag("trace-endpoint"), singleLine = true, isError = address.isNotBlank() && !validAddress,

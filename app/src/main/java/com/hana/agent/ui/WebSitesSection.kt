@@ -3,7 +3,7 @@ package com.hana.agent.ui
 import com.hana.agent.R
 import com.hana.agent.i18n.tr
 import androidx.compose.foundation.layout.Column
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -74,7 +74,7 @@ fun WebSitesSection(state: WebSitesState, labeled: Boolean = true) {
     FooterNote(WEB_DATA_NOTE)
 
     picked?.let { s ->
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { picked = null },
             title = { Text(s.host) },
             text = {
@@ -99,7 +99,7 @@ fun WebSitesSection(state: WebSitesState, labeled: Boolean = true) {
     }
 
     if (confirmAll) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { confirmAll = false },
             title = { Text(tr(R.string.web_logout_all_q)) },
             text = { Text(tr(R.string.web_logout_all_body)) },
@@ -113,7 +113,7 @@ fun WebSitesSection(state: WebSitesState, labeled: Boolean = true) {
     }
 
     notice?.let { n ->
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { notice = null },
             text = { Text(n) },
             confirmButton = { TextButton({ notice = null }) { Text(tr(R.string.ok_got_it)) } },

@@ -4,7 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -84,7 +84,7 @@ fun DiagnosticsSheet(load: () -> String, onDismiss: () -> Unit) {
 
 private fun copyDiagnostics(context: Context, text: String) {
     context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(Diagnostics.HEADER, text))
-    Toast.makeText(context, AboutCopy.DIAGNOSTICS_COPIED, Toast.LENGTH_SHORT).show()
+    DesignSystemGateway.toast(context, AboutCopy.DIAGNOSTICS_COPIED)
 }
 
 private fun shareDiagnostics(context: Context, text: String) {

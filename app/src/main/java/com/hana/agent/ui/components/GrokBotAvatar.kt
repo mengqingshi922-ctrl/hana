@@ -30,7 +30,6 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -818,7 +817,7 @@ fun GrokBotShapeDialog(
     val currentShape by GrokBotTheme.currentShape.collectAsState()
     val c = HanaTheme.colors
 
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -899,9 +898,7 @@ fun GrokBotShapeDialog(
             TextButton(onClick = onDismiss) {
                 Text("完成", color = c.accent, fontWeight = FontWeight.SemiBold)
             }
-        },
-        containerColor = c.surface,
-        shape = RoundedCornerShape(20.dp)
+        }
     )
 }
 

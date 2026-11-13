@@ -7,7 +7,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -198,12 +198,12 @@ private fun copyJson(context: Context, list: List<RunMetrics>) {
     val ok = runCatching {
         context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(RunMetricsCopy.STATS_TITLE, RunMetricsStore.export(list)))
     }.isSuccess
-    Toast.makeText(context, if (ok) RunMetricsCopy.copied(list.size) else RunMetricsCopy.EXPORT_FAILED, Toast.LENGTH_SHORT).show()
+    DesignSystemGateway.toast(context, if (ok) RunMetricsCopy.copied(list.size) else RunMetricsCopy.EXPORT_FAILED)
 }
 
 private fun shareJson(context: Context, list: List<RunMetrics>) {
     runCatching {
         val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, RunMetricsStore.export(list))
         context.startActivity(Intent.createChooser(send, RunMetricsCopy.STATS_TITLE))
-    }.onFailure { Toast.makeText(context, RunMetricsCopy.EXPORT_FAILED, Toast.LENGTH_SHORT).show() }
+    }.onFailure { DesignSystemGateway.toast(context, RunMetricsCopy.EXPORT_FAILED) }
 }

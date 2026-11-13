@@ -11,7 +11,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import com.hana.agent.about.Changelog
 import androidx.compose.ui.res.stringResource
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -102,7 +102,7 @@ fun AboutScreen(
     val context = LocalContext.current
     var sheet by rememberSaveable { mutableStateOf<AboutSheet?>(null) }
     val saveQr = {
-        Toast.makeText(context, if (onSaveQr()) AboutCopy.QR_SAVED else AboutCopy.QR_SAVE_FAILED, Toast.LENGTH_SHORT).show()
+        DesignSystemGateway.toast(context, if (onSaveQr()) AboutCopy.QR_SAVED else AboutCopy.QR_SAVE_FAILED)
     }
 
     PageScaffold(AboutCopy.TITLE, onBack) {

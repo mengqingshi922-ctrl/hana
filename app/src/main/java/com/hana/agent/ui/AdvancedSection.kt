@@ -5,7 +5,7 @@ import com.hana.agent.i18n.tr
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -188,7 +188,7 @@ fun AdvancedSection(
     usage?.let { u -> UsageGroup(u, onClear = { clearing = it }, onClearAll = { clearingAll = true }) }
 
     clearing?.let { w ->
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { clearing = null },
             title = { Text(SandboxCopy.CLEAR_TITLE) },
             text = { Text(SandboxCopy.clearBody(w)) },
@@ -197,7 +197,7 @@ fun AdvancedSection(
         )
     }
     if (clearingAll) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { clearingAll = false },
             title = { Text(SandboxCopy.CLEAR_ALL_TITLE) },
             text = { Text(SandboxCopy.CLEAR_ALL_BODY) },
@@ -207,7 +207,7 @@ fun AdvancedSection(
     }
 
     if (confirming) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { confirming = false },
             title = { Text(SandboxCopy.RESET_TITLE) },
             text = { Text(SandboxCopy.RESET_BODY) },

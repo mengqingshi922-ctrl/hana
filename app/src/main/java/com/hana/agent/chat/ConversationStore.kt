@@ -21,9 +21,13 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import java.io.File
+import java.io.FileOutputStream
 import java.util.UUID
 
-/** 每个对话一个小 JSON 文件,放在 App 私有目录;重启后仍在。 */
+/**
+ * 每个对话采用追加日志文件 (.jsonl) 存储，并在目录内维护单文件元数据索引 (index.json)；
+ * 兼容旧版本单 JSON 数组 (.json) 文件并实现无感平滑迁移。
+ */
 class ConversationStore(private val dir: File) {
     constructor(context: Context) : this(File(context.filesDir, "conversations"))
 
@@ -81,18 +85,48 @@ class ConversationStore(private val dir: File) {
         }
     }
 
-    private data class CachedSummary(
-        val lastModified: Long,
+    /**
+     * 元数据索引条目：记录对话的基本摘要与各关联文件的时间戳校验戳，用于快速组装列表与感知外部变更。
+     */
+    private data class IndexEntry(
+        val id: String,
         val firstUserText: String?,
         val title: String?,
-        val titleModified: Long,
+        val updatedAt: Long,
         val pinnedAt: Long?,
-        val pinModified: Long,
         val pageOrigin: PageOrigin?,
-        val pageModified: Long,
+        val fileModified: Long,
+        val titleModified: Long = 0L,
+        val pinModified: Long = 0L,
+        val pageModified: Long = 0L,
     )
 
-    private val summaryCache = mutableMapOf<String, CachedSummary>()
+    private val indexEntries = mutableMapOf<String, IndexEntry>()
+    private var indexLoaded = false
+
+    private val _summaries = MutableStateFlow<List<ConversationSummary>>(emptyList())
+
+    /**
+     * 对话摘要列表的状态流，初始及每次对话变更后实时更新。
+     */
+    val summaries: StateFlow<List<ConversationSummary>> = _summaries.asStateFlow()
+
+    init {
+        loadIndexOnInit()
+    }
+
+    private fun loadIndexOnInit() {
+        val f = indexFile()
+        if (f.isFile) {
+            val text = runCatching { f.readText() }.getOrNull().orEmpty()
+            val loaded = parseIndex(text)
+            if (loaded != null) {
+                indexEntries.putAll(loaded)
+                indexLoaded = true
+                updateSummariesState()
+            }
+        }
+    }
 
     /**
      * 对话列表,最近改过的在前;[ConversationSummary.title] 是标题(用户改的或起好的),没有时是第一句话;
@@ -100,51 +134,85 @@ class ConversationStore(private val dir: File) {
      */
     @Synchronized
     fun list(): List<ConversationSummary> {
-        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".json") }.orEmpty()
-        val activeIds = HashSet<String>(files.size)
-        val result = files
-            .sortedByDescending { it.lastModified() }
-            .mapNotNull { f ->
-                val id = f.name.removeSuffix(".json")
-                activeIds.add(id)
-                val cached = summaryCache[id]
-                val fMod = f.lastModified()
-
-                val firstText = if (cached != null && cached.lastModified == fMod) {
-                    cached.firstUserText
-                } else {
-                    turns(id).firstOrNull()?.userText
-                } ?: return@mapNotNull null
-
-                val tf = titleFile(id)
-                val tfMod = tf.lastModified()
-                val t = if (cached != null && cached.titleModified == tfMod) {
-                    cached.title
-                } else {
-                    title(id)
-                }
-
-                val pf = pinFile(id)
-                val pfMod = pf.lastModified()
-                val pin = if (cached != null && cached.pinModified == pfMod) {
-                    cached.pinnedAt
-                } else {
-                    pinnedAt(id)
-                }
-
-                val pgf = pageFile(id)
-                val pgfMod = pgf.lastModified()
-                val page = if (cached != null && cached.pageModified == pgfMod) {
-                    cached.pageOrigin
-                } else {
-                    pageOrigin(id)
-                }
-
-                summaryCache[id] = CachedSummary(fMod, firstText, t, tfMod, pin, pfMod, page, pgfMod)
-                ConversationSummary(id, t ?: firstText, fMod, pin, page)
+        dir.mkdirs()
+        if (!indexLoaded) {
+            val f = indexFile()
+            if (f.isFile) {
+                val text = runCatching { f.readText() }.getOrNull().orEmpty()
+                parseIndex(text)?.let { indexEntries.putAll(it) }
             }
-        summaryCache.keys.retainAll(activeIds)
-        return result
+            indexLoaded = true
+        }
+
+        val files = dir.listFiles { f ->
+            f.isFile && (f.name.endsWith(".jsonl") || f.name.endsWith(".json")) &&
+                f.name != "index.json" && f.name != "index.json.tmp" &&
+                !f.name.contains(".corrupt-") && !f.name.endsWith(".tmp")
+        }.orEmpty()
+
+        val mainFilesById = mutableMapOf<String, File>()
+        for (f in files) {
+            val id = if (f.name.endsWith(".jsonl")) f.name.removeSuffix(".jsonl") else f.name.removeSuffix(".json")
+            val existing = mainFilesById[id]
+            if (existing == null || f.name.endsWith(".jsonl")) {
+                mainFilesById[id] = f
+            }
+        }
+
+        var dirty = false
+        val currentIds = mainFilesById.keys
+        val staleIds = indexEntries.keys.filter { it !in currentIds }
+        if (staleIds.isNotEmpty()) {
+            staleIds.forEach { indexEntries.remove(it) }
+            dirty = true
+        }
+
+        for ((id, file) in mainFilesById) {
+            val fMod = file.lastModified()
+            val entry = indexEntries[id]
+            if (entry != null && entry.fileModified == fMod && entry.firstUserText != null) {
+                // 命中索引且文件时间戳匹配，无需磁盘 stat 或反序列化
+                continue
+            }
+
+            // 索引缺失或文件被修改，增量读取
+            val turnsList = if (file.name.endsWith(".jsonl")) {
+                records(id).map { it.first }
+            } else {
+                readLegacyJson(file)?.map { it.first }
+            }
+            val firstText = turnsList?.firstOrNull()?.userText
+            if (firstText == null) {
+                if (indexEntries.remove(id) != null) dirty = true
+                continue
+            }
+            val tf = titleFile(id)
+            val pf = pinFile(id)
+            val pgf = pageFile(id)
+            val t = title(id)
+            val pin = pinnedAt(id)
+            val page = pageOrigin(id)
+
+            indexEntries[id] = IndexEntry(
+                id = id,
+                firstUserText = firstText,
+                title = t,
+                updatedAt = fMod,
+                pinnedAt = pin,
+                pageOrigin = page,
+                fileModified = fMod,
+                titleModified = if (tf.isFile) tf.lastModified() else 0L,
+                pinModified = if (pf.isFile) pf.lastModified() else 0L,
+                pageModified = if (pgf.isFile) pgf.lastModified() else 0L,
+            )
+            dirty = true
+        }
+
+        if (dirty) {
+            persistIndex()
+        }
+        updateSummariesState()
+        return _summaries.value
     }
 
     /** 对话起好的标题(见 [ConversationTitler]);没有、读不到为 null。标题放在对话文件旁边的 `.title` 文件里,不动对话文件的格式。 */
@@ -167,14 +235,26 @@ class ConversationStore(private val dir: File) {
     fun delete(conversationId: String) {
         val sId = safe(conversationId)
         deleted += sId
-        summaryCache.remove(conversationId)
-        summaryCache.remove(sId)
-        val main = file(conversationId).name
-        dir.listFiles { f ->
-            f.isFile && (f.name == main || f.name.startsWith("$main.") || f.name == titleFile(conversationId).name || f.name == pinFile(conversationId).name ||
-                f.name == pageFile(conversationId).name)
+        val removed = indexEntries.remove(sId) != null || indexEntries.remove(conversationId) != null
+        if (removed) {
+            persistIndex()
+            updateSummariesState()
         }
-            .orEmpty().forEach { it.delete() }
+
+        val jsonName = jsonFile(conversationId).name
+        val jsonlName = jsonlFile(conversationId).name
+        val titleName = titleFile(conversationId).name
+        val pinName = pinFile(conversationId).name
+        val pageName = pageFile(conversationId).name
+
+        dir.listFiles { f ->
+            if (!f.isFile) return@listFiles false
+            val n = f.name
+            n == jsonName || n.startsWith("$jsonName.") ||
+                n == jsonlName || n.startsWith("$jsonlName.") ||
+                n == titleName || n == pinName || n == pageName
+        }?.forEach { it.delete() }
+
         // 删掉的正是用户此刻在的那个:不再指着它,胶囊回落到最近那个
         if (_current.value == CurrentChat.Open(sId)) setCurrent(null)
         _changes.tryEmit(conversationId)
@@ -200,10 +280,32 @@ class ConversationStore(private val dir: File) {
         val sId = safe(conversationId)
         if (t.isEmpty() || sId in deleted) return false
         dir.mkdirs()
-        summaryCache.remove(conversationId)
-        summaryCache.remove(sId)
-        val ok = runCatching { titleFile(conversationId).writeText(t) }.isSuccess
-        if (ok) _changes.tryEmit(conversationId)
+        val tf = titleFile(conversationId)
+        val ok = runCatching { tf.writeText(t) }.isSuccess
+        if (ok) {
+            val entry = indexEntries[sId]
+            if (entry != null) {
+                indexEntries[sId] = entry.copy(title = t, titleModified = tf.lastModified())
+            } else {
+                val mf = activeMainFile(sId)
+                if (mf != null) {
+                    val fMod = mf.lastModified()
+                    indexEntries[sId] = IndexEntry(
+                        id = sId,
+                        firstUserText = records(sId).firstOrNull()?.first?.userText,
+                        title = t,
+                        updatedAt = fMod,
+                        pinnedAt = pinnedAt(conversationId),
+                        pageOrigin = pageOrigin(conversationId),
+                        fileModified = fMod,
+                        titleModified = tf.lastModified(),
+                    )
+                }
+            }
+            persistIndex()
+            updateSummariesState()
+            _changes.tryEmit(conversationId)
+        }
         return ok
     }
 
@@ -217,14 +319,37 @@ class ConversationStore(private val dir: File) {
     fun setPinned(conversationId: String, pinned: Boolean, at: Long = System.currentTimeMillis()): Boolean {
         val sId = safe(conversationId)
         if (sId in deleted) return false
-        summaryCache.remove(conversationId)
-        summaryCache.remove(sId)
         val f = pinFile(conversationId)
         val ok = if (pinned) {
             dir.mkdirs()
             runCatching { f.writeText(at.toString()) }.isSuccess
         } else !f.exists() || f.delete()
-        if (ok) _changes.tryEmit(conversationId)
+        if (ok) {
+            val entry = indexEntries[sId]
+            val newPin = if (pinned) at else null
+            val pinMod = if (f.isFile) f.lastModified() else 0L
+            if (entry != null) {
+                indexEntries[sId] = entry.copy(pinnedAt = newPin, pinModified = pinMod)
+            } else {
+                val mf = activeMainFile(sId)
+                if (mf != null) {
+                    val fMod = mf.lastModified()
+                    indexEntries[sId] = IndexEntry(
+                        id = sId,
+                        firstUserText = records(sId).firstOrNull()?.first?.userText,
+                        title = title(conversationId),
+                        updatedAt = fMod,
+                        pinnedAt = newPin,
+                        pageOrigin = pageOrigin(conversationId),
+                        fileModified = fMod,
+                        pinModified = pinMod,
+                    )
+                }
+            }
+            persistIndex()
+            updateSummariesState()
+            _changes.tryEmit(conversationId)
+        }
         return ok
     }
 
@@ -245,11 +370,34 @@ class ConversationStore(private val dir: File) {
         val sId = safe(conversationId)
         if (sId in deleted) return false
         dir.mkdirs()
-        summaryCache.remove(conversationId)
-        summaryCache.remove(sId)
+        val f = pageFile(conversationId)
         val json = buildJsonObject { put("url", origin.url); put("host", origin.host); put("title", origin.title) }
-        val ok = runCatching { pageFile(conversationId).writeText(json.toString()) }.isSuccess
-        if (ok) _changes.tryEmit(conversationId)
+        val ok = runCatching { f.writeText(json.toString()) }.isSuccess
+        if (ok) {
+            val entry = indexEntries[sId]
+            val pageMod = if (f.isFile) f.lastModified() else 0L
+            if (entry != null) {
+                indexEntries[sId] = entry.copy(pageOrigin = origin, pageModified = pageMod)
+            } else {
+                val mf = activeMainFile(sId)
+                if (mf != null) {
+                    val fMod = mf.lastModified()
+                    indexEntries[sId] = IndexEntry(
+                        id = sId,
+                        firstUserText = records(sId).firstOrNull()?.first?.userText,
+                        title = title(conversationId),
+                        updatedAt = fMod,
+                        pinnedAt = pinnedAt(conversationId),
+                        pageOrigin = origin,
+                        fileModified = fMod,
+                        pageModified = pageMod,
+                    )
+                }
+            }
+            persistIndex()
+            updateSummariesState()
+            _changes.tryEmit(conversationId)
+        }
         return ok
     }
 
@@ -257,40 +405,68 @@ class ConversationStore(private val dir: File) {
     @Synchronized
     fun turns(conversationId: String): List<Turn> = records(conversationId).map { it.first }
 
-    /** 每一轮连同这一轮导出的文件(文件卡片)。 */
+    /** 每一轮连同这一轮导出的文件(文件卡片)。优先读取追加日志 (.jsonl)，回退兼容旧版 (.json)。 */
     @Synchronized
     fun records(conversationId: String): List<Pair<Turn, List<SharedFile>>> {
-        val f = file(conversationId)
-        if (!f.isFile) return emptyList()
-        return read(f).orEmpty()
+        val jl = jsonlFile(conversationId)
+        if (jl.isFile) {
+            val list = mutableListOf<Pair<Turn, List<SharedFile>>>()
+            try {
+                jl.forEachLine { line ->
+                    val trimmed = line.trim()
+                    if (trimmed.isNotEmpty()) {
+                        runCatching {
+                            val elem = Json.parseToJsonElement(trimmed)
+                            parseRecord(elem)?.let { list.add(it) }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // 忽略非致命异常
+            }
+            return list
+        }
+        val j = jsonFile(conversationId)
+        if (j.isFile) {
+            return readLegacyJson(j).orEmpty()
+        }
+        return emptyList()
     }
 
-    /** 读不懂(不是 JSON 数组)时返回 null。 */
-    private fun read(f: File): List<Pair<Turn, List<SharedFile>>>? = try {
-        (Json.parseToJsonElement(f.readText()) as? JsonArray)?.mapNotNull { e ->
-            val o = e as? JsonObject ?: return@mapNotNull null
-            fun field(k: String) = (o[k] as? JsonPrimitive)?.contentOrNull
-            val turn = Turn(
-                field("userText") ?: return@mapNotNull null, field("outcome").orEmpty(), field("status") ?: return@mapNotNull null, field("note"), field("runId"),
-                memoryNotes = objects(o, "memoryNotes").mapNotNull { n ->
-                    val kind = NoteKind.entries.find { it.name == str(n, "kind") } ?: return@mapNotNull null
-                    MemoryNote(kind, str(n, "memoryId") ?: return@mapNotNull null, str(n, "undoToken"), str(n, "pendingId"))
-                },
-                usedMemory = (o["usedMemory"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
-                skillNotes = objects(o, "skillNotes").map { n -> SkillNote(str(n, "text").orEmpty(), str(n, "draftId"), str(n, "suspended")) },
-                unconfirmed = (o["unconfirmed"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
-                result = field("result"),
-                steers = (o["steers"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
-                interruptedReplies = (o["interruptedReplies"] as? JsonArray)?.map { (it as? JsonPrimitive)?.contentOrNull.orEmpty() } ?: emptyList(),
-                finishedReplies = (o["finishedReplies"] as? JsonArray)?.map { (it as? JsonPrimitive)?.contentOrNull.orEmpty() } ?: emptyList(),
-                groups = (o["groups"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
-                keptPage = field("keptPage"),
-                keptPageClosed = field("keptPageClosed"),
-            )
-            turn to (o["files"] as? JsonArray).orEmpty().mapNotNull(::fileOf)
-        }
-    } catch (e: SerializationException) {
+    /** 读不懂(不是 JSON 数组)时返回 null。用于旧版 .json 文件读取。 */
+    private fun readLegacyJson(f: File): List<Pair<Turn, List<SharedFile>>>? = try {
+        (Json.parseToJsonElement(f.readText()) as? JsonArray)?.mapNotNull(::parseRecord)
+    } catch (_: SerializationException) {
         null
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun parseRecord(e: kotlinx.serialization.json.JsonElement): Pair<Turn, List<SharedFile>>? {
+        val o = e as? JsonObject ?: return null
+        fun field(k: String) = (o[k] as? JsonPrimitive)?.contentOrNull
+        val turn = Turn(
+            field("userText") ?: return null,
+            field("outcome").orEmpty(),
+            field("status") ?: return null,
+            field("note"),
+            field("runId"),
+            memoryNotes = objects(o, "memoryNotes").mapNotNull { n ->
+                val kind = NoteKind.entries.find { it.name == str(n, "kind") } ?: return@mapNotNull null
+                MemoryNote(kind, str(n, "memoryId") ?: return@mapNotNull null, str(n, "undoToken"), str(n, "pendingId"))
+            },
+            usedMemory = (o["usedMemory"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+            skillNotes = objects(o, "skillNotes").map { n -> SkillNote(str(n, "text").orEmpty(), str(n, "draftId"), str(n, "suspended")) },
+            unconfirmed = (o["unconfirmed"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+            result = field("result"),
+            steers = (o["steers"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+            interruptedReplies = (o["interruptedReplies"] as? JsonArray)?.map { (it as? JsonPrimitive)?.contentOrNull.orEmpty() } ?: emptyList(),
+            finishedReplies = (o["finishedReplies"] as? JsonArray)?.map { (it as? JsonPrimitive)?.contentOrNull.orEmpty() } ?: emptyList(),
+            groups = (o["groups"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList(),
+            keptPage = field("keptPage"),
+            keptPageClosed = field("keptPageClosed"),
+        )
+        return turn to (o["files"] as? JsonArray).orEmpty().mapNotNull(::fileOf)
     }
 
     private fun fileOf(e: kotlinx.serialization.json.JsonElement): SharedFile? {
@@ -299,77 +475,296 @@ class ConversationStore(private val dir: File) {
         return SharedFile(field("name") ?: return null, field("size")?.toLongOrNull() ?: 0, field("savedAs") ?: return null, field("uri") ?: return null)
     }
 
+    /**
+     * 追加单轮消息。采用 .jsonl 文件的追加写优化，同时自动将旧版 .json 迁移为 .jsonl。
+     */
     @Synchronized
     fun append(conversationId: String, turn: Turn, files: List<SharedFile> = emptyList()) {
-        deleted -= safe(conversationId)
-        val f = file(conversationId)
-        val prior = if (f.isFile) read(f) else emptyList()
-        if (prior == null) {
-            // 损坏的文件挪到一边留着,不拿新内容覆盖掉
-            f.renameTo(File(dir, "${f.name}.corrupt-${System.currentTimeMillis()}"))
+        val sId = safe(conversationId)
+        deleted -= sId
+        dir.mkdirs()
+        val jl = jsonlFile(conversationId)
+        val j = jsonFile(conversationId)
+
+        // 1. 若 .jsonl 不存在但旧 .json 存在：迁移旧记录到 .jsonl
+        if (!jl.isFile && j.isFile) {
+            val legacyRecords = readLegacyJson(j)
+            if (legacyRecords == null) {
+                // 旧文件损坏，重命名为 .corrupt-* 保留现场
+                val corruptFile = File(dir, "${j.name}.corrupt-${System.currentTimeMillis()}")
+                j.renameTo(corruptFile)
+            } else {
+                val tmp = File(dir, "${jl.name}.tmp")
+                tmp.bufferedWriter(Charsets.UTF_8).use { writer ->
+                    for ((t, fs) in legacyRecords) {
+                        writer.write(recordToJson(t, fs).toString())
+                        writer.newLine()
+                    }
+                }
+                if (!tmp.renameTo(jl)) {
+                    tmp.copyTo(jl, overwrite = true)
+                    tmp.delete()
+                }
+                j.delete()
+            }
         }
-        write(conversationId, prior.orEmpty() + (turn to files))
+
+        // 2. 以追加模式写入新记录单行
+        val line = recordToJson(turn, files).toString()
+        FileOutputStream(jl, true).use { fos ->
+            fos.write(line.toByteArray(Charsets.UTF_8))
+            fos.write('\n'.code)
+            fos.flush()
+        }
+
+        // 3. 更新索引条目
+        val jlMod = jl.lastModified()
+        val existing = indexEntries[sId]
+        val firstText = existing?.firstUserText ?: run {
+            records(conversationId).firstOrNull()?.first?.userText ?: turn.userText
+        }
+        val tf = titleFile(conversationId)
+        val pf = pinFile(conversationId)
+        val pgf = pageFile(conversationId)
+        val t = existing?.title ?: title(conversationId)
+        val pin = existing?.pinnedAt ?: pinnedAt(conversationId)
+        val page = existing?.pageOrigin ?: pageOrigin(conversationId)
+
+        indexEntries[sId] = IndexEntry(
+            id = sId,
+            firstUserText = firstText,
+            title = t,
+            updatedAt = jlMod,
+            pinnedAt = pin,
+            pageOrigin = page,
+            fileModified = jlMod,
+            titleModified = if (tf.isFile) tf.lastModified() else 0L,
+            pinModified = if (pf.isFile) pf.lastModified() else 0L,
+            pageModified = if (pgf.isFile) pgf.lastModified() else 0L,
+        )
+        persistIndex()
+        updateSummariesState()
+        _changes.tryEmit(conversationId)
     }
 
     /** 改运行编号为 [runId] 的那一轮(任务结束后补上判的结局、记忆与技能提示);找不到就不动。 */
     @Synchronized
     fun updateTurn(conversationId: String, runId: String, transform: (Turn) -> Turn) {
-        val f = file(conversationId)
-        if (!f.isFile) return
-        val records = read(f) ?: return
-        if (records.none { it.first.runId == runId }) return
-        write(conversationId, records.map { (t, fs) -> (if (t.runId == runId) transform(t) else t) to fs })
+        val currentRecords = records(conversationId)
+        if (currentRecords.isEmpty()) return
+        if (currentRecords.none { it.first.runId == runId }) return
+        val updated = currentRecords.map { (t, fs) ->
+            (if (t.runId == runId) transform(t) else t) to fs
+        }
+        writeJsonl(conversationId, updated)
     }
 
     /** 记忆删了或全部清除时:去掉指向这些条目的提示和「用到」记录;[ids] 为 null 时去掉全部。 */
     @Synchronized
     fun stripMemory(ids: Set<String>?) {
-        dir.listFiles { f -> f.isFile && f.name.endsWith(".json") }.orEmpty().forEach { f ->
-            val records = read(f) ?: return@forEach
-            fun keep(id: String) = ids != null && id !in ids
-            val stripped = records.map { (t, fs) -> t.copy(memoryNotes = t.memoryNotes.filter { keep(it.memoryId) }, usedMemory = t.usedMemory.filter(::keep)) to fs }
-            if (stripped != records) write(f.name.removeSuffix(".json"), stripped)
+        val files = dir.listFiles { f ->
+            f.isFile && (f.name.endsWith(".jsonl") || f.name.endsWith(".json")) &&
+                f.name != "index.json" && !f.name.endsWith(".tmp") && !f.name.contains(".corrupt-")
+        }.orEmpty()
+
+        val handledIds = mutableSetOf<String>()
+        for (f in files) {
+            val id = if (f.name.endsWith(".jsonl")) f.name.removeSuffix(".jsonl") else f.name.removeSuffix(".json")
+            if (!handledIds.add(id)) continue
+            val currentRecords = records(id)
+            if (currentRecords.isEmpty()) continue
+            fun keep(memId: String) = ids != null && memId !in ids
+            val stripped = currentRecords.map { (t, fs) ->
+                t.copy(
+                    memoryNotes = t.memoryNotes.filter { keep(it.memoryId) },
+                    usedMemory = t.usedMemory.filter(::keep),
+                ) to fs
+            }
+            if (stripped != currentRecords) {
+                writeJsonl(id, stripped)
+            }
         }
     }
 
-    private fun write(conversationId: String, all: List<Pair<Turn, List<SharedFile>>>) {
-        summaryCache.remove(conversationId)
-        summaryCache.remove(safe(conversationId))
+    private fun writeJsonl(conversationId: String, all: List<Pair<Turn, List<SharedFile>>>) {
+        val sId = safe(conversationId)
         dir.mkdirs()
-        val json = JsonArray(all.map { (it, fs) ->
-            buildJsonObject {
-                put("userText", it.userText); put("outcome", it.outcome); put("status", it.status)
-                it.note?.let { n -> put("note", n) }; it.runId?.let { r -> put("runId", r) }; it.result?.let { r -> put("result", r) }
-                // 只存种类和编号:记忆内容只在加密的记忆文件里,界面现取
-                if (it.memoryNotes.isNotEmpty()) put("memoryNotes", JsonArray(it.memoryNotes.map { n ->
-                    buildJsonObject {
-                        put("kind", n.kind.name); put("memoryId", n.memoryId)
-                        n.undoToken?.let { t -> put("undoToken", t) }; n.pendingId?.let { p -> put("pendingId", p) }
-                    }
-                }))
-                if (it.usedMemory.isNotEmpty()) put("usedMemory", JsonArray(it.usedMemory.map(::JsonPrimitive)))
-                if (it.unconfirmed.isNotEmpty()) put("unconfirmed", JsonArray(it.unconfirmed.map(::JsonPrimitive)))
-                if (it.steers.isNotEmpty()) put("steers", JsonArray(it.steers.map(::JsonPrimitive)))
-                if (it.interruptedReplies.any(String::isNotEmpty)) put("interruptedReplies", JsonArray(it.interruptedReplies.map(::JsonPrimitive)))
-                if (it.finishedReplies.any(String::isNotEmpty)) put("finishedReplies", JsonArray(it.finishedReplies.map(::JsonPrimitive)))
-                if (it.groups.isNotEmpty()) put("groups", JsonArray(it.groups.map(::JsonPrimitive)))
-                it.keptPage?.let { h -> put("keptPage", h) }; it.keptPageClosed?.let { r -> put("keptPageClosed", r) }
-                if (it.skillNotes.isNotEmpty()) put("skillNotes", JsonArray(it.skillNotes.map { n ->
-                    buildJsonObject { put("text", n.text); n.draftId?.let { d -> put("draftId", d) }; n.suspended?.let { x -> put("suspended", x) } }
-                }))
-                if (fs.isNotEmpty()) put("files", JsonArray(fs.map { f ->
-                    buildJsonObject { put("name", f.name); put("size", f.size); put("savedAs", f.savedAs); put("uri", f.uri) }
-                }))
+        val jl = jsonlFile(conversationId)
+        val tmp = File(dir, "${jl.name}.tmp")
+        tmp.bufferedWriter(Charsets.UTF_8).use { writer ->
+            for ((t, fs) in all) {
+                writer.write(recordToJson(t, fs).toString())
+                writer.newLine()
             }
-        })
-        // 先写临时文件再改名,写到一半被杀不会留下半个文件
-        val tmp = File(dir, "${file(conversationId).name}.tmp")
-        tmp.writeText(json.toString())
-        if (!tmp.renameTo(file(conversationId))) {
-            file(conversationId).writeText(json.toString())
+        }
+        if (!tmp.renameTo(jl)) {
+            tmp.copyTo(jl, overwrite = true)
             tmp.delete()
         }
+        jsonFile(conversationId).takeIf { it.isFile }?.delete()
+
+        val jlMod = jl.lastModified()
+        val existing = indexEntries[sId]
+        val firstText = all.firstOrNull()?.first?.userText ?: existing?.firstUserText
+        val tf = titleFile(conversationId)
+        val pf = pinFile(conversationId)
+        val pgf = pageFile(conversationId)
+        val t = existing?.title ?: title(conversationId)
+        val pin = existing?.pinnedAt ?: pinnedAt(conversationId)
+        val page = existing?.pageOrigin ?: pageOrigin(conversationId)
+
+        indexEntries[sId] = IndexEntry(
+            id = sId,
+            firstUserText = firstText,
+            title = t,
+            updatedAt = jlMod,
+            pinnedAt = pin,
+            pageOrigin = page,
+            fileModified = jlMod,
+            titleModified = if (tf.isFile) tf.lastModified() else 0L,
+            pinModified = if (pf.isFile) pf.lastModified() else 0L,
+            pageModified = if (pgf.isFile) pgf.lastModified() else 0L,
+        )
+        persistIndex()
+        updateSummariesState()
         _changes.tryEmit(conversationId)
+    }
+
+    private fun recordToJson(turn: Turn, files: List<SharedFile>): JsonObject = buildJsonObject {
+        put("userText", turn.userText)
+        put("outcome", turn.outcome)
+        put("status", turn.status)
+        turn.note?.let { put("note", it) }
+        turn.runId?.let { put("runId", it) }
+        turn.result?.let { put("result", it) }
+        if (turn.memoryNotes.isNotEmpty()) put("memoryNotes", JsonArray(turn.memoryNotes.map { n ->
+            buildJsonObject {
+                put("kind", n.kind.name)
+                put("memoryId", n.memoryId)
+                n.undoToken?.let { put("undoToken", it) }
+                n.pendingId?.let { put("pendingId", it) }
+            }
+        }))
+        if (turn.usedMemory.isNotEmpty()) put("usedMemory", JsonArray(turn.usedMemory.map(::JsonPrimitive)))
+        if (turn.unconfirmed.isNotEmpty()) put("unconfirmed", JsonArray(turn.unconfirmed.map(::JsonPrimitive)))
+        if (turn.steers.isNotEmpty()) put("steers", JsonArray(turn.steers.map(::JsonPrimitive)))
+        if (turn.interruptedReplies.any(String::isNotEmpty)) put("interruptedReplies", JsonArray(turn.interruptedReplies.map(::JsonPrimitive)))
+        if (turn.finishedReplies.any(String::isNotEmpty)) put("finishedReplies", JsonArray(turn.finishedReplies.map(::JsonPrimitive)))
+        if (turn.groups.isNotEmpty()) put("groups", JsonArray(turn.groups.map(::JsonPrimitive)))
+        turn.keptPage?.let { put("keptPage", it) }
+        turn.keptPageClosed?.let { put("keptPageClosed", it) }
+        if (turn.skillNotes.isNotEmpty()) put("skillNotes", JsonArray(turn.skillNotes.map { n ->
+            buildJsonObject {
+                put("text", n.text)
+                n.draftId?.let { put("draftId", it) }
+                n.suspended?.let { put("suspended", it) }
+            }
+        }))
+        if (files.isNotEmpty()) put("files", JsonArray(files.map { f ->
+            buildJsonObject {
+                put("name", f.name)
+                put("size", f.size)
+                put("savedAs", f.savedAs)
+                put("uri", f.uri)
+            }
+        }))
+    }
+
+    private fun updateSummariesState() {
+        val list = indexEntries.values
+            .filter { it.firstUserText != null }
+            .map { entry ->
+                ConversationSummary(
+                    id = entry.id,
+                    title = entry.title ?: entry.firstUserText.orEmpty(),
+                    updatedAt = entry.updatedAt,
+                    pinnedAt = entry.pinnedAt,
+                    page = entry.pageOrigin,
+                )
+            }
+            .sortedByDescending { it.updatedAt }
+        _summaries.value = list
+    }
+
+    private fun serializeIndex(entries: Collection<IndexEntry>): String {
+        val arr = JsonArray(entries.map { entry ->
+            buildJsonObject {
+                put("id", entry.id)
+                entry.firstUserText?.let { put("firstUserText", it) }
+                entry.title?.let { put("title", it) }
+                put("updatedAt", entry.updatedAt)
+                entry.pinnedAt?.let { put("pinnedAt", it) }
+                entry.pageOrigin?.let { p ->
+                    put("pageOrigin", buildJsonObject {
+                        put("url", p.url)
+                        put("host", p.host)
+                        put("title", p.title)
+                    })
+                }
+                put("fileModified", entry.fileModified)
+                put("titleModified", entry.titleModified)
+                put("pinModified", entry.pinModified)
+                put("pageModified", entry.pageModified)
+            }
+        })
+        return buildJsonObject {
+            put("version", 1)
+            put("entries", arr)
+        }.toString()
+    }
+
+    private fun parseIndex(text: String): Map<String, IndexEntry>? = runCatching {
+        if (text.isEmpty()) return@runCatching null
+        val root = Json.parseToJsonElement(text) as? JsonObject ?: return@runCatching null
+        val entriesArray = root["entries"] as? JsonArray ?: return@runCatching null
+        val map = mutableMapOf<String, IndexEntry>()
+        for (elem in entriesArray) {
+            val o = elem as? JsonObject ?: continue
+            fun field(k: String) = (o[k] as? JsonPrimitive)?.contentOrNull
+            fun longField(k: String) = field(k)?.toLongOrNull()
+            val id = field("id") ?: continue
+            val pageObj = o["pageOrigin"] as? JsonObject
+            val page = if (pageObj != null) {
+                val u = (pageObj["url"] as? JsonPrimitive)?.contentOrNull
+                val h = (pageObj["host"] as? JsonPrimitive)?.contentOrNull
+                val t = (pageObj["title"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+                if (u != null && h != null) PageOrigin(u, h, t) else null
+            } else null
+            map[id] = IndexEntry(
+                id = id,
+                firstUserText = field("firstUserText"),
+                title = field("title"),
+                updatedAt = longField("updatedAt") ?: 0L,
+                pinnedAt = longField("pinnedAt"),
+                pageOrigin = page,
+                fileModified = longField("fileModified") ?: 0L,
+                titleModified = longField("titleModified") ?: 0L,
+                pinModified = longField("pinModified") ?: 0L,
+                pageModified = longField("pageModified") ?: 0L,
+            )
+        }
+        map
+    }.getOrNull()
+
+    private fun persistIndex() {
+        runCatching {
+            dir.mkdirs()
+            val tmp = File(dir, "index.json.tmp")
+            tmp.writeText(serializeIndex(indexEntries.values))
+            val target = indexFile()
+            if (!tmp.renameTo(target)) {
+                tmp.copyTo(target, overwrite = true)
+                tmp.delete()
+            }
+        }
+    }
+
+    private fun activeMainFile(id: String): File? {
+        val jl = jsonlFile(id)
+        if (jl.isFile) return jl
+        val j = jsonFile(id)
+        if (j.isFile) return j
+        return null
     }
 
     private fun objects(o: JsonObject, k: String) = (o[k] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
@@ -384,12 +779,14 @@ class ConversationStore(private val dir: File) {
     }
 
     // id 来自 newConversation 或外部传入,只留安全字符,免得拼出目录外的路径
-    private fun file(id: String) = File(dir, "${safe(id)}.json")
+    private fun jsonFile(id: String) = File(dir, "${safe(id)}.json")
+    private fun jsonlFile(id: String) = File(dir, "${safe(id)}.jsonl")
+    private fun indexFile() = File(dir, "index.json")
     private fun titleFile(id: String) = File(dir, "${safe(id)}.title")
     private fun pinFile(id: String) = File(dir, "${safe(id)}.pin")
     private fun pageFile(id: String) = File(dir, "${safe(id)}.page")
 
-    /** 用户此刻在哪个对话,见 [CurrentChat];不是 `.json`,不进 [list]。 */
+    /** 用户此刻在哪个对话,见 [CurrentChat];不是 `.json` 或 `.jsonl`,不进 [list]。 */
     private fun currentFile() = File(dir, "current")
     private fun safe(id: String) = id.filter { it.isLetterOrDigit() || it == '-' || it == '_' }
 }

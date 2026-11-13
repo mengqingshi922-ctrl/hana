@@ -69,4 +69,6 @@
     <string name="speech_doubao_plan">課金方式</string>
     <string name="speech_doubao_duration_note">認識した時間で課金</string>
     <string name="speech_doubao_concurrent_note">同時接続数で課金</string>
+    <string name="appearance_dynamic_color">ダイナミックカラー</string>
+    <string name="appearance_dynamic_color_detail">壁紙からアクセントカラーを取得（Android 12 以降）</string>
 </resources>

@@ -401,5 +401,9 @@ class HanaApp : Application(), WebOwner, SandboxOwner, TaskEnvironment.Owner, Ph
         scope.launch(Dispatchers.IO) {
             runCatching { com.hana.agent.memory.SleepConsolidationScheduler.schedule(this@HanaApp) }
         }
+        // 运行时自动发现本机已安装 App 的 DeepLink Scheme 并注册至 LinkPolicy
+        scope.launch(Dispatchers.IO) {
+            runCatching { com.hana.agent.cap.phone.shell.DynamicLinkDiscovery.refreshAsync(this@HanaApp) }
+        }
     }
 }

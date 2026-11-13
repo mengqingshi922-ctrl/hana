@@ -10,7 +10,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
+import com.hana.agent.ui.components.HanaEmptyState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -86,8 +87,11 @@ fun MemoryScreen(vm: MemoryViewModel, onBack: () -> Unit) {
         when (ui.segment) {
             Segment.Memories -> {
                 if (ui.rows.isEmpty()) {
-                    GroupLabel("")
-                    EmptyNote(if (ui.query.isBlank()) stringResource(R.string.memory_empty) else stringResource(R.string.not_found))
+                    HanaEmptyState(
+                        title = if (ui.query.isBlank()) stringResource(R.string.memory_empty) else stringResource(R.string.not_found),
+                        subtitle = if (ui.query.isBlank()) "与 Hana 对话时，她会自动记住重要的偏好和知识" else null,
+                        icon = HanaIcons.Heart,
+                    )
                 }
                 KIND_GROUPS.forEach { (kind, label) ->
                     val rows = ui.rows.filter { it.kind == kind }
@@ -108,8 +112,10 @@ fun MemoryScreen(vm: MemoryViewModel, onBack: () -> Unit) {
             Segment.Skills -> SkillsSection(vm, ui.skills, pending = false)
             Segment.Pending -> {
                 if (ui.pendingCount == 0) {
-                    GroupLabel("")
-                    EmptyNote(stringResource(R.string.memory_nothing_pending))
+                    HanaEmptyState(
+                        title = stringResource(R.string.memory_nothing_pending),
+                        icon = HanaIcons.Spark,
+                    )
                 }
                 if (ui.pending.isNotEmpty()) {
                     GroupLabel(stringResource(R.string.memory_pending_title))
@@ -158,10 +164,10 @@ fun MemoryScreen(vm: MemoryViewModel, onBack: () -> Unit) {
         EditDialog(stringResource(R.string.memory_add), "", emptyList(), onDismiss = { adding = false }, withKind = true) { content, keywords, kind -> vm.add(kind, content, keywords); adding = false }
     }
     ui.message?.let { m ->
-        AlertDialog(onDismissRequest = vm::dismissMessage, text = { Text(m) }, confirmButton = { TextButton(vm::dismissMessage) { Text(stringResource(R.string.ok_got_it)) } })
+        HanaDialog(onDismissRequest = vm::dismissMessage, text = { Text(m) }, confirmButton = { TextButton(vm::dismissMessage) { Text(stringResource(R.string.ok_got_it)) } })
     }
     if (ui.clearStage > 0) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = vm::cancelClear,
             title = { Text(if (ui.clearStage == 1) stringResource(R.string.memory_clear_q) else stringResource(R.string.memory_clear_sure)) },
             text = { Text(if (ui.clearStage == 1) stringResource(R.string.memory_clear_body) else stringResource(R.string.memory_clear_final)) },
@@ -200,7 +206,7 @@ private fun EditDialog(
     var kind by remember { mutableIntStateOf(0) }
     var text by remember { mutableStateOf(content) }
     var words by remember { mutableStateOf(keywords.joinToString(" ")) }
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {

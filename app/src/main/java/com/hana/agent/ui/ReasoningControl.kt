@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -61,7 +61,7 @@ internal fun ReasoningControl(ui: ModelSetupUi, role: ModelRole, onSelect: (Stri
             color = HanaTheme.colors.accent,
         )
     }
-    if (open) AlertDialog(
+    if (open) HanaDialog(
         onDismissRequest = { open = false },
         title = { Text(stringResource(R.string.model_reasoning_title, ModelsCopy.roleLabel(role))) },
         text = {

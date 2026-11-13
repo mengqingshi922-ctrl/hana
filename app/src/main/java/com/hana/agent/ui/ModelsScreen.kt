@@ -34,7 +34,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
+import com.hana.agent.ui.components.HanaEmptyState
+import com.hana.agent.ui.components.ShimmerCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -633,7 +635,9 @@ fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetail
             GroupLabel(ModelsCopy.MODELS, Modifier.weight(1f))
             BarIconButton(HanaIcons.Refresh, ModelsCopy.REFRESH, actions.refresh, enabled = state != ListState.Running)
         }
-        if (list.isNotEmpty()) {
+        if (state == ListState.Running && list.isEmpty()) {
+            ShimmerCard(Modifier.padding(vertical = 6.dp))
+        } else if (list.isNotEmpty()) {
             GroupCard {
                 list.take(MODEL_PREVIEW).forEachIndexed { i, o -> ModelRow(o, ui.rolesOf(p.id, o.id), first = i == 0) { using = o } }
                 if (list.size > MODEL_PREVIEW) {
@@ -674,7 +678,7 @@ fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetail
     using?.let { o -> UseAsSheet(ui, p, o.id, onUse = { role -> actions.use(role, o.id) }, onVision = { actions.setVision(o.id, it) }, onDismiss = { using = null }) }
     if (changingKey) {
         var key by remember { mutableStateOf("") }
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { changingKey = false },
             title = { Text(ModelsCopy.CHANGE_KEY) },
             text = {
@@ -711,7 +715,7 @@ fun ProviderDetailContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetail
         )
     }
     if (confirmDelete) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text(ModelsCopy.deleteTitle(ModelsCopy.providerName(p))) },
             text = { Text(ModelsCopy.deleteBody(ui.rolesOf(p))) },
@@ -827,9 +831,22 @@ fun AllModelsContent(ui: ModelSetupUi, p: Provider, actions: ProviderDetailActio
                 else -> Unit
             }
             LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)) {
-                itemsIndexed(shown, key = { _, o -> o.id }) { i, o ->
-                    Box(Modifier.fillMaxWidth().clip(rowShape(i, shown.size)).background(c.surface)) {
-                        ModelRow(o, ui.rolesOf(p.id, o.id), first = i == 0) { using = o }
+                if (state == ListState.Running && all.isEmpty()) {
+                    items(4) {
+                        ShimmerCard(Modifier.padding(vertical = 4.dp))
+                    }
+                } else if (shown.isEmpty() && state != ListState.Running) {
+                    item {
+                        HanaEmptyState(
+                            title = if (q.isNotEmpty()) ModelsCopy.NO_MATCH else "暂无可用模型",
+                            subtitle = if (q.isNotEmpty()) "没有匹配到相关模型" else "请点击右上角刷新重新获取",
+                        )
+                    }
+                } else {
+                    itemsIndexed(shown, key = { _, o -> o.id }) { i, o ->
+                        Box(Modifier.fillMaxWidth().clip(rowShape(i, shown.size)).background(c.surface)) {
+                            ModelRow(o, ui.rolesOf(p.id, o.id), first = i == 0) { using = o }
+                        }
                     }
                 }
                 item {

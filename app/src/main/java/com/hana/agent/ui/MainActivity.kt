@@ -1,9 +1,22 @@
 package com.hana.agent.ui
 
 import com.hana.agent.i18n.AppLanguage
+import androidx.activity.BackEventCompat
+import androidx.activity.compose.PredictiveBackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import com.hana.agent.ui.components.KeyboardDismissArea
+import com.hana.agent.ui.components.DesignSystemGateway
 import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
@@ -14,23 +27,26 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.produceState
 import com.hana.agent.confirm.ConfirmationNotifier
 import com.hana.agent.memory.MemoryRuntime
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -59,6 +75,7 @@ import com.hana.agent.cap.phone.setup.DeveloperSettings
 import com.hana.agent.cap.phone.setup.PairingNotifier
 import com.hana.agent.core.agent.TaskState
 import com.hana.agent.core.shell.BuiltinShellStatus
+import com.hana.agent.ui.theme.HanaMotion
 import com.hana.agent.ui.theme.HanaTheme
 import com.hana.agent.ui.theme.animationsOff
 import com.hana.agent.ui.theme.appearanceDark
@@ -231,7 +248,7 @@ internal fun openInBrowser(context: Context, url: String) {
     try {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE))
     } catch (e: ActivityNotFoundException) {
-        Toast.makeText(context, AboutCopy.NO_BROWSER, Toast.LENGTH_SHORT).show()
+        DesignSystemGateway.toast(context, AboutCopy.NO_BROWSER)
     }
 }
 
@@ -314,156 +331,214 @@ private fun HanaRoot(store: ProviderStore, monitor: SystemStatusMonitor, activit
         if (onboarding == null) Onboarding.start(onboardingInputs())?.let(::goOnboarding)
     }
     val phoneSetupNeeded by phoneSetup.needed.collectAsState()
-    // 页面有自己的返回处理时(设置页里的子页、侧栏)由它们先接;这里只管退回上一页
-    BackHandler(enabled = nav.canGoBack) { nav.back() }
+    // 预测性返回手势交互：在拖拽返回期间按手势进度轻微缩放/位移预览，松手完成退回，取消复位
+    var backProgress by remember { mutableFloatStateOf(0f) }
+    PredictiveBackHandler(enabled = nav.canGoBack) { progress: Flow<BackEventCompat> ->
+        try {
+            progress.collect { backEvent ->
+                backProgress = backEvent.progress
+            }
+            nav.back()
+        } catch (e: CancellationException) {
+            // 用户取消返回手势
+        } finally {
+            backProgress = 0f
+        }
+    }
     val back: () -> Unit = { nav.back() }
-    // 聊天页离开组合树时保留列表位置和输入内容，返回设置页等子页面后原样恢复。
     val screenStates = rememberSaveableStateHolder()
-    when (nav.current) {
-        Route.PhoneSetup -> PhoneSetupScreen(status, setupRepair, onFix, onboarding = onboarding == OnboardingStep.Phone) {
-            phoneSetup.markGuideSeen()
-            if (onboarding == OnboardingStep.Phone) goOnboarding(null) else nav.back()
-        }
-        Route.Welcome -> WelcomeScreen { goOnboarding(OnboardingStep.Model) }
-        Route.ModelSetup -> {
-            val inOnboarding = onboarding == OnboardingStep.Model
-            ModelSetupScreen(
-                store, onboarding = inOnboarding,
-                onBack = { if (inOnboarding) goOnboarding(OnboardingStep.Welcome) else nav.back() },
-                onDone = {
-                    if (inOnboarding) {
-                        onboardingState.markModelSetupDone()
-                        goOnboarding(Onboarding.next(OnboardingStep.Model, onboardingInputs()))
-                    } else nav.back()
+    val reduceMotion = HanaTheme.reduceMotion
+    var prevStackSize by remember { mutableIntStateOf(nav.stack.size) }
+    val isBackTransition = nav.stack.size < prevStackSize
+    SideEffect {
+        prevStackSize = nav.stack.size
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        AnimatedContent(
+            targetState = nav.current,
+            transitionSpec = {
+                if (reduceMotion) {
+                    EnterTransition.None togetherWith ExitTransition.None
+                } else {
+                    if (isBackTransition || (targetState == Route.Chat && initialState != Route.Chat)) {
+                        (slideInHorizontally(initialOffsetX = { -it / 4 }, animationSpec = HanaMotion.page(false)) +
+                            fadeIn(animationSpec = HanaMotion.page(false)))
+                            .togetherWith(
+                                slideOutHorizontally(targetOffsetX = { it }, animationSpec = HanaMotion.page(false)) +
+                                    fadeOut(animationSpec = HanaMotion.page(false))
+                            )
+                    } else {
+                        (slideInHorizontally(initialOffsetX = { it }, animationSpec = HanaMotion.page(false)) +
+                            fadeIn(animationSpec = HanaMotion.page(false)))
+                            .togetherWith(
+                                slideOutHorizontally(targetOffsetX = { -it / 4 }, animationSpec = HanaMotion.page(false)) +
+                                    fadeOut(animationSpec = HanaMotion.page(false))
+                            )
+                    }
+                }
+            },
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    if (backProgress > 0f) {
+                        val s = 1f - (backProgress * 0.05f)
+                        scaleX = s
+                        scaleY = s
+                        translationX = backProgress * 32f * density
+                    }
                 },
-            )
-        }
-        Route.Chat -> screenStates.SaveableStateProvider(Route.Chat.name) {
-            // 对话页重新看得见(回到前台、从别的页面回来):补上别处存进来的轮次,接上别处开始的任务
-            LifecycleStartEffect(Unit) {
-                app.chat.refresh()
-                onStopOrDispose {}
-            }
-            ChatWithDrawer(
-                vm = app.chat,
-                check = check,
-                reduceMotion = HanaTheme.reduceMotion,
-                conversations = { ConversationStore.shared(context).list() },
-                conversationChanges = ConversationStore.shared(context).changes,
-                conversationTitle = { ConversationStore.shared(context).title(it) },
-                onPlans = { nav.pushFromDrawer(Route.Plans) },
-                onMemory = { nav.pushFromDrawer(Route.Memory) },
-                onSettings = { nav.pushFromDrawer(Route.Settings) },
-                onBrowser = { nav.pushFromDrawer(Route.Browser) },
-                onScreens = { nav.pushFromDrawer(Route.Screens) },
-                onAbout = { nav.pushFromDrawer(Route.About) },
-                updateAvailable = AboutCopy.drawerDot(updateState),
-                reopen = nav.reopenDrawer,
-                onReopened = nav::drawerReopened,
-            ) { openDrawer ->
-                ChatScreen(
-                    vm = app.chat,
-                    check = check,
-                    frames = app.taskState.frames,
-                    webOpen = app.tasks.webScreenOpen,
-                    reduceMotion = HanaTheme.reduceMotion,
-                    onOpenDrawer = openDrawer,
-                    openSettings = { nav.push(Route.Settings) },
-                    openRun = { runId = it; nav.push(Route.Run) },
-                    phoneSetupNeeded = phoneSetupNeeded && status.builtinShell != BuiltinShellStatus.Running,
-                    openPhoneSetup = { onFix(Fix.OpenPhoneSetup) },
-                    loadSource = { id ->
-                        withContext(Dispatchers.IO) { evidenceSource(RunStore(context).events(id)) { ConfirmationNotifier.appLabel(context, it) } }
-                    },
-                    openSource = { id, legacy ->
-                        sourceRunId = id
-                        sourceLegacyText = legacy
-                        nav.push(Route.Source)
-                    },
-                    voice = app.voice,
-                    openSpeechModel = { nav.push(Route.SpeechModel) },
-                )
-            }
-        }
-        Route.Settings -> {
-            val registry = remember { WebSites.registry(context) }
-            val sites by registry.entries.collectAsState()
-            val webSites = WebSitesState(
-                sites = sites,
-                onOpenLogin = { WebHandover.showLogin(context, it) },
-                onLogout = { WebSites.login(context).logout(it) },
-                onLogoutAll = { WebSites.logoutAll(context) },
-            )
-            val autonomous by app.approvals.autonomous.collectAsState()
-            SettingsScreen(store, status, release, onFix, onBack = back, onOpenMemory = { nav.push(Route.Memory) },
-                onOpenModels = { nav.push(Route.Models) }, webSites = webSites,
-                autonomous = autonomous, onAutonomous = app.approvalControl::setAutonomous,
-                updateVersion = updateState.update?.version, onOpenAbout = { nav.push(Route.About) })
-        }
-        Route.Models -> ModelsScreen(store, onBack = back, onOpenSpeech = { nav.push(Route.SpeechModel) })
-        Route.SpeechModel -> SpeechModelScreen(store, onBack = back)
-        Route.About -> AboutScreen(
-            versionName = BuildConfig.VERSION_NAME, build = BuildConfig.GIT_HASH, beta = BuildConfig.BETA,
-            issueUrl = remember {
-                HanaLinks.issueUrl(
-                    HanaLinks.Device(
-                        Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE, Build.VERSION.SDK_INT,
-                        BuildConfig.VERSION_NAME, BuildConfig.GIT_HASH,
-                    ),
-                )
-            },
-            onOpenUrl = { openInBrowser(context, it) },
-            onSaveQr = { QrImage.saveToPictures(context) },
-            onOpenLicense = { nav.push(Route.License) },
-            onBack = back,
-            diagnostics = {
-                Diagnostics.render(DiagnosticsCollector.collect(context, status))
-            },
-        )
-        Route.License -> LicensesScreen(onBack = back)
-        Route.Browser -> BrowserScreen(remember { UserBrowser.of(context) }, onBack = back)
-        Route.Memory -> {
-            // 第一次取记忆要读盘解密,放到后台线程;页面的协程跟着这一屏走
-            val vmScope = rememberCoroutineScope()
-            val vm by produceState<MemoryViewModel?>(null) {
-                value = withContext(Dispatchers.IO) {
-                    MemoryViewModel(
-                        memoryRuntime.store(), memoryRuntime.settings(), memoryRuntime.skills(),
-                        vmScope, memoryRuntime.file().brokenNotice,
-                        wipe = { memoryRuntime.scope.launch(Dispatchers.IO) { memoryRuntime.wipeAll() } },
-                        onForgotten = { id -> memoryRuntime.scope.launch(Dispatchers.IO) { memoryRuntime.stripMemory(setOf(id)) } },
-                        runnableScripts = GuideCatalog.loadBundled().runnableScripts(),
-                        appDrafts = memoryRuntime.appKnowledge(),
+            label = "ScreenTransition",
+        ) { targetRoute ->
+            when (targetRoute) {
+                Route.PhoneSetup -> PhoneSetupScreen(status, setupRepair, onFix, onboarding = onboarding == OnboardingStep.Phone) {
+                    phoneSetup.markGuideSeen()
+                    if (onboarding == OnboardingStep.Phone) goOnboarding(null) else nav.back()
+                }
+                Route.Welcome -> WelcomeScreen { goOnboarding(OnboardingStep.Model) }
+                Route.ModelSetup -> {
+                    val inOnboarding = onboarding == OnboardingStep.Model
+                    ModelSetupScreen(
+                        store, onboarding = inOnboarding,
+                        onBack = { if (inOnboarding) goOnboarding(OnboardingStep.Welcome) else nav.back() },
+                        onDone = {
+                            if (inOnboarding) {
+                                onboardingState.markModelSetupDone()
+                                goOnboarding(Onboarding.next(OnboardingStep.Model, onboardingInputs()))
+                            } else nav.back()
+                        },
                     )
                 }
-            }
-            vm?.let { m ->
-                // 从结果卡片的「看看」进来:直接看技能分段
-                LaunchedEffect(m) { if (memoryRuntime.openRequest.value != null) m.select(Segment.Skills) }
-                MemoryScreen(m) { memoryRuntime.requestOpen(null); nav.back() }
+                Route.Chat -> screenStates.SaveableStateProvider(Route.Chat.name) {
+                    // 对话页重新看得见(回到前台、从别的页面回来):补上别处存进来的轮次,接上别处开始的任务
+                    LifecycleStartEffect(Unit) {
+                        app.chat.refresh()
+                        onStopOrDispose {}
+                    }
+                    ChatWithDrawer(
+                        vm = app.chat,
+                        check = check,
+                        reduceMotion = HanaTheme.reduceMotion,
+                        conversations = { ConversationStore.shared(context).list() },
+                        conversationChanges = ConversationStore.shared(context).changes,
+                        conversationTitle = { ConversationStore.shared(context).title(it) },
+                        onPlans = { nav.pushFromDrawer(Route.Plans) },
+                        onMemory = { nav.pushFromDrawer(Route.Memory) },
+                        onSettings = { nav.pushFromDrawer(Route.Settings) },
+                        onBrowser = { nav.pushFromDrawer(Route.Browser) },
+                        onScreens = { nav.pushFromDrawer(Route.Screens) },
+                        onAbout = { nav.pushFromDrawer(Route.About) },
+                        updateAvailable = AboutCopy.drawerDot(updateState),
+                        reopen = nav.reopenDrawer,
+                        onReopened = nav::drawerReopened,
+                    ) { openDrawer ->
+                        ChatScreen(
+                            vm = app.chat,
+                            check = check,
+                            frames = app.taskState.frames,
+                            webOpen = app.tasks.webScreenOpen,
+                            reduceMotion = HanaTheme.reduceMotion,
+                            onOpenDrawer = openDrawer,
+                            openSettings = { nav.push(Route.Settings) },
+                            openRun = { runId = it; nav.push(Route.Run) },
+                            phoneSetupNeeded = phoneSetupNeeded && status.builtinShell != BuiltinShellStatus.Running,
+                            openPhoneSetup = { onFix(Fix.OpenPhoneSetup) },
+                            loadSource = { id ->
+                                withContext(Dispatchers.IO) { evidenceSource(RunStore(context).events(id)) { ConfirmationNotifier.appLabel(context, it) } }
+                            },
+                            openSource = { id, legacy ->
+                                sourceRunId = id
+                                sourceLegacyText = legacy
+                                nav.push(Route.Source)
+                            },
+                            voice = app.voice,
+                            openSpeechModel = { nav.push(Route.SpeechModel) },
+                        )
+                    }
+                }
+                Route.Settings -> {
+                    val registry = remember { WebSites.registry(context) }
+                    val sites by registry.entries.collectAsState()
+                    val webSites = WebSitesState(
+                        sites = sites,
+                        onOpenLogin = { WebHandover.showLogin(context, it) },
+                        onLogout = { WebSites.login(context).logout(it) },
+                        onLogoutAll = { WebSites.logoutAll(context) },
+                    )
+                    val autonomous by app.approvals.autonomous.collectAsState()
+                    SettingsScreen(store, status, release, onFix, onBack = back, onOpenMemory = { nav.push(Route.Memory) },
+                        onOpenModels = { nav.push(Route.Models) }, webSites = webSites,
+                        autonomous = autonomous, onAutonomous = app.approvalControl::setAutonomous,
+                        updateVersion = updateState.update?.version, onOpenAbout = { nav.push(Route.About) })
+                }
+                Route.Models -> ModelsScreen(store, onBack = back, onOpenSpeech = { nav.push(Route.SpeechModel) })
+                Route.SpeechModel -> SpeechModelScreen(store, onBack = back)
+                Route.About -> AboutScreen(
+                    versionName = BuildConfig.VERSION_NAME, build = BuildConfig.GIT_HASH, beta = BuildConfig.BETA,
+                    issueUrl = remember {
+                        HanaLinks.issueUrl(
+                            HanaLinks.Device(
+                                Build.MANUFACTURER, Build.MODEL, Build.VERSION.RELEASE, Build.VERSION.SDK_INT,
+                                BuildConfig.VERSION_NAME, BuildConfig.GIT_HASH,
+                            ),
+                        )
+                    },
+                    onOpenUrl = { openInBrowser(context, it) },
+                    onSaveQr = { QrImage.saveToPictures(context) },
+                    onOpenLicense = { nav.push(Route.License) },
+                    onBack = back,
+                    diagnostics = {
+                        Diagnostics.render(DiagnosticsCollector.collect(context, status))
+                    },
+                )
+                Route.License -> LicensesScreen(onBack = back)
+                Route.Browser -> BrowserScreen(remember { UserBrowser.of(context) }, onBack = back)
+                Route.Memory -> {
+                    // 第一次取记忆要读盘解密,放到后台线程;页面的协程跟着这一屏走
+                    val vmScope = rememberCoroutineScope()
+                    val vm by produceState<MemoryViewModel?>(null) {
+                        value = withContext(Dispatchers.IO) {
+                            MemoryViewModel(
+                                memoryRuntime.store(), memoryRuntime.settings(), memoryRuntime.skills(),
+                                vmScope, memoryRuntime.file().brokenNotice,
+                                wipe = { memoryRuntime.scope.launch(Dispatchers.IO) { memoryRuntime.wipeAll() } },
+                                onForgotten = { id -> memoryRuntime.scope.launch(Dispatchers.IO) { memoryRuntime.stripMemory(setOf(id)) } },
+                                runnableScripts = GuideCatalog.loadBundled().runnableScripts(),
+                                appDrafts = memoryRuntime.appKnowledge(),
+                            )
+                        }
+                    }
+                    vm?.let { m ->
+                        // 从结果卡片的「看看」进来:直接看技能分段
+                        LaunchedEffect(m) { if (memoryRuntime.openRequest.value != null) m.select(Segment.Skills) }
+                        MemoryScreen(m) { memoryRuntime.requestOpen(null); nav.back() }
+                    }
+                }
+                Route.Run -> {
+                    val id = runId
+                    val vm = remember(id) { id?.let { RunTimelineViewModel(
+                            RunStore(context), it, resolveMemory = app.chat::usedMemoryTexts,
+                            alive = { run -> app.taskState.runs.value.any { r -> r.runId.value == run } },
+                        ) } }
+                    if (vm != null) RunTimelineScreen(vm, back) else LaunchedEffect(Unit) { nav.back() }
+                }
+                Route.Source -> {
+                    val vm = remember(sourceRunId, sourceLegacyText) {
+                        SourceViewModel(RunStore(context), sourceRunId, sourceLegacyText) { ConfirmationNotifier.appLabel(context, it) }
+                    }
+                    SourceScreen(vm, back)
+                }
+                Route.Plans -> PlansScreen(context, onBack = back, onOpenConversation = {
+                    app.chat.openConversation(it)
+                    nav.reset()
+                })
+                Route.Screens -> ScreensScreen(app.taskState, onBack = back, onOpenConversation = {
+                    app.chat.openConversation(it)
+                    nav.reset()
+                })
             }
         }
-        Route.Run -> {
-            val id = runId
-            val vm = remember(id) { id?.let { RunTimelineViewModel(
-                    RunStore(context), it, resolveMemory = app.chat::usedMemoryTexts,
-                    alive = { run -> app.taskState.runs.value.any { r -> r.runId.value == run } },
-                ) } }
-            if (vm != null) RunTimelineScreen(vm, back) else LaunchedEffect(Unit) { nav.back() }
-        }
-        Route.Source -> {
-            val vm = remember(sourceRunId, sourceLegacyText) {
-                SourceViewModel(RunStore(context), sourceRunId, sourceLegacyText) { ConfirmationNotifier.appLabel(context, it) }
-            }
-            SourceScreen(vm, back)
-        }
-        Route.Plans -> PlansScreen(context, onBack = back, onOpenConversation = {
-            app.chat.openConversation(it)
-            nav.reset()
-        })
-        Route.Screens -> ScreensScreen(app.taskState, onBack = back, onOpenConversation = {
-            app.chat.openConversation(it)
-            nav.reset()
-        })
+        // App 沉浸式 HUD 挂载到根容器最上层
+        DesignSystemGateway.HanaHudHost()
     }
 }

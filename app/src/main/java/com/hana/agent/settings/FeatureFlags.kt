@@ -101,6 +101,23 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         prefs.edit().putString(THEME_MODE, mode.name).commit()
     }
 
+    /** 动态取色 (Android 12+ Monet): 默认关闭，开启后强调色跟随系统壁纸色调。 */
+    fun dynamicColor(): Boolean = prefs.getBoolean(DYNAMIC_COLOR, false)
+
+    fun setDynamicColor(on: Boolean) {
+        prefs.edit().putBoolean(DYNAMIC_COLOR, on).apply()
+    }
+
+    /** 动态取色开关的当前值，之后每次改动再发一次。 */
+    fun dynamicColorChanges(): Flow<Boolean> = callbackFlow {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == DYNAMIC_COLOR) trySend(dynamicColor())
+        }
+        prefs.registerOnSharedPreferenceChangeListener(listener)
+        send(dynamicColor())
+        awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+    }.distinctUntilChanged()
+
     /**
      * 允许 Hana 改自己的设置(见 core 的 SelfConfig):模型与 Key、删数据不在允许之列。
      * 默认关;开着的时候任务里才有 settings_list、settings_set 这两件工具。
@@ -189,6 +206,7 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         private const val OPERATING_PACE = "operating_pace"
         private const val SELF_CONFIG = "self_config"
         private const val THEME_MODE = "theme_mode"
+        const val DYNAMIC_COLOR = "dynamic_color"
         private const val CAPSULE_MODE = "capsule_mode"
         private const val CAPSULE_SIDE = "capsule_side"
         private const val CAPSULE_HEIGHT = "capsule_height"

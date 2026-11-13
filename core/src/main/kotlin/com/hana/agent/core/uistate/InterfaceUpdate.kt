@@ -20,7 +20,13 @@ private const val DEFAULT_MAX_ELEMENTS = 200
  * 手机快照有窗口树时,全量结果带 tree,差异结果带 treeChanges;调用方给手机传完整元素数。
  */
 object InterfaceUpdate {
-    fun between(base: ModelSnapshot?, current: ModelSnapshot, baseVisible: Boolean, maxElements: Int = DEFAULT_MAX_ELEMENTS): JsonObject {
+    fun between(
+        base: ModelSnapshot?,
+        current: ModelSnapshot,
+        baseVisible: Boolean,
+        maxElements: Int = DEFAULT_MAX_ELEMENTS,
+        treeFormat: UiTreeFormat = UiTreeFormat.JSON,
+    ): JsonObject {
         val (all, _) = ScreenJson.elements(current.screen, Int.MAX_VALUE)
         fun full() = buildJsonObject {
             put("snapshotId", current.snapshotId)
@@ -29,7 +35,12 @@ object InterfaceUpdate {
             flags(current)
             put("elements", JsonArray(all.take(maxElements)))
             put("truncated", all.size > maxElements)
-            if (current.screen.windows.isNotEmpty()) put("tree", UiTreeJson.windows(current.screen))
+            if (current.screen.windows.isNotEmpty()) {
+                when (treeFormat) {
+                    UiTreeFormat.COMPACT -> put("tree", UiTreeCompact.format(current.screen))
+                    UiTreeFormat.JSON -> put("tree", UiTreeJson.windows(current.screen))
+                }
+            }
         }
         if (base == null || !baseVisible || base.port.packageName != current.port.packageName) return full()
         if (current.screen.windows.isNotEmpty() && !UiTreeJson.sameWindows(base.screen, current.screen)) return full()
@@ -48,8 +59,25 @@ object InterfaceUpdate {
         }
         val diffChars = JsonArray(added).toString().length + JsonArray(removed).toString().length + JsonArray(changed).toString().length
         if (diffChars > all.toString().length * MAX_DIFF_RATIO) return full()
-        val treeChanges = if (current.screen.windows.isEmpty()) null else UiTreeJson.changes(base.screen, current.screen)
-        if (treeChanges != null && treeChanges.toString().length > UiTreeJson.windows(current.screen).toString().length * MAX_DIFF_RATIO) return full()
+
+        var jsonTreeChanges: JsonElement? = null
+        var compactTreeChanges: String? = null
+        if (current.screen.windows.isNotEmpty()) {
+            when (treeFormat) {
+                UiTreeFormat.COMPACT -> {
+                    val compactDiff = UiTreeCompact.changes(base.screen, current.screen)
+                    val fullTreeLen = UiTreeCompact.format(current.screen).length
+                    if (compactDiff.length > fullTreeLen * MAX_DIFF_RATIO) return full()
+                    compactTreeChanges = compactDiff
+                }
+                UiTreeFormat.JSON -> {
+                    val treeChanges = UiTreeJson.changes(base.screen, current.screen)
+                    if (treeChanges.toString().length > UiTreeJson.windows(current.screen).toString().length * MAX_DIFF_RATIO) return full()
+                    jsonTreeChanges = treeChanges
+                }
+            }
+        }
+
         val shownAdded = added.take(maxElements)
         val shownChanged = changed.take((maxElements - shownAdded.size).coerceAtLeast(0))
         return buildJsonObject {
@@ -63,7 +91,8 @@ object InterfaceUpdate {
             put("changed", JsonArray(shownChanged))
             put("unchanged", all.size - added.size - changed.size)
             if (shownAdded.size + shownChanged.size < added.size + changed.size) put("truncated", true)
-            treeChanges?.let { put("treeChanges", it) }
+            jsonTreeChanges?.let { put("treeChanges", it) }
+            compactTreeChanges?.let { put("treeChanges", it) }
         }
     }
 

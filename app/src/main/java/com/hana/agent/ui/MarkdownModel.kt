@@ -97,27 +97,110 @@ object MarkdownModel {
     fun parseStreaming(markdown: String, styles: Styles = Styles.Light): List<MdBlock> = parse(StreamingMarkdown.preview(markdown), styles)
 
     /**
+     * 将 markdown 文本拆分为安全的顶级不可变块与末尾活跃片段。
+     * 跟踪 fenced code block (``` / ~~~) 状态，避免代码块内部截断；
+     * 遇到围栏外空行，且后续非空行不属于缩进续行、引用续行 (>) 或表格续行 (|) 时，视为独立顶级块分界点。
+     */
+    internal fun splitTopLevelBlocks(markdown: String): List<String> {
+        val lines = markdown.lines()
+        if (lines.isEmpty()) return emptyList()
+
+        val chunks = mutableListOf<String>()
+        val currentBlockLines = mutableListOf<String>()
+        var inFencedCode = false
+        var fenceChar = ' '
+        var fenceLength = 0
+
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            val trimmedStart = line.trimStart()
+            val indent = line.length - trimmedStart.length
+
+            if (!inFencedCode) {
+                // 检查是否进入围栏代码块 (0-3 个空格缩进，后跟 >=3 个 ` 或 ~)
+                if (indent <= 3 && (trimmedStart.startsWith("```") || trimmedStart.startsWith("~~~"))) {
+                    val char = trimmedStart[0]
+                    val len = trimmedStart.takeWhile { it == char }.length
+                    if (len >= 3) {
+                        inFencedCode = true
+                        fenceChar = char
+                        fenceLength = len
+                    }
+                }
+            } else {
+                // 检查是否退出围栏代码块 (必须以至少 fenceLength 个 fenceChar 开头，且之后除空白外无其它字符)
+                if (indent <= 3 && trimmedStart.startsWith(fenceChar.toString().repeat(fenceLength))) {
+                    val rest = trimmedStart.dropWhile { it == fenceChar }.trim()
+                    if (rest.isEmpty()) {
+                        inFencedCode = false
+                    }
+                }
+            }
+
+            // 当不在代码围栏中且当前行是空行时，检查是否是安全切分点
+            if (!inFencedCode && line.isBlank() && currentBlockLines.isNotEmpty()) {
+                // 向前看下一个非空行
+                var nextNonEmptyIdx = i + 1
+                while (nextNonEmptyIdx < lines.size && lines[nextNonEmptyIdx].isBlank()) {
+                    nextNonEmptyIdx++
+                }
+
+                if (nextNonEmptyIdx < lines.size) {
+                    val nextLine = lines[nextNonEmptyIdx]
+                    val nextTrimmed = nextLine.trimStart()
+                    val nextIndent = nextLine.length - nextTrimmed.length
+
+                    val isIndentedContinuation = nextIndent >= 2 || nextLine.startsWith("\t")
+                    val isQuoteContinuation = nextTrimmed.startsWith(">")
+                    val isTableContinuation = nextTrimmed.startsWith("|")
+
+                    if (!isIndentedContinuation && !isQuoteContinuation && !isTableContinuation) {
+                        // 发现安全的顶级块切分点！将当前累积的块切出
+                        val chunk = currentBlockLines.joinToString("\n").trim()
+                        if (chunk.isNotEmpty()) {
+                            chunks.add(chunk)
+                        }
+                        currentBlockLines.clear()
+                        i = nextNonEmptyIdx - 1
+                    } else {
+                        currentBlockLines.add(line)
+                    }
+                } else {
+                    currentBlockLines.add(line)
+                }
+            } else {
+                currentBlockLines.add(line)
+            }
+            i++
+        }
+
+        if (currentBlockLines.isNotEmpty()) {
+            val chunk = currentBlockLines.joinToString("\n").trim()
+            if (chunk.isNotEmpty()) {
+                chunks.add(chunk)
+            }
+        }
+
+        return chunks
+    }
+
+    /**
      * 增量流式 Markdown 解析：
-     * 针对流式打字输出，以 `\n\n` 划分已闭合的不可变历史段落与末尾活跃片段。
-     * 已闭合段落从 LRU 缓存直接复用 AST Block，仅对尾部活跃片段调用 parseStreaming()，
-     * 复杂度从 O(N^2) 降至 O(N)，彻底消除打字过程中的 GC 掉帧与 AST 临时对象风暴。
+     * 针对流式打字输出，通过线性状态机识别代码围栏与语法边界，将安全的历史不可变块送入 LRU 缓存复用 AST，
+     * 仅对尾部活跃打图片段调用 parseStreaming()，彻底消除打字过程中的 GC 掉帧与 AST 临时对象风暴。
      */
     fun parseStreamingCached(markdown: String, styles: Styles = Styles.Light): List<MdBlock> {
-        if (!markdown.contains("\n\n")) {
-            return parseStreaming(markdown, styles)
-        }
-        val lastBreak = markdown.lastIndexOf("\n\n")
-        val closedPrefix = markdown.substring(0, lastBreak)
-        val activeTail = markdown.substring(lastBreak + 2)
-
-        // 避免在代码块内部进行切分
-        if (closedPrefix.count { it == '`' } % 2 != 0) {
+        val chunks = splitTopLevelBlocks(markdown)
+        if (chunks.size <= 1) {
             return parseStreaming(markdown, styles)
         }
 
-        val paragraphs = closedPrefix.split("\n\n").filter { it.isNotBlank() }
         val prefixBlocks = mutableListOf<MdBlock>()
-        for (p in paragraphs) {
+        val historicalChunks = chunks.dropLast(1)
+        val activeTail = chunks.last()
+
+        for (p in historicalChunks) {
             val key = "${styles.hashCode()}:$p"
             val cached = synchronized(paragraphAstCache) { paragraphAstCache[key] }
             if (cached != null) {

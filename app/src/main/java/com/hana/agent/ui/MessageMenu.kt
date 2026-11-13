@@ -3,7 +3,7 @@ package com.hana.agent.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -161,7 +161,7 @@ internal fun Modifier.behindMenu(open: Boolean, progress: () -> Float): Modifier
 /** 把消息的纯文字放进剪贴板,提示一句「已复制」。 */
 internal fun copyMessage(context: Context, text: String) {
     context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Hana", text))
-    Toast.makeText(context, context.getString(R.string.chat_copied), Toast.LENGTH_SHORT).show()
+    DesignSystemGateway.toast(context, R.string.chat_copied)
 }
 
 /** 引用怎么念给读屏:「引用 Hana:……」「引用你的话:……」。 */

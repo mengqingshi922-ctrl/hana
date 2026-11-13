@@ -17,7 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -271,7 +271,7 @@ fun SettingsScreen(
 
     explaining?.let { p ->
         val e = StatusCopy.explain(p, androidRelease)
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { explaining = null },
             title = { Text(e.title) },
             text = { Text(e.body) },

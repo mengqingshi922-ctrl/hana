@@ -10,16 +10,15 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.runtime.rememberCoroutineScope
 import com.hana.agent.browser.PageAskMode
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.DesignSystemGateway
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
@@ -31,6 +30,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -74,7 +74,7 @@ fun BrowserScreen(browser: UserBrowser, onBack: () -> Unit) {
     val face = remember(looks) { { host: String -> SiteLooks.faceOf(host, looks, browser.looks::iconFile) } }
     val favorites = remember(edits, registry) { BrowserFavorites.combine(edits, registry) }
     val recent = remember(recentPages, looks) { StartPageModel.recentRows(recentPages) { face(it).name } }
-    val toast: (String) -> Unit = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+    val toast: (String) -> Unit = { DesignSystemGateway.toast(context, it) }
     val scope = rememberCoroutineScope()
     val chat = remember(browser) { PageChat(context.applicationContext, browser, scope) }
     // 换了一页(还没在这一页上问过时)重新找接着的对话;关了网页回到什么都没有
@@ -212,7 +212,7 @@ private fun openOutside(context: Context, url: String): String? = try {
 private fun PageDialogBox(d: PageDialog, answer: (Boolean, String?) -> Unit) {
     var input by remember(d) { mutableStateOf(d.defaultText.orEmpty()) }
     val leave = d.kind == PageDialog.BEFORE_UNLOAD
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = { answer(false, null) },
         title = { Text(if (leave) tr(R.string.browser_leave_q) else tr(R.string.browser_page_says)) },
         text = {

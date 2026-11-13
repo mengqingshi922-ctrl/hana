@@ -255,7 +255,7 @@ fun AppAccessScreen(onBack: () -> Unit, classifyApps: Boolean = true) {
         }
     }
     if (confirmingClassify) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { confirmingClassify = false },
             title = { Text(stringResource(R.string.appaccess_send_title)) },
             text = { Text(stringResource(R.string.appaccess_send_body)) },
@@ -267,7 +267,7 @@ fun AppAccessScreen(onBack: () -> Unit, classifyApps: Boolean = true) {
         )
     }
     if (recommending) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { recommending = false },
             title = { Text(stringResource(R.string.appaccess_recommend_title)) },
             text = {
@@ -297,7 +297,7 @@ fun AppAccessScreen(onBack: () -> Unit, classifyApps: Boolean = true) {
         )
     }
     editing?.let { pkg ->
-        AlertDialog(onDismissRequest = { editing = null }, title = { Text(stringResource(R.string.appaccess_edit_category)) }, text = {
+        HanaDialog(onDismissRequest = { editing = null }, title = { Text(stringResource(R.string.appaccess_edit_category)) }, text = {
             Column { AppCategory.entries.forEach { category ->
                 TextButton({
                     save { store.classify(mapOf(pkg to AppClassification(category, "", manual = true))) }

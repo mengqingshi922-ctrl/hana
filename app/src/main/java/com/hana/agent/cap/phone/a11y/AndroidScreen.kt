@@ -55,6 +55,7 @@ import com.hana.agent.cap.phone.display.LazyAgentDisplay
 import com.hana.agent.shell.IHanaShell
 import com.hana.agent.cap.phone.shell.MainScreenWatch
 import com.hana.agent.cap.phone.shell.ShellService
+import com.hana.agent.ui.components.TouchVisualBus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -184,8 +185,31 @@ class AndroidScreen(
     @Volatile private var lastSettledGen: Long = -1L
     @Volatile private var lastSettledAtMs: Long = 0L
 
+    /** 同帧轻量级 OCR 缓存：在虚拟屏画面未变时 0ms 复用识别框，避免同帧在截图与读文字阶段重复运行 MLKit。 */
+    private class CachedOcr(
+        val displayId: Int,
+        val frameSeq: Long,
+        val lastFrameUptimeMs: Long,
+        val sig: IntArray?,
+        val lines: List<VisibleTextLine>,
+    ) {
+        fun matches(curDisplayId: Int, curFrameSeq: Long, curUptimeMs: Long, curSig: IntArray?): Boolean {
+            if (displayId != curDisplayId) return false
+            if (frameSeq > 0L && curFrameSeq > 0L) {
+                return frameSeq == curFrameSeq
+            }
+            if (lastFrameUptimeMs > 0L && lastFrameUptimeMs == curUptimeMs) return true
+            if (sig != null && curSig != null) {
+                return sig === curSig || sig.contentEquals(curSig)
+            }
+            return false
+        }
+    }
+    @Volatile private var cachedOcr: CachedOcr? = null
+
     private fun invalidateReadCache() {
         cachedRead = null
+        cachedOcr = null
         lastSettledGen = -1L
     }
 
@@ -342,9 +366,24 @@ class AndroidScreen(
                     }
                 }
             }
+            val sig = frameSignature()
+            val cachedLines = cachedOcr?.takeIf { it.matches(cur.displayId, cur.frameSeq, cur.lastFrameUptimeMs, sig) }?.lines
+            val ocrLines = if (cachedLines != null) {
+                cachedLines
+            } else {
+                val isSensitive = com.hana.agent.privacy.HybridPrivacyFirewall.isSensitivePackage(pkg)
+                val isSelfDrawnOrBlank = uiElements.isEmpty() && cached?.passwordField != true
+                if (isSensitive || isSelfDrawnOrBlank) {
+                    val lines = runCatching { PhoneOcr.read(rawBmp, recycle = false) }.getOrDefault(emptyList())
+                    cachedOcr = CachedOcr(cur.displayId, cur.frameSeq, cur.lastFrameUptimeMs, sig, lines)
+                    lines
+                } else {
+                    emptyList()
+                }
+            }
             com.hana.agent.privacy.HybridPrivacyFirewall.redactAndEncode(
                 source = rawBmp,
-                ocrLines = emptyList(),
+                ocrLines = ocrLines,
                 uiElements = uiElements,
                 packageName = pkg,
                 maxSide = 1280,
@@ -385,15 +424,31 @@ class AndroidScreen(
     override suspend fun readVisibleText(): List<VisibleTextLine>? = withContext(Dispatchers.IO) {
         val cur = display.current ?: return@withContext null
         if (frameBlack() == true) return@withContext null
+        val sig = frameSignature()
+        val cached = cachedOcr
+        if (cur.lastFrameUptimeMs > 0L && cached != null && cached.matches(cur.displayId, cur.frameSeq, cur.lastFrameUptimeMs, sig)) {
+            return@withContext cached.lines
+        }
         val frameQuietMs = SystemClock.uptimeMillis() - cur.lastFrameUptimeMs
         if (cur.lastFrameUptimeMs > 0L && frameQuietMs >= StillFrameRead.POLL_MS) {
             val before = frameSignature()
             val res = cur.latestFrameBitmap()?.let { PhoneOcr.read(it) }
-            if (res != null && !FrameMath.pageChanged(before, frameSignature())) return@withContext res
+            val after = frameSignature()
+            if (res != null && !FrameMath.pageChanged(before, after)) {
+                cachedOcr = CachedOcr(cur.displayId, cur.frameSeq, cur.lastFrameUptimeMs, after ?: before, res)
+                return@withContext res
+            }
         }
-        StillFrameRead.read(SystemClock::uptimeMillis, { delay(it) }, ::frameSignature) {
+        val res = StillFrameRead.read(SystemClock::uptimeMillis, { delay(it) }, ::frameSignature) {
             display.current?.latestFrameBitmap()?.let { PhoneOcr.read(it) }
         }
+        if (res != null) {
+            val freshCur = display.current
+            if (freshCur != null) {
+                cachedOcr = CachedOcr(freshCur.displayId, freshCur.frameSeq, freshCur.lastFrameUptimeMs, frameSignature(), res)
+            }
+        }
+        res
     }
 
     override suspend fun frameGrid(): FrameGrid? = withContext(Dispatchers.IO) {
@@ -604,11 +659,16 @@ class AndroidScreen(
         val microDy = gaussianJitter(0.5, 1.0).toDouble()
         val tap1 = listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, hold))
         val tap2 = listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, hold))
-        if (injectStroke(tap1)) {
+        val success = if (injectStroke(tap1)) {
             delay(gap)
-            if (injectStroke(tap2)) return true
+            if (injectStroke(tap2)) true else false
+        } else {
+            a11y.taps(displayId, at.first.toFloat(), at.second.toFloat(), 2, hold, gap)
         }
-        return a11y.taps(displayId, at.first.toFloat(), at.second.toFloat(), 2, hold, gap)
+        if (success) {
+            TouchVisualBus.emitTap(x.toFloat(), y.toFloat(), display.width, display.height)
+        }
+        return success
     }
 
     override suspend fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): ActionResult = withContext(Dispatchers.IO) {
@@ -623,7 +683,15 @@ class AndroidScreen(
             // 一根手指照着画好的路径走,按节奏排快慢;几根手指一起动的只让时长浮动一点
             if (paths.size == 1) return@verified drag(paths.single(), durationMs, bow = false)
             delay(pacing.approach())
-            a11y.gesture(displayId, paths.map(::pathOf), pacing.duration(durationMs))
+            val ok = a11y.gesture(displayId, paths.map(::pathOf), pacing.duration(durationMs))
+            if (ok) {
+                for (p in paths) {
+                    val xs = p.map { it.first.toFloat() }
+                    val ys = p.map { it.second.toFloat() }
+                    TouchVisualBus.emitStroke(xs, ys, display.width, display.height, durationMs)
+                }
+            }
+            ok
         }
     }
 
@@ -2082,6 +2150,14 @@ class AndroidScreen(
 
         // 2. 若物理触摸因窗口或坐标异常未成功，fallback 走无障碍节点点击
         if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            if (rect.width() > 0 && rect.height() > 0) {
+                TouchVisualBus.emitTap(
+                    rect.centerX().toFloat(),
+                    rect.centerY().toFloat(),
+                    display.width,
+                    display.height,
+                )
+            }
             return true
         }
 
@@ -2172,14 +2248,22 @@ class AndroidScreen(
         val microDx = gaussianJitter(0.6, 1.2)
         val microDy = gaussianJitter(0.5, 1.0)
         // 1. 优先尝试系统底层 Shell / InputManager 驱动原生注入（不带 FLAG_IS_ACCESSIBILITY_EVENT，消除风控指纹）
-        if (injectStroke(listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, press)))) return true
-        if (shell.injectTap(displayId, x, y)) return true
-        // 2. 底层 Shell 无法注入（无权限或非托管屏）时，fallback 退回无障碍手势
-        val tapPath = Path().apply {
-            moveTo(x.toFloat(), y.toFloat())
-            lineTo(x.toFloat() + microDx, y.toFloat() + microDy)
+        val success = if (injectStroke(listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble() + microDx, y.toDouble() + microDy, press)))) {
+            true
+        } else if (shell.injectTap(displayId, x, y)) {
+            true
+        } else {
+            // 2. 底层 Shell 无法注入（无权限或非托管屏）时，fallback 退回无障碍手势
+            val tapPath = Path().apply {
+                moveTo(x.toFloat(), y.toFloat())
+                lineTo(x.toFloat() + microDx, y.toFloat() + microDy)
+            }
+            a11y.gesture(displayId, tapPath, press)
         }
-        return a11y.gesture(displayId, tapPath, press)
+        if (success) {
+            TouchVisualBus.emitTap(x.toFloat(), y.toFloat(), display.width, display.height)
+        }
+        return success
     }
 
     /**
@@ -2191,11 +2275,23 @@ class AndroidScreen(
             val targetRect = android.graphics.Rect(x - 24, y - 24, x + 24, y + 24)
             com.hana.agent.capsule.SmartAutoDodgeEngine.notifyTargetAndAwaitDodge(targetRect)
         }
-        if (!pacing.paced) return a11y.gesture(displayId, pathOf(points), durationMs)
-        delay(pacing.approach())
-        val stroke = pacing.stroke(points.map { it.first.toDouble() to it.second.toDouble() }, durationMs, bow, display.width to display.height)
-        if (injectStroke(stroke.points)) return true
-        return a11y.gesture(displayId, pathOf(stroke.points.map { it.x.roundToInt() to it.y.roundToInt() }), stroke.durationMs)
+        val success = if (!pacing.paced) {
+            a11y.gesture(displayId, pathOf(points), durationMs)
+        } else {
+            delay(pacing.approach())
+            val stroke = pacing.stroke(points.map { it.first.toDouble() to it.second.toDouble() }, durationMs, bow, display.width to display.height)
+            if (injectStroke(stroke.points)) {
+                true
+            } else {
+                a11y.gesture(displayId, pathOf(stroke.points.map { it.x.roundToInt() to it.y.roundToInt() }), stroke.durationMs)
+            }
+        }
+        if (success) {
+            val xs = points.map { it.first.toFloat() }
+            val ys = points.map { it.second.toFloat() }
+            TouchVisualBus.emitStroke(xs, ys, display.width, display.height, durationMs)
+        }
+        return success
     }
 
     private fun injectStroke(points: List<GesturePacing.Point>): Boolean = runCatching {

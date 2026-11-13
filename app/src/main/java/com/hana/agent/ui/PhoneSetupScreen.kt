@@ -9,7 +9,8 @@ import com.hana.agent.about.setupInputs
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.os.SystemClock
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
+import com.hana.agent.ui.components.HanaDialog
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -30,7 +31,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
@@ -171,7 +171,7 @@ fun PhoneSetupScreen(status: SystemStatus, repair: Boolean, onFix: (Fix) -> Unit
 
     val copyUsbCommand = {
         context.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText(PhoneSetupCopy.USB_TITLE, usbCommand))
-        Toast.makeText(context, PhoneSetupCopy.USB_COPIED, Toast.LENGTH_SHORT).show()
+        DesignSystemGateway.toast(context, PhoneSetupCopy.USB_COPIED)
     }
     val close = { pairing.cancelRepair(); onClose() }
     BackHandler(onBack = close)
@@ -652,7 +652,7 @@ fun PhoneHelperSection(status: BuiltinShellStatus, onRepair: () -> Unit, onUnpai
         )
     }
     if (confirming) {
-        AlertDialog(
+        HanaDialog(
             onDismissRequest = { confirming = false },
             title = { Text(PhoneSetupCopy.UNPAIR_TITLE) },
             text = { Text(PhoneSetupCopy.UNPAIR_BODY) },

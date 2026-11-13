@@ -1,10 +1,11 @@
 package com.hana.agent.ui.theme
 
 import android.content.Context
+import android.os.Build
 import android.provider.Settings
-import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -13,7 +14,10 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -36,8 +40,8 @@ object HanaMotion {
     /** 减速曲线:起步快、落地慢。 */
     val Decelerate: Easing = CubicBezierEasing(0f, 0f, 0.2f, 1f)
 
-    fun <T> page(reduceMotion: Boolean): AnimationSpec<T> = if (reduceMotion) snap() else tween(PAGE_MS, easing = Decelerate)
-    fun <T> switch(reduceMotion: Boolean): AnimationSpec<T> = if (reduceMotion) snap() else tween(SWITCH_MS, easing = Decelerate)
+    fun <T> page(reduceMotion: Boolean): FiniteAnimationSpec<T> = if (reduceMotion) snap() else tween(PAGE_MS, easing = Decelerate)
+    fun <T> switch(reduceMotion: Boolean): FiniteAnimationSpec<T> = if (reduceMotion) snap() else tween(SWITCH_MS, easing = Decelerate)
 }
 
 /** 系统「移除动画」(动画时长缩放为 0)时为真。 */
@@ -70,6 +74,49 @@ fun appearanceDark(): Boolean {
     }
 }
 
+/** 动态取色是否开启 (Android 12+ Monet)。 */
+@Composable
+fun dynamicColorEnabled(): Boolean {
+    val context = LocalContext.current
+    val flags = remember(context) { FeatureFlags.get(context) }
+    val dynamic by remember(flags) { flags.dynamicColorChanges() }.collectAsState(flags.dynamicColor())
+    return dynamic
+}
+
+/** 叠加 Monet 动态主色，保持背景与表面中性克制。 */
+fun HanaColors.withDynamicAccent(primary: Color, primaryContainer: Color): HanaColors = HanaColors(
+    bg = this.bg,
+    surface = this.surface,
+    fill = this.fill,
+    ink = this.ink,
+    ink2 = this.ink2,
+    ink3 = this.ink3,
+    hair = this.hair,
+    edge = this.edge,
+    accent = primary,
+    accentSoft = primaryContainer.copy(alpha = 0.35f),
+    onAccent = this.onAccent,
+    ok = this.ok,
+    okSoft = this.okSoft,
+    warn = this.warn,
+    warnSolid = this.warnSolid,
+    warnSoft = this.warnSoft,
+    bad = this.bad,
+    badSoft = this.badSoft,
+    neutralSoft = this.neutralSoft,
+    answer = this.answer,
+    greySoft = this.greySoft,
+    glass = this.glass,
+    glassEdge = this.glassEdge,
+    cardShadow = this.cardShadow,
+    floatShadow = this.floatShadow,
+    thumb = this.thumb,
+    series = this.series,
+    seriesOther = this.seriesOther,
+    grid = this.grid,
+    isDark = this.isDark,
+)
+
 /** 状态栏、导航栏的图标深浅跟界面一致:界面强制浅色而系统是深色时,图标也得是深色的才看得见。 */
 fun ComponentActivity.systemBarsFor(dark: Boolean) {
     val transparent = android.graphics.Color.TRANSPARENT
@@ -100,13 +147,25 @@ val HanaM3Typography = Typography(
     labelSmall = HanaType.Hint,
 )
 
-/** 深浅色按设置里的外观([appearanceDark]);同时把 Material 组件(弹窗、输入框、底部面板)的颜色对上。 */
+/** 深浅色按设置里的外观([appearanceDark]);支持 Monet 动态壁纸取色；同时把 Material 组件的颜色对上。 */
 @Composable
-fun HanaTheme(dark: Boolean = appearanceDark(), reduceMotion: Boolean = false, content: @Composable () -> Unit) {
-    val colors = if (dark) DarkColors else LightColors
-    val scheme = if (dark) DarkScheme else LightScheme
+fun HanaTheme(
+    dark: Boolean = appearanceDark(),
+    reduceMotion: Boolean = false,
+    dynamicColor: Boolean = dynamicColorEnabled(),
+    content: @Composable () -> Unit,
+) {
+    val context = LocalContext.current
+    val baseColors = if (dark) DarkColors else LightColors
+    val colors = if (dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val dynScheme = if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        baseColors.withDynamicAccent(dynScheme.primary, dynScheme.primaryContainer)
+    } else {
+        baseColors
+    }
+    val currentScheme = scheme(colors)
     CompositionLocalProvider(LocalHanaColors provides colors, LocalReduceMotion provides reduceMotion) {
-        MaterialTheme(colorScheme = scheme, typography = HanaM3Typography) {
+        MaterialTheme(colorScheme = currentScheme, typography = HanaM3Typography) {
             CompositionLocalProvider(LocalContentColor provides colors.ink, content = content)
         }
     }

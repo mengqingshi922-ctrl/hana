@@ -13,7 +13,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
+import com.hana.agent.ui.components.HanaEmptyState
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.mutableStateOf
 import com.hana.agent.chat.DeleteImpact
@@ -316,6 +317,16 @@ fun ChatDrawer(
         }
         LaunchedEffect(first) { list.scrollToItem(0) }
         LazyColumn(Modifier.fillMaxWidth().weight(1f).lazyListScrollbar(list), state = list) {
+            val isEmpty = sections.running.isEmpty() && sections.pinned.isEmpty() && sections.recent.isEmpty()
+            if (isEmpty) {
+                item("empty") {
+                    HanaEmptyState(
+                        title = stringResource(R.string.chat_new),
+                        subtitle = "开启一段新的对话吧",
+                        modifier = Modifier.fillMaxWidth().padding(top = 40.dp, bottom = 20.dp),
+                    )
+                }
+            }
             if (sections.running.isNotEmpty()) {
                 // 「进行中」这一段的右边进「后台屏」页:看每个在跑的任务正在用哪个 App、实时画面
                 item("h-running") { RunningLabel(onScreens) }
@@ -569,7 +580,7 @@ internal fun RenameConversationDialog(title: String, onSave: (String) -> Unit, o
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
     val ok = value.text.isNotBlank()
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.drawer_rename_title)) },
         text = {
@@ -602,7 +613,7 @@ internal fun DeleteConversationDialog(title: String, impact: DeleteImpact, onCon
         if (impact.runningTask) stringResource(R.string.drawer_delete_running) else null,
         if (impact.schedules > 0) trPlural(R.plurals.drawer_delete_schedules, impact.schedules) else null,
     ).joinToString("\n")
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.drawer_delete_title)) },
         text = { Text(body, Modifier.testTag("delete-conversation-body")) },

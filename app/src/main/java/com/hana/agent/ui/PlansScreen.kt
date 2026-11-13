@@ -9,7 +9,8 @@ import android.content.Context
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
+import com.hana.agent.ui.components.HanaEmptyState
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -93,10 +94,11 @@ fun PlansScreen(context: Context, onBack: () -> Unit, onOpenConversation: (Strin
         )
         error?.let { Text(it, Modifier.padding(top = 8.dp), style = HanaType.Caption, color = HanaTheme.colors.bad) }
         if (shown.isEmpty()) {
-            GroupLabel("")
-            EmptyNote(
-                if (snapshot.triggers.isEmpty()) tr(R.string.plans_empty)
+            HanaEmptyState(
+                title = if (snapshot.triggers.isEmpty()) tr(R.string.plans_empty)
                 else if (segment == 0) tr(R.string.plans_none_running) else tr(R.string.plans_none_stopped),
+                subtitle = if (snapshot.triggers.isEmpty()) "在对话中让 Hana 定时提醒，或设置周期性任务" else null,
+                icon = HanaIcons.Clock,
             )
         } else {
             GroupLabel(trPlural(R.plurals.settings_count_tasks, shown.size))
@@ -125,7 +127,7 @@ fun PlansScreen(context: Context, onBack: () -> Unit, onOpenConversation: (Strin
 
     editing?.let { plan ->
         var value by remember(plan.id) { mutableStateOf(formatPlanTime(plan.nextAtMs)) }
-        AlertDialog(onDismissRequest = { editing = null }, title = { Text(tr(R.string.plans_edit_title)) },
+        HanaDialog(onDismissRequest = { editing = null }, title = { Text(tr(R.string.plans_edit_title)) },
             text = { KeyboardDismissArea { OutlinedTextField(value, { value = it }, Modifier.keepsKeyboard(), label = { Text(tr(R.string.plans_edit_label)) },
                 singleLine = true) } },
             confirmButton = { TextButton(onClick = {
@@ -137,7 +139,7 @@ fun PlansScreen(context: Context, onBack: () -> Unit, onOpenConversation: (Strin
             dismissButton = { TextButton(onClick = { editing = null }) { Text(tr(R.string.cancel)) } })
     }
     deleting?.let { plan ->
-        AlertDialog(onDismissRequest = { deleting = null }, title = { Text(tr(R.string.plans_delete_title)) },
+        HanaDialog(onDismissRequest = { deleting = null }, title = { Text(tr(R.string.plans_delete_title)) },
             text = { Text(plan.goal) },
             confirmButton = { TextButton(onClick = { act { TriggerRuntime.remove(context, plan.id) }; deleting = null }) {
                 Text(tr(R.string.confirm_delete), color = HanaTheme.colors.bad)

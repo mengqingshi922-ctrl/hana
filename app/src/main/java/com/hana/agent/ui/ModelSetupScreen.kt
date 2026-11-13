@@ -4,7 +4,8 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
+import com.hana.agent.ui.components.HanaDialog
 import com.hana.agent.R
 import com.hana.agent.core.chatgpt.ChatGptAuth
 import com.hana.agent.core.oauth.OpenRouterAuth
@@ -41,7 +42,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -581,7 +581,7 @@ private fun AddProviderForm(ui: ModelSetupUi, actions: ModelSetupActions) {
         Modifier.fillMaxWidth().padding(top = 6.dp).testTag("setup-save-untested"),
         kind = ButtonKind.Tonal, size = ButtonSize.Small, enabled = f.canSaveUntested,
     )
-    if (confirmUntested) AlertDialog(
+    if (confirmUntested) HanaDialog(
         onDismissRequest = { confirmUntested = false },
         title = { Text(ModelSetupCopy.SAVE_UNTESTED_TITLE) },
         text = { Text(ModelSetupCopy.SAVE_UNTESTED_BODY) },
@@ -783,7 +783,7 @@ private fun FreeModelGuideNotice(currentPreset: String) {
                             .border(0.5.dp, c.edge, RoundedCornerShape(8.dp))
                             .clickable {
                                 clipboard.setText(AnnotatedString("https://agnes-ai.cn"))
-                                Toast.makeText(context, "已复制 Agnes AI 网址: agnes-ai.cn", Toast.LENGTH_SHORT).show()
+                                DesignSystemGateway.toast(context, "已复制 Agnes AI 网址: agnes-ai.cn")
                             }
                             .padding(horizontal = 14.dp, vertical = 8.dp),
                         contentAlignment = Alignment.Center,
@@ -851,7 +851,7 @@ private fun FreeModelGuideNotice(currentPreset: String) {
                             .border(0.5.dp, c.edge, RoundedCornerShape(8.dp))
                             .clickable {
                                 clipboard.setText(AnnotatedString("https://developer.amd.com.cn/radeon/tokenfactory"))
-                                Toast.makeText(context, "已复制 AMD 中国站网址", Toast.LENGTH_SHORT).show()
+                                DesignSystemGateway.toast(context, "已复制 AMD 中国站网址")
                             }
                             .padding(horizontal = 14.dp, vertical = 8.dp),
                         contentAlignment = Alignment.Center,
@@ -879,7 +879,7 @@ private fun PresetSuggestion(f: AddForm, label: String, onUse: () -> Unit) {
 /** 第一次用 ChatGPT 登录成功后说明一次:Hana 里的用量走你的 ChatGPT 套餐。 */
 @Composable
 private fun ChatGptWelcome(onDismiss: () -> Unit) {
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = onDismiss,
         title = { Text(ModelsCopy.CHATGPT_WELCOME_TITLE) },
         text = { Text(ModelsCopy.CHATGPT_WELCOME_BODY) },
@@ -898,7 +898,7 @@ private class AndroidSignInBrowser(private val context: Context) : SignInBrowser
                 Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             )
         } catch (e: ActivityNotFoundException) {
-            Toast.makeText(context, tr(R.string.chatgpt_no_browser), Toast.LENGTH_SHORT).show()
+            DesignSystemGateway.toast(context, R.string.chatgpt_no_browser)
         }
     }
 
@@ -1210,7 +1210,7 @@ internal fun ModelContextControl(ui: ModelSetupUi, role: ModelRole,
     val badWindow = window.isNotBlank() && settings.windowTokens == null
     val badTrigger = trigger.isNotBlank() && (settings.triggerTokens == null || (!badWindow && settings.triggerTokens != limits.trigger))
     val keyboard = KeyboardOptions(keyboardType = KeyboardType.Number)
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = { open = false },
         modifier = Modifier.imePadding(),
         title = { Text(stringResource(R.string.model_context_title)) },

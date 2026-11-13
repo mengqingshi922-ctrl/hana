@@ -21,7 +21,7 @@ import android.os.Looper
 import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
-import android.widget.Toast
+import com.hana.agent.ui.components.DesignSystemGateway
 import com.hana.agent.core.action.ConfirmChoice
 import com.hana.agent.R
 import com.hana.agent.chat.ConversationStore
@@ -678,7 +678,7 @@ class TaskService : Service() {
         .build()
 
     private fun answerTooLate() = Handler(Looper.getMainLooper()).post {
-        Toast.makeText(this, getString(R.string.input_too_late, INPUT_TIMEOUT_MINUTES), Toast.LENGTH_LONG).show()
+        DesignSystemGateway.toast(this, getString(R.string.input_too_late, INPUT_TIMEOUT_MINUTES), isLong = true)
     }
 
     /**

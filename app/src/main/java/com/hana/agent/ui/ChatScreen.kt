@@ -4,10 +4,10 @@ import androidx.compose.foundation.gestures.scrollBy
 import com.hana.agent.core.agent.QuoteMessage
 import com.hana.agent.core.cap.web.AttachedPage
 import com.hana.agent.ui.components.keepsKeyboard
+import com.hana.agent.ui.components.DesignSystemGateway
 import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedVisibility
@@ -343,9 +343,11 @@ fun ChatScreen(
                 else -> null
             }
         } else null
-        val isHeaderCollapsed by remember {
+        val density = LocalDensity.current
+        val imeVisible = WindowInsets.ime.getBottom(density) > 0
+        val isHeaderCollapsed by remember(imeVisible) {
             derivedStateOf {
-                listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 30
+                imeVisible || listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 30
             }
         }
         Box(
@@ -418,7 +420,7 @@ fun ChatScreen(
             // 关掉小画面:这个任务结束前只剩右下角的小按钮;提示一句还能去哪看
             onClose = {
                 vm.closePip()
-                Toast.makeText(context, context.getString(R.string.pip_closed_hint), Toast.LENGTH_SHORT).show()
+                DesignSystemGateway.toast(context, R.string.pip_closed_hint)
             },
             onReopen = vm::reopenPip,
             // 要你处理时点小窗:收起,滚到要你处理的那张卡片(在最后一问一答里,它后面只可能还有文件卡片和去设置那一行)
@@ -445,7 +447,7 @@ fun ChatScreen(
                 onSelect = {
                     closeMenu {
                         selecting = m.key
-                        Toast.makeText(context, context.getString(R.string.chat_select_hint), Toast.LENGTH_SHORT).show()
+                        DesignSystemGateway.toast(context, R.string.chat_select_hint)
                     }
                 },
                 onDismiss = { closeMenu() },
@@ -678,7 +680,7 @@ internal fun UserBubble(text: String, conversationId: String?, note: String? = n
             if (attached.hasAttachments) {
                 SentAttachments(attached, conversationId, max) { item ->
                     val id = conversationId ?: return@SentAttachments
-                    scope.launch { if (!AttachFiles.openSent(context, id, item.path)) Toast.makeText(context, AttachCopy.GONE, Toast.LENGTH_SHORT).show() }
+                    scope.launch { if (!AttachFiles.openSent(context, id, item.path)) DesignSystemGateway.toast(context, AttachCopy.GONE) }
                 }
             }
             if (attached.hasAttachments && attached.words.isNotEmpty()) Spacer(Modifier.size(6.dp))

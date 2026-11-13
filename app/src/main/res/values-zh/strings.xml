@@ -69,4 +69,6 @@
     <string name="speech_doubao_plan">计费方式</string>
     <string name="speech_doubao_duration_note">按识别时长计费</string>
     <string name="speech_doubao_concurrent_note">按同时连接数计费</string>
+    <string name="appearance_dynamic_color">动态取色</string>
+    <string name="appearance_dynamic_color_detail">强调色跟随系统壁纸色调（Android 12 及以上）</string>
 </resources>

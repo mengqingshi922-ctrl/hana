@@ -3,7 +3,7 @@ package com.hana.agent.ui
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.AlertDialog
+import com.hana.agent.ui.components.HanaDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,7 +56,7 @@ object NetProxyCopy {
 fun NetProxyDialog(initial: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var text by remember { mutableStateOf(initial) }
     val ok = NetProxyStore.valid(text)
-    AlertDialog(
+    HanaDialog(
         onDismissRequest = onDismiss,
         title = { Text(NetProxyCopy.TITLE) },
         text = {

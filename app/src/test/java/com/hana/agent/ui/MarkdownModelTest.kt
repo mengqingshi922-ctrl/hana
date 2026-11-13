@@ -129,4 +129,25 @@ class MarkdownModelTest {
         val cached2 = MarkdownModel.parseStreamingCached(md)
         assertEquals(cached.size, cached2.size)
     }
+
+    @Test
+    fun parseStreamingCachedWithFencedCodeAndBlankLines() {
+        val md = "介绍如下：\n\n```kotlin\nval x = 1\n\nval y = 2\n```\n\n结束"
+        val expected = MarkdownModel.parseStreaming(md)
+        val cached = MarkdownModel.parseStreamingCached(md)
+        assertEquals(expected.size, cached.size)
+        assertTrue(cached[1] is MdBlock.Code)
+        assertEquals("val x = 1\n\nval y = 2", (cached[1] as MdBlock.Code).code)
+    }
+
+    @Test
+    fun parseStreamingCachedWithOrderedListsKeepsNumbering() {
+        val md = "步骤：\n\n1. 第一步操作\n\n2. 第二步核心操作"
+        val cached = MarkdownModel.parseStreamingCached(md)
+        assertTrue(cached.size >= 3)
+        val firstList = cached[1] as MdBlock.ListBlock
+        val secondList = cached[2] as MdBlock.ListBlock
+        assertEquals(1, firstList.start)
+        assertEquals(2, secondList.start)
+    }
 }

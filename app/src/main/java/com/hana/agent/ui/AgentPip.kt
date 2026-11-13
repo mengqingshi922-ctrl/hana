@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hana.agent.ui.PipPhysics.Corner
 import com.hana.agent.ui.components.GrokBotTheme
+import com.hana.agent.ui.components.VisualTouchOverlay
 import com.hana.agent.ui.components.floatShadow
 import com.hana.agent.ui.components.mascot.EmotionBallMascot
 import com.hana.agent.ui.components.mascot.shapeKeyFor
@@ -634,6 +635,10 @@ private fun PipWindow(
                     Image(image, stringResource(R.string.pip_screen), Modifier.fillMaxSize(), alignment = Alignment.TopCenter,
                         contentScale = if (webContent) ContentScale.Fit else ContentScale.Crop)
                 }
+                VisualTouchOverlay(
+                    modifier = Modifier.matchParentSize(),
+                    reduceMotion = reduceMotion || HanaTheme.reduceMotion,
+                )
             }
             if (pip.expanded) {
                 // 左上角:关掉这个任务的小画面(只剩右下角的小按钮);右上角 × 只是收起

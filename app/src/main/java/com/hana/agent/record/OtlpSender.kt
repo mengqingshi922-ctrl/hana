@@ -2,6 +2,7 @@ package com.hana.agent.record
 
 import com.hana.agent.core.trace.TraceArchive
 import com.hana.agent.core.net.LocalHosts
+import com.hana.agent.core.net.NetProxy
 import io.opentelemetry.proto.collector.trace.v1.ExportTraceServiceResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -35,7 +36,7 @@ internal sealed interface OtlpReceipt {
 
 internal object OtlpSender {
     private val protobuf = "application/x-protobuf".toMediaType()
-    private val client = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
+    private val client = NetProxy.sharedClientBuilder().followRedirects(false).followSslRedirects(false)
         .retryOnConnectionFailure(false).callTimeout(15, TimeUnit.SECONDS).build()
     private val localClient = client.newBuilder().proxy(Proxy.NO_PROXY).dns(object : Dns {
         override fun lookup(hostname: String): List<InetAddress> =

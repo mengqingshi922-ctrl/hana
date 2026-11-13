@@ -69,4 +69,6 @@
     <string name="speech_doubao_plan">計費方式</string>
     <string name="speech_doubao_duration_note">按辨識時長計費</string>
     <string name="speech_doubao_concurrent_note">按同時連線數計費</string>
+    <string name="appearance_dynamic_color">動態取色</string>
+    <string name="appearance_dynamic_color_detail">強調色跟隨系統桌布色調（Android 12 及以上）</string>
 </resources>
