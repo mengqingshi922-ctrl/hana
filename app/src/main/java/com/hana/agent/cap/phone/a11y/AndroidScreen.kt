@@ -147,6 +147,8 @@ class AndroidScreen(
 ) : ScreenPort {
     /** 屏还没建时为 -1;只在确认屏已建好之后用。 */
     private val displayId get() = display.current?.displayId ?: -1
+    /** 仅当操作落在物理主屏时才允许触发悬浮胶囊闪避与主屏触控水波纹，防止后台虚拟屏串扰主屏 UI。 */
+    private val isMainDisplay get() = displayId == android.view.Display.DEFAULT_DISPLAY
     /** 屏已经建好(不等于打开过 App)。 */
     private val hasDisplay get() = display.current != null
     private val ids = NodeIds()
@@ -291,31 +293,53 @@ class AndroidScreen(
         val snap = NodeSnapshot(snapshotId(), r.entries)
         if (register) ids.put(snap)
 
-        // 闭环接入 EdgeIconDetector：当无障碍节点树稀疏且允许截屏补充时，通过视觉算法提取纯图标交互候选框
+        // 闭环接入 EdgeIconDetector：只要非防截屏保护且有虚拟屏画面，当存在顶部/角落盲区、点击节点密度较低或未标注图片区域时，常态化提取并语义标注纯图标候选框
         val candidateIcons = mutableListOf<UiElement>()
         val isProtectedScreen = (r.hasAppWindow && frameBlack() == true) || r.passwordField
-        val isSparse = r.entries.count { it.element.clickable || it.element.editable } <= 2 || r.topPackage == null || r.entries.size <= 4
-
-        if (enableEdgeIconDetector && isSparse && !isProtectedScreen && hasDisplay) {
+        if (enableEdgeIconDetector && !isProtectedScreen && hasDisplay && needsVisualIconSupplement(r)) {
             display.current?.latestFrameBitmap()?.let { bmp ->
                 try {
                     val width = bmp.width.takeIf { it > 0 } ?: display.width
                     val height = bmp.height.takeIf { it > 0 } ?: display.height
                     if (width > 0 && height > 0) {
+                        val maxArea = width.toLong() * height.toLong()
+                        // 仅排除合理尺寸的已标注节点或可点击/可编辑 A11y 元素（跳过全屏/大尺寸容器，防止容器屏蔽内部纯图标）
                         val excludeNormBounds = r.entries.mapNotNull { entry ->
-                            val b = entry.element.bounds
-                            if (b.size == 4) {
-                                intArrayOf(
-                                    (b[0] * 1000 / width).coerceIn(0, 999),
-                                    (b[1] * 1000 / height).coerceIn(0, 999),
-                                    (b[2] * 1000 / width).coerceIn(0, 999),
-                                    (b[3] * 1000 / height).coerceIn(0, 999),
-                                )
-                            } else null
+                            val el = entry.element
+                            if (el.scrollable && !el.clickable && el.name.isBlank()) return@mapNotNull null
+                            if (!el.clickable && !el.editable && el.name.isBlank()) return@mapNotNull null
+                            val b = el.bounds
+                            if (b.size != 4) return@mapNotNull null
+                            val area = (b[2] - b[0]).coerceAtLeast(0).toLong() * (b[3] - b[1]).coerceAtLeast(0).toLong()
+                            if (maxArea > 0 && area * 100 > maxArea * 35) return@mapNotNull null
+                            intArrayOf(
+                                (b[0] * 1000 / width).coerceIn(0, 999),
+                                (b[1] * 1000 / height).coerceIn(0, 999),
+                                (b[2] * 1000 / width).coerceIn(0, 999),
+                                (b[3] * 1000 / height).coerceIn(0, 999),
+                            )
                         }
-                        val detected = com.hana.agent.vision.EdgeIconDetector.detectBounds(bmp, excludeNormBounds)
+                        val clickableNormBounds = r.entries.mapNotNull { entry ->
+                            val el = entry.element
+                            if (!el.clickable && !el.editable) return@mapNotNull null
+                            val b = el.bounds
+                            if (b.size != 4) return@mapNotNull null
+                            intArrayOf(
+                                (b[0] * 1000 / width).coerceIn(0, 999),
+                                (b[1] * 1000 / height).coerceIn(0, 999),
+                                (b[2] * 1000 / width).coerceIn(0, 999),
+                                (b[3] * 1000 / height).coerceIn(0, 999),
+                            )
+                        }
+                        val detected = com.hana.agent.vision.EdgeIconDetector.detectIcons(bmp, excludeNormBounds)
+                            .filter { icon ->
+                                clickableNormBounds.none { cb ->
+                                    com.hana.agent.vision.EdgeIconDetector.computeIoU(icon.bounds, cb) > 0.35f
+                                }
+                            }
                         val iconBoundsMap = mutableMapOf<String, Pair<Int, Int>>()
-                        detected.forEachIndexed { idx, box ->
+                        detected.forEachIndexed { idx, icon ->
+                            val box = icon.bounds
                             val l = (box[0] * width / 1000).coerceIn(0, width)
                             val t = (box[1] * height / 1000).coerceIn(0, height)
                             val right = (box[2] * width / 1000).coerceIn(0, width)
@@ -326,7 +350,7 @@ class AndroidScreen(
                             val elem = UiElement(
                                 ref = ref,
                                 role = "icon_candidate",
-                                name = "icon_candidate",
+                                name = icon.label,
                                 centerX = cx,
                                 centerY = cy,
                                 bounds = listOf(l, t, right, b),
@@ -363,6 +387,42 @@ class AndroidScreen(
             // 还在等用户在主屏上选:照样说一声
             opened = late?.opened ?: _userPick.value?.let { OpenedElsewhere(it.packageName, it.app, pulledBack = false, picker = true) },
         )
+    }
+
+    /**
+     * 判断当前画面是否需要通过 EdgeIconDetector 补充纯视觉图标：
+     * 解除仅“节点极少”才触发的限制，只要存在无障碍树稀疏、顶部/角落盲区、可点击密度低或未标注图片/自绘区域即常态化介入。
+     */
+    private fun needsVisualIconSupplement(r: ScreenRead): Boolean {
+        if (r.topPackage == null || r.entries.size <= 6) return true
+        val clickable = r.entries.filter { it.element.clickable || it.element.editable }
+        if (clickable.size <= 4 || clickable.size * 3 < r.entries.size) return true
+
+        val w = display.width
+        val h = display.height
+        if (w > 0 && h > 0) {
+            val topLimit = (h * 0.16f).toInt()
+            val leftCornerEnd = (w * 0.25f).toInt()
+            val rightCornerStart = (w * 0.75f).toInt()
+            val hasTopLeftClickable = clickable.any { entry ->
+                val b = entry.element.bounds
+                b.size == 4 && b[1] < topLimit && b[0] < leftCornerEnd
+            }
+            val hasTopRightClickable = clickable.any { entry ->
+                val b = entry.element.bounds
+                b.size == 4 && b[1] < topLimit && b[2] > rightCornerStart
+            }
+            if (!hasTopLeftClickable || !hasTopRightClickable) return true
+        }
+
+        return r.entries.any { entry ->
+            val el = entry.element
+            el.name.isBlank() && (
+                el.role.contains("image", ignoreCase = true) ||
+                    el.role.contains("web", ignoreCase = true) ||
+                    el.role.contains("canvas", ignoreCase = true)
+                )
+        }
     }
 
     /**
@@ -755,7 +815,7 @@ class AndroidScreen(
         } else {
             a11y.taps(displayId, at.first.toFloat(), at.second.toFloat(), 2, hold, gap)
         }
-        if (success) {
+        if (success && isMainDisplay) {
             TouchVisualBus.emitTap(x.toFloat(), y.toFloat(), display.width, display.height)
         }
         return success
@@ -774,7 +834,7 @@ class AndroidScreen(
             if (paths.size == 1) return@verified drag(paths.single(), durationMs, bow = false)
             delay(pacing.approach())
             val ok = a11y.gesture(displayId, paths.map(::pathOf), pacing.duration(durationMs))
-            if (ok) {
+            if (ok && isMainDisplay) {
                 for (p in paths) {
                     val xs = p.map { it.first.toFloat() }
                     val ys = p.map { it.second.toFloat() }
@@ -2280,7 +2340,7 @@ class AndroidScreen(
 
         // 2. 若物理触摸因窗口或坐标异常未成功，fallback 走无障碍节点点击
         if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            if (rect.width() > 0 && rect.height() > 0) {
+            if (isMainDisplay && rect.width() > 0 && rect.height() > 0) {
                 TouchVisualBus.emitTap(
                     rect.centerX().toFloat(),
                     rect.centerY().toFloat(),
@@ -2371,8 +2431,10 @@ class AndroidScreen(
     /** 在这一点上点一下:先停一会儿再落指,按住随机的一小会儿。引入拟人化截断高斯微抖动与物理微弧，优先走底层 Shell 驱动注入，杜绝机械单点与 A11y 标志风控拦截。 */
     private suspend fun touch(at: Pair<Int, Int>): Boolean {
         val (x, y) = at
-        val targetRect = android.graphics.Rect(x - 24, y - 24, x + 24, y + 24)
-        com.hana.agent.capsule.SmartAutoDodgeEngine.notifyTargetAndAwaitDodge(targetRect)
+        if (isMainDisplay) {
+            val targetRect = android.graphics.Rect(x - 24, y - 24, x + 24, y + 24)
+            com.hana.agent.capsule.SmartAutoDodgeEngine.notifyTargetAndAwaitDodge(targetRect)
+        }
         delay(pacing.approach())
         val press = pacing.press()
         val microDx = gaussianJitter(0.6, 1.2)
@@ -2390,7 +2452,7 @@ class AndroidScreen(
             }
             a11y.gesture(displayId, tapPath, press)
         }
-        if (success) {
+        if (success && isMainDisplay) {
             TouchVisualBus.emitTap(x.toFloat(), y.toFloat(), display.width, display.height)
         }
         return success
@@ -2401,9 +2463,11 @@ class AndroidScreen(
      * 助手注不了时退回无障碍手势沿同一条弧线走(系统按路径匀速走,只少了快慢)。不加节奏时和以前一样:无障碍手势按给定时长匀速走折线。
      */
     private suspend fun drag(points: List<Pair<Int, Int>>, durationMs: Long, bow: Boolean): Boolean {
-        points.firstOrNull()?.let { (x, y) ->
-            val targetRect = android.graphics.Rect(x - 24, y - 24, x + 24, y + 24)
-            com.hana.agent.capsule.SmartAutoDodgeEngine.notifyTargetAndAwaitDodge(targetRect)
+        if (isMainDisplay) {
+            points.firstOrNull()?.let { (x, y) ->
+                val targetRect = android.graphics.Rect(x - 24, y - 24, x + 24, y + 24)
+                com.hana.agent.capsule.SmartAutoDodgeEngine.notifyTargetAndAwaitDodge(targetRect)
+            }
         }
         val success = if (!pacing.paced) {
             a11y.gesture(displayId, pathOf(points), durationMs)
@@ -2416,7 +2480,7 @@ class AndroidScreen(
                 a11y.gesture(displayId, pathOf(stroke.points.map { it.x.roundToInt() to it.y.roundToInt() }), stroke.durationMs)
             }
         }
-        if (success) {
+        if (success && isMainDisplay) {
             val xs = points.map { it.first.toFloat() }
             val ys = points.map { it.second.toFloat() }
             TouchVisualBus.emitStroke(xs, ys, display.width, display.height, durationMs)

@@ -41,6 +41,58 @@ class MnnPocketEngine(
     override val isReady: Boolean
         get() = !isMemoryConstrained.get() && (forceReadyForTesting || store.isReady())
 
+    /** 端侧推理后端运行模式 */
+    enum class ExecutionBackend {
+        NATIVE_MNN_WITH_HEURISTIC_FALLBACK,
+        KOTLIN_HEURISTIC_ONLY,
+        UNAVAILABLE,
+    }
+
+    /** 诚实可观测的引擎运行态快照 */
+    data class EngineRuntimeStatus(
+        val backend: ExecutionBackend,
+        val nativeLibraryLoaded: Boolean,
+        val modelReady: Boolean,
+        val isMemoryConstrained: Boolean,
+        val engineReady: Boolean,
+        val description: String,
+    )
+
+    /** 获取当前引擎的诚实运行态（明确区分 Native SO 已加载 vs 纯 Kotlin 启发式规则引擎） */
+    fun getRuntimeStatus(): EngineRuntimeStatus {
+        val modelReady = store.isReady()
+        val constrained = isMemoryConstrained.get()
+        val ready = isReady
+        val backend = when {
+            constrained -> ExecutionBackend.UNAVAILABLE
+            nativeLoaded && modelReady -> ExecutionBackend.NATIVE_MNN_WITH_HEURISTIC_FALLBACK
+            ready -> ExecutionBackend.KOTLIN_HEURISTIC_ONLY
+            else -> ExecutionBackend.UNAVAILABLE
+        }
+        val desc = when (backend) {
+            ExecutionBackend.NATIVE_MNN_WITH_HEURISTIC_FALLBACK ->
+                "Native MNN-Pocket SO 已加载（CPU 3线程推理 + Kotlin 启发式兜底）"
+            ExecutionBackend.KOTLIN_HEURISTIC_ONLY ->
+                if (nativeLoaded) {
+                    "纯 Kotlin 启发式规则引擎运行中（Native SO 已加载但模型权重尚未就绪）"
+                } else {
+                    "纯 Kotlin 启发式规则引擎运行中（Native MNN SO 未载入，已启用零依赖规则推理）"
+                }
+            ExecutionBackend.UNAVAILABLE ->
+                if (constrained) "低内存泄洪降级暂停中" else "端侧模型未就绪（Native=$nativeLoaded, Model=$modelReady）"
+        }
+        return EngineRuntimeStatus(
+            backend = backend,
+            nativeLibraryLoaded = nativeLoaded,
+            modelReady = modelReady,
+            isMemoryConstrained = constrained,
+            engineReady = ready,
+            description = desc,
+        )
+    }
+
+    fun describeRuntimeMode(): String = getRuntimeStatus().description
+
     init {
         try {
             context?.registerComponentCallbacks(this)
@@ -211,21 +263,54 @@ class MnnPocketEngine(
         candidates: List<EdgeDecisionPort.EdgeCandidate>,
         confidenceThreshold: Float,
     ): String? {
-        val dismissPatterns = listOf(
-            "先逛逛", "忍痛离开", "算了吧", "仅浏览", "稍后再说", "以后再说",
-            "暂不升级", "暂不更新", "暂不开启", "取消", "关闭", "跳过", "知道了",
-            "残忍拒绝", "放弃", "拒绝", "忽略", "暂不", "不需要", "x", "✕", "✖"
+        // 1. 高确定性无副作用跳过/关闭/拒绝变体规则库
+        val strongDismissPatterns = listOf(
+            "跳过广告", "关闭广告", "广告关闭", "跳过此步", "跳过引导", "跳过",
+            "先逛逛", "忍痛离开", "算了吧", "仅浏览", "游客浏览", "随便看看",
+            "稍后再说", "以后再说", "下次再说", "稍后设置", "暂不升级", "暂不更新",
+            "暂不开启", "暂不使用", "暂不登录", "先不登录", "暂不绑定", "暂不认证",
+            "残忍拒绝", "取消", "关闭", "放弃", "拒绝", "忽略此版本", "忽略", "暂不",
+            "不需要", "不用了", "不了，谢谢", "不了谢谢", "不再提示",
+            "x", "✕", "✖", "×"
         )
 
-        for (c in candidates) {
-            val label = c.label.trim()
-            if (label.isEmpty()) continue
-            if (label.length >= 2 && userGoal.contains(label, ignoreCase = true)) continue
+        // 2. 常见中文提示/隐私协议/开屏通知弹窗放行按钮
+        val acknowledgementDismissPatterns = listOf(
+            "我知道了", "我已知晓", "已知晓", "同意并继续", "同意并进入", "继续访问", "仍然继续"
+        )
 
-            for (p in dismissPatterns) {
-                if (label.equals(p, ignoreCase = true) || (label.startsWith(p) && label.length <= p.length + 3)) {
+        val countdownSuffixRegex = Regex("""\s*[\(（]?\s*\d+\s*[sS秒]?\s*[\)）]?$""")
+        val dialogHasPermissionOrNoticeClue = listOf("协议", "隐私", "权限", "通知", "提示", "公告", "更新", "声明", "须知")
+            .any { dialogClues.contains(it, ignoreCase = true) }
+
+        for (c in candidates) {
+            val rawLabel = c.label.trim()
+            if (rawLabel.isEmpty()) continue
+            if (rawLabel.length >= 2 && userGoal.contains(rawLabel, ignoreCase = true)) continue
+
+            // 规范化去除倒计时后缀（如 "跳过广告 3s" / "跳过(5)"）
+            val normalized = rawLabel.replace(countdownSuffixRegex, "").trim()
+
+            for (p in strongDismissPatterns) {
+                if (rawLabel.equals(p, ignoreCase = true) ||
+                    normalized.equals(p, ignoreCase = true) ||
+                    (rawLabel.startsWith(p, ignoreCase = true) && rawLabel.length <= p.length + 4)
+                ) {
                     return c.ref
                 }
+            }
+
+            for (p in acknowledgementDismissPatterns) {
+                if (rawLabel.equals(p, ignoreCase = true) ||
+                    normalized.equals(p, ignoreCase = true) ||
+                    (rawLabel.startsWith(p, ignoreCase = true) && rawLabel.length <= p.length + 3)
+                ) {
+                    return c.ref
+                }
+            }
+
+            if (dialogHasPermissionOrNoticeClue && (rawLabel == "同意" || rawLabel == "好的" || rawLabel == "确定")) {
+                return c.ref
             }
         }
         return null

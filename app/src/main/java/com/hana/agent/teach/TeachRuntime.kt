@@ -1,5 +1,6 @@
 package com.hana.agent.teach
 
+import com.hana.agent.core.skills.TeachActionStep
 import com.hana.agent.core.skills.TeachDraftResult
 import com.hana.agent.core.skills.TeachRecorder
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,6 +42,23 @@ class TeachRuntime private constructor() {
 
     private var currentDraft: TeachDraftResult? = null
     private var currentSuggestedName: String = "custom-teach-skill"
+    @Volatile private var flushHook: (() -> Unit)? = null
+
+    /**
+     * 注册示范录制停止前的防抖缓冲刷入回调（由无障碍采集服务使用）。
+     */
+    fun registerFlushHook(hook: () -> Unit) {
+        flushHook = hook
+    }
+
+    /**
+     * 注销防抖缓冲刷入回调。
+     */
+    fun unregisterFlushHook(hook: () -> Unit) {
+        if (flushHook === hook) {
+            flushHook = null
+        }
+    }
 
     /**
      * 开始进入示范录制。
@@ -62,13 +80,16 @@ class TeachRuntime private constructor() {
 
     /**
      * 录制一步示范动作。
-     * 仅在 [TeachState.RECORDING] 状态下记录。
+     * 仅在 [TeachState.RECORDING] 状态下记录；透传控件稳定锚点与归一化坐标。
      */
     fun recordStep(
         packageName: String,
         actionType: String,
         targetLabel: String,
-        inputSample: String? = null
+        inputSample: String? = null,
+        resourceId: String? = null,
+        normalizedBounds: List<Int>? = null,
+        timestampMs: Long = System.currentTimeMillis(),
     ): Boolean = synchronized(lock) {
         if (_state.value != TeachState.RECORDING) {
             return false
@@ -77,10 +98,20 @@ class TeachRuntime private constructor() {
             packageName = packageName,
             actionType = actionType,
             targetLabel = targetLabel,
-            inputSample = inputSample
+            inputSample = inputSample,
+            timestampMs = timestampMs,
+            resourceId = resourceId,
+            normalizedBounds = normalizedBounds,
         )
         _currentStepCount.value = recorder.currentSteps().size
         return true
+    }
+
+    /**
+     * 获取当前已录制的示范步骤快照。
+     */
+    fun currentSteps(): List<TeachActionStep> = synchronized(lock) {
+        return recorder.currentSteps()
     }
 
     /**
@@ -89,17 +120,23 @@ class TeachRuntime private constructor() {
      * @param displayName 技能的中文显示名称
      * @return 构建出的草稿结果；若未在录制状态则返回 null
      */
-    fun stopRecording(displayName: String = "示范录制技能"): TeachDraftResult? = synchronized(lock) {
-        if (_state.value != TeachState.RECORDING) {
-            return null
+    fun stopRecording(displayName: String = "示范录制技能"): TeachDraftResult? {
+        // 先将无障碍防抖缓冲中的最后一次文本输入刷入录制器，再构建草稿（在 lock 外触发防死锁）
+        if (_state.value == TeachState.RECORDING) {
+            flushHook?.invoke()
         }
-        val draft = recorder.finishAndBuildDraft(
-            suggestedName = currentSuggestedName,
-            display = displayName
-        )
-        currentDraft = draft
-        _state.value = TeachState.REVIEWING
-        return draft
+        return synchronized(lock) {
+            if (_state.value != TeachState.RECORDING) {
+                return null
+            }
+            val draft = recorder.finishAndBuildDraft(
+                suggestedName = currentSuggestedName,
+                display = displayName
+            )
+            currentDraft = draft
+            _state.value = TeachState.REVIEWING
+            draft
+        }
     }
 
     /**

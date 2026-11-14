@@ -55,6 +55,7 @@ class AgentDisplay(
     private var cachedBlack: Boolean? = null
     private var cachedGridSeq: Long = -1L
     private var cachedGrid: com.hana.agent.core.visual.FrameGrid? = null
+    private var previewSeq: Long = -1L
 
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val previewWidth = minOf(PREVIEW_MAX_WIDTH, width)
@@ -103,11 +104,20 @@ class AgentDisplay(
                 }
                 bmp!!.copyPixelsFromBuffer(plane.buffer.rewind())
                 hasFrame = true
-                val preview = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
-                Canvas(preview).drawBitmap(bmp, Rect(0, 0, width, height), Rect(0, 0, previewWidth, previewHeight), paint)
-                _frames.value = preview
                 frameSeq++
                 lastFrameUptimeMs = SystemClock.uptimeMillis()
+
+                // 按需抓帧瘦身：仅当存在实时预览流订阅者（如 PiP 窗/前台视图）时才生成缩略图并发射；
+                // 后台静默执行期间仅维护 frameSeq 与时间戳，彻底消除每 100ms 的无效缩略图内存拷贝与 GC 抖动。
+                if (_frames.subscriptionCount.value > 0) {
+                    val preview = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
+                    Canvas(preview).drawBitmap(bmp, Rect(0, 0, width, height), Rect(0, 0, previewWidth, previewHeight), paint)
+                    previewSeq = frameSeq
+                    _frames.value = preview
+                } else if (_frames.value != null) {
+                    previewSeq = -1L
+                    _frames.value = null
+                }
             }
         } finally {
             image.close()
@@ -130,31 +140,58 @@ class AgentDisplay(
         if (!hasFrame || bmp == null) null else Bitmap.createBitmap(bmp, 0, 0, width, height)
     }
 
-    /** 基于 frameSeq 的 O(1) 记忆化亮度格子签名：同一帧在轮询期间零像素重算。 */
+    /** 基于 frameSeq 的 O(1) 记忆化亮度格子签名：同一帧在轮询期间零像素重算，无预览订阅时直接复用 fullFrame 采样。 */
     fun latestSignature(): IntArray? = synchronized(frameLock) {
-        val bmp = _frames.value ?: return null
+        if (!hasFrame) return null
         if (cachedSigSeq == frameSeq && cachedSignature != null) return cachedSignature
-        return runCatching { FrameMath.lumaGrid(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()?.also {
+        val previewBmp = _frames.value?.takeIf { previewSeq == frameSeq }
+        val result = when {
+            previewBmp != null -> runCatching { FrameMath.lumaGrid(previewBmp.width, previewBmp.height, previewBmp::getPixel) }.getOrNull()
+            fullFrame != null -> {
+                val full = fullFrame!!
+                runCatching { FrameMath.lumaGrid(width, height, full::getPixel) }.getOrNull()
+            }
+            else -> null
+        }
+        return result?.also {
             cachedSigSeq = frameSeq
             cachedSignature = it
         }
     }
 
-    /** 基于 frameSeq 的 O(1) 记忆化黑屏判定：同一帧不重复采样像素。 */
+    /** 基于 frameSeq 的 O(1) 记忆化黑屏判定：同一帧不重复采样像素，无预览订阅时直接复用 fullFrame 采样。 */
     fun latestIsBlack(): Boolean? = synchronized(frameLock) {
-        val bmp = _frames.value ?: return null
+        if (!hasFrame) return null
         if (cachedBlackSeq == frameSeq && cachedBlack != null) return cachedBlack
-        return runCatching { FrameMath.isBlack(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()?.also {
+        val previewBmp = _frames.value?.takeIf { previewSeq == frameSeq }
+        val result = when {
+            previewBmp != null -> runCatching { FrameMath.isBlack(previewBmp.width, previewBmp.height, previewBmp::getPixel) }.getOrNull()
+            fullFrame != null -> {
+                val full = fullFrame!!
+                runCatching { FrameMath.isBlack(width, height, full::getPixel) }.getOrNull()
+            }
+            else -> null
+        }
+        return result?.also {
             cachedBlackSeq = frameSeq
             cachedBlack = it
         }
     }
 
-    /** 基于 frameSeq 的 O(1) 记忆化视觉网格：供 probe 与 withEffect 直接复用。 */
+    /** 基于 frameSeq 的 O(1) 记忆化视觉网格：供 probe 与 withEffect 直接复用，无预览订阅时直接复用 fullFrame 采样。 */
     fun latestFrameGrid(): com.hana.agent.core.visual.FrameGrid? = synchronized(frameLock) {
-        val bmp = _frames.value ?: return null
+        if (!hasFrame) return null
         if (cachedGridSeq == frameSeq && cachedGrid != null) return cachedGrid
-        return runCatching { com.hana.agent.core.visual.FrameGrid.sample(bmp.width, bmp.height, bmp::getPixel) }.getOrNull()?.also {
+        val previewBmp = _frames.value?.takeIf { previewSeq == frameSeq }
+        val result = when {
+            previewBmp != null -> runCatching { com.hana.agent.core.visual.FrameGrid.sample(previewBmp.width, previewBmp.height, previewBmp::getPixel) }.getOrNull()
+            fullFrame != null -> {
+                val full = fullFrame!!
+                runCatching { com.hana.agent.core.visual.FrameGrid.sample(width, height, full::getPixel) }.getOrNull()
+            }
+            else -> null
+        }
+        return result?.also {
             cachedGridSeq = frameSeq
             cachedGrid = it
         }

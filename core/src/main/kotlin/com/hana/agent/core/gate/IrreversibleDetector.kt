@@ -617,4 +617,66 @@ object IrreversibleDetector {
     }
 
     private fun bool(o: JsonObject, k: String) = (o[k] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase() == "true"
+
+    /**
+     * 依据不可逆动作分类与语义描述判定三级风险门禁等级（委派至包级 [com.hana.agent.core.gate.classifyRiskTier]）。
+     */
+    fun classifyRiskTier(action: IrrevAction, description: String = ""): RiskTier =
+        classifyRiskTierByRule(action, description)
+
+    /** 依据 [Irreversible] 判定结果推断三级风险门禁等级。 */
+    fun classifyRiskTier(hit: Irreversible?): RiskTier =
+        if (hit == null) RiskTier.L1_AUTO else classifyRiskTierByRule(hit.action, hit.matched)
+}
+
+private val L3_RISK_CHINESE = listOf(
+    "付款", "支付", "转账", "汇款", "打款", "红包", "充值", "提现", "转出",
+    "下单", "结算", "结账", "购买",
+    "删除", "清空", "注销", "退群", "退出群聊", "解散群",
+    "安全设置", "修改密码", "重置密码", "关闭验证", "关闭锁屏", "开启免密", "免密支付",
+    "绑定银行卡", "解绑", "授权登录", "权限变更",
+)
+
+private val L3_RISK_ENGLISH = Regex(
+    "(?<![a-z0-9_])(pay|payment|transfer|checkout|place\\s+order|delete|remove|leave\\s+group|quit\\s+group|security\\s+settings?|change\\s+password|reset\\s+password)(?![a-z0-9_])"
+)
+
+private val L2_RISK_CHINESE = listOf(
+    "发送", "发消息", "群发", "发帖", "发表", "发布", "评论", "回复", "转发", "私信",
+    "闹钟", "日历", "日程", "提醒", "待办", "预约", "报名",
+)
+
+private val L2_RISK_ENGLISH = Regex(
+    "(?<![a-z0-9_])(send|post|publish|comment|reply|forward|alarm|calendar|schedule|reminder|event)(?![a-z0-9_])"
+)
+
+/**
+ * 依据动作类别与描述判定三级风险门禁等级（借鉴 Claude CUA + AutoGLM 分级授权策略）：
+ * - [RiskTier.L1_AUTO]：浏览、搜索、加购、草稿填写等低风险动作；
+ * - [RiskTier.L2_SOFT_COUNTDOWN]：发送消息（[IrrevAction.send]）、发帖/评论、新建或修改闹钟/日历（4 秒倒计时可撤回）；
+ * - [RiskTier.L3_HARD_SLIDE]：付款（[IrrevAction.pay]）、转账、下单、删除、退群、修改安全设置（强阻尼滑动授权 + 三要素账单）。
+ */
+fun classifyRiskTier(action: IrrevAction, description: String = ""): RiskTier =
+    classifyRiskTierByRule(action, description)
+
+private fun classifyRiskTierByRule(action: IrrevAction, description: String): RiskTier {
+    if (action == IrrevAction.pay || action == IrrevAction.order || action == IrrevAction.delete) {
+        return RiskTier.L3_HARD_SLIDE
+    }
+    val folded = Hant.fold(description).trim().lowercase()
+    val compact = folded.filterNot(Char::isWhitespace)
+    if (compact.isNotEmpty()) {
+        if (L3_RISK_CHINESE.any { it in compact } || L3_RISK_ENGLISH.containsMatchIn(folded)) {
+            return RiskTier.L3_HARD_SLIDE
+        }
+    }
+    if (action == IrrevAction.send || action == IrrevAction.submit) {
+        return RiskTier.L2_SOFT_COUNTDOWN
+    }
+    if (compact.isNotEmpty()) {
+        if (L2_RISK_CHINESE.any { it in compact } || L2_RISK_ENGLISH.containsMatchIn(folded)) {
+            return RiskTier.L2_SOFT_COUNTDOWN
+        }
+    }
+    return RiskTier.L1_AUTO
 }

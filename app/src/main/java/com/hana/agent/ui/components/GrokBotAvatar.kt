@@ -60,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hana.agent.ui.components.mascot.StreamEmotionBus
 import com.hana.agent.ui.theme.HanaTheme
 import com.hana.agent.ui.theme.HanaType
 import com.hana.agent.ui.theme.HanaIcons
@@ -146,6 +147,8 @@ fun GrokBotAvatar(
     isWorking: Boolean = false,
     phase: com.hana.agent.capsule.AgentTaskPhase = com.hana.agent.capsule.AgentTaskPhase.Idle,
     bodyColor: Color? = null,
+    audioAmplitude: Float = 0f,
+    pipDocked: Boolean = false,
     enableClickToggle: Boolean = true,
     onClick: (() -> Unit)? = null,
 ) {
@@ -164,6 +167,8 @@ fun GrokBotAvatar(
         modifier = modifier,
         shapeKey = com.hana.agent.ui.components.mascot.shapeKeyFor(activeShape),
         isWorking = isWorking,
+        audioAmplitude = audioAmplitude,
+        pipDocked = pipDocked,
         onTap = tap,
     )
 }
@@ -613,6 +618,7 @@ fun GrokBotFixedHeader(
     isBlocked: Boolean = false,
     isRecentlyDone: Boolean = false,
     customSubtitle: String? = null,
+    audioAmplitude: Float = 0f,
     isCollapsed: Boolean = false,
     onOpenShapeDialog: () -> Unit = {},
 ) {
@@ -620,6 +626,7 @@ fun GrokBotFixedHeader(
     val coroutineScope = rememberCoroutineScope()
     var interactiveMood by remember { mutableStateOf<GrokBotMood?>(null) }
     var interactiveQuote by remember { mutableStateOf<String?>(null) }
+    val privacyShieldActive by StreamEmotionBus.privacyShieldActive.collectAsState()
 
     val cuteQuotes = remember {
         listOf(
@@ -643,8 +650,9 @@ fun GrokBotFixedHeader(
         else -> GrokBotMood.Idle
     }
 
-    // 药丸文案动态匹配工作状态 (与截图中的 Hana 药丸保持一致视觉质感，支持实时思考流投射)
+    // 药丸文案动态匹配工作状态 (与截图中的 Hana 药丸保持一致视觉质感，支持实时思考流投射与隐私护盾提示)
     val pillText = interactiveQuote ?: when {
+        privacyShieldActive -> "🔒 隐私护盾已开启"
         isRecentlyDone -> "✨ 搞定啦！"
         isBlocked -> "🙋 等待接管"
         isListening -> "🎙️ 正在倾听..."
@@ -723,6 +731,7 @@ fun GrokBotFixedHeader(
                         size = 30.dp,
                         mood = activeMood,
                         isWorking = isWorking,
+                        audioAmplitude = audioAmplitude,
                         enableClickToggle = false,
                         onClick = { triggerMascotTap() }
                     )
@@ -762,6 +771,7 @@ fun GrokBotFixedHeader(
                         size = 54.dp,
                         mood = activeMood,
                         isWorking = isWorking,
+                        audioAmplitude = audioAmplitude,
                         enableClickToggle = false,
                         onClick = { triggerMascotTap() }
                     )

@@ -68,11 +68,31 @@ class ProactivePrefs(private val prefs: SharedPreferences) {
         prefs.edit().putBoolean(KEY_MASK_SENSITIVE, enabled).apply()
     }
 
+    /**
+     * 读取持久化保存的日摘要 JSON 载荷（冷启动恢复使用）。
+     */
+    fun getDigestJson(): String = prefs.getString(KEY_DIGEST_JSON, "") ?: ""
+
+    /**
+     * 将日摘要存储序列化 JSON 写入本地 SharedPreferences。
+     */
+    fun setDigestJson(json: String) {
+        prefs.edit().putString(KEY_DIGEST_JSON, json).apply()
+    }
+
+    /**
+     * 清空本地持久化的日摘要 JSON。
+     */
+    fun clearDigestJson() {
+        prefs.edit().remove(KEY_DIGEST_JSON).apply()
+    }
+
     companion object {
         const val PREFS_NAME = "hana_proactive_prefs"
         private const val KEY_PROACTIVE_ENABLED = "proactive_enabled"
         private const val KEY_ALLOWED_PACKAGES = "allowed_packages"
         private const val KEY_MASK_SENSITIVE = "mask_sensitive"
+        private const val KEY_DIGEST_JSON = "digest_store_json"
 
         fun get(context: Context): ProactivePrefs {
             val sp = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

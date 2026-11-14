@@ -4,11 +4,18 @@ import android.app.ActivityManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
+import com.hana.agent.vision.DetectedIcon
+import com.hana.agent.vision.EdgeIconDetector
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 
 /**
  * 硬件探针 (Hardware Probe)
@@ -132,26 +139,184 @@ class EdgeInferenceService : Service() {
                     }
                 }
             }
-            return if (task.contains("支付") || task.contains("买") || task.contains("转账")) "transaction"
-            else "navigation"
+            return fallbackClassifyIntent(task)
         }
 
         override fun locateVisualElement(jpegShot: ByteArray?, query: String?): String {
-            return ""
+            val engine = runCatching { MnnPocketEngine.getInstance(this@EdgeInferenceService) }.getOrNull()
+            val runtimeDesc = engine?.describeRuntimeMode()
+                ?: if (MnnPocketEngine.isNativeLoaded) "native_so_loaded" else "kotlin_heuristic"
+            val nativeLoaded = MnnPocketEngine.isNativeLoaded
+
+            if (jpegShot == null || jpegShot.isEmpty()) {
+                return buildLocateJson(
+                    status = "degraded",
+                    backend = runtimeDesc,
+                    nativeLoaded = nativeLoaded,
+                    query = query.orEmpty(),
+                    reason = "empty_screenshot",
+                    matched = null,
+                    candidates = emptyList(),
+                )
+            }
+
+            val bmp = runCatching { BitmapFactory.decodeByteArray(jpegShot, 0, jpegShot.size) }.getOrNull()
+                ?: return buildLocateJson(
+                    status = "degraded",
+                    backend = runtimeDesc,
+                    nativeLoaded = nativeLoaded,
+                    query = query.orEmpty(),
+                    reason = "invalid_image_bytes",
+                    matched = null,
+                    candidates = emptyList(),
+                )
+
+            return try {
+                val w = bmp.width
+                val h = bmp.height
+                if (w <= 0 || h <= 0) {
+                    buildLocateJson("degraded", runtimeDesc, nativeLoaded, query.orEmpty(), "invalid_bitmap_size", null, emptyList())
+                } else {
+                    val pixels = IntArray(w * h)
+                    bmp.getPixels(pixels, 0, w, 0, 0, w, h)
+                    locateFromPixels(pixels, w, h, query, runtimeDesc, nativeLoaded)
+                }
+            } finally {
+                bmp.recycle()
+            }
         }
 
         override fun runInference(input: Bundle?): Bundle {
             val action = input?.getString("action") ?: "health_check"
             val engine = runCatching { MnnPocketEngine.getInstance(this@EdgeInferenceService) }.getOrNull()
+            val status = engine?.getRuntimeStatus()
+            val nativeLoaded = MnnPocketEngine.isNativeLoaded
+            val backendName = status?.backend?.name
+                ?: if (nativeLoaded) "NATIVE_MNN_WITH_HEURISTIC_FALLBACK" else "KOTLIN_HEURISTIC_ONLY"
+            val runtimeDesc = status?.description
+                ?: if (nativeLoaded) "Native SO 已加载" else "纯 Kotlin 启发式规则引擎（Native SO 未载入）"
+
             return Bundle().apply {
                 putBoolean("success", true)
-                putString("result", "ok")
+                putString("result", if (status?.engineReady == true) "ok" else "degraded_heuristic")
                 putString("action", action)
                 putBoolean("in_process_engine_available", engine != null)
-                putBoolean("engine_ready", engine?.isReady == true)
+                putBoolean("engine_ready", status?.engineReady == true)
+                putBoolean("native_loaded", nativeLoaded)
+                putBoolean("model_weights_ready", status?.modelReady == true)
+                putBoolean("memory_constrained", status?.isMemoryConstrained == true)
+                putString("backend", backendName)
+                putString("runtime_description", runtimeDesc)
             }
         }
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
+
+    companion object {
+        /** 纯 Kotlin 语义关键词意图回退分类 */
+        internal fun fallbackClassifyIntent(task: String): String {
+            val clean = task.trim()
+            if (clean.isBlank()) return "general"
+            if (clean.contains("支付") || clean.contains("买") || clean.contains("转账") || clean.contains("下单")) {
+                return "transaction"
+            }
+            if (clean.startsWith("查") || clean.startsWith("看") || clean.contains("查询") || clean.contains("搜索")) {
+                return "read"
+            }
+            if (clean.contains("打开") || clean.contains("启动") || clean.contains("点击") || clean.contains("发给")) {
+                return "act"
+            }
+            return "navigation"
+        }
+
+        /**
+         * 基于纯 Kotlin 端侧视觉检测（EdgeIconDetector）与语义关键词匹配的视觉定位实现，
+         * 支持在无 Native VLM 权重时输出结构化候选坐标与降级状态，可在 JVM 单元测试直接验证。
+         */
+        internal fun locateFromPixels(
+            pixels: IntArray,
+            width: Int,
+            height: Int,
+            query: String?,
+            backend: String = if (MnnPocketEngine.isNativeLoaded) "native_mnn" else "kotlin_heuristic",
+            nativeLoaded: Boolean = MnnPocketEngine.isNativeLoaded,
+        ): String {
+            val icons = EdgeIconDetector.detectIcons(pixels, width, height)
+            val cleanQuery = query?.trim().orEmpty()
+            val matched = selectBestSemanticMatch(icons, cleanQuery)
+            val status = when {
+                icons.isEmpty() -> "no_candidates"
+                cleanQuery.isNotEmpty() && matched == null -> "no_match"
+                else -> "ok"
+            }
+            return buildLocateJson(
+                status = status,
+                backend = backend,
+                nativeLoaded = nativeLoaded,
+                query = cleanQuery,
+                reason = if (icons.isEmpty()) "no_visual_icons_detected" else null,
+                matched = matched,
+                candidates = icons,
+            )
+        }
+
+        private fun selectBestSemanticMatch(icons: List<DetectedIcon>, query: String): DetectedIcon? {
+            if (icons.isEmpty() || query.isBlank()) return null
+            val targetLabel = when {
+                listOf("关闭", "叉", "关掉", "取消", "跳过", "close", "dismiss").any { query.contains(it, ignoreCase = true) } -> "icon_close"
+                listOf("返回", "后退", "上一页", "back").any { query.contains(it, ignoreCase = true) } -> "icon_back"
+                listOf("搜索", "查找", "搜", "放大镜", "search").any { query.contains(it, ignoreCase = true) } -> "icon_search"
+                listOf("更多", "菜单", "设置", "选项", "more", "menu").any { query.contains(it, ignoreCase = true) } -> "icon_more"
+                listOf("购物", "加购", "车", "cart").any { query.contains(it, ignoreCase = true) } -> "icon_cart"
+                listOf("添加", "新建", "加号", "发布", "add", "plus").any { query.contains(it, ignoreCase = true) } -> "icon_add"
+                listOf("分享", "转发", "share").any { query.contains(it, ignoreCase = true) } -> "icon_share"
+                else -> null
+            }
+
+            if (targetLabel != null) {
+                icons.filter { it.label == targetLabel }
+                    .maxByOrNull { it.confidence }
+                    ?.let { return it }
+            }
+
+            // 直接按英文标签名片段回退匹配
+            return icons.filter { query.contains(it.label, ignoreCase = true) || query.contains(it.label.removePrefix("icon_"), ignoreCase = true) }
+                .maxByOrNull { it.confidence }
+        }
+
+        private fun buildLocateJson(
+            status: String,
+            backend: String,
+            nativeLoaded: Boolean,
+            query: String,
+            reason: String?,
+            matched: DetectedIcon?,
+            candidates: List<DetectedIcon>,
+        ): String = buildJsonObject {
+            put("status", status)
+            put("backend", backend)
+            put("native_loaded", nativeLoaded)
+            put("query", query)
+            if (reason != null) put("reason", reason)
+            if (matched != null) {
+                putJsonObject("matched") {
+                    put("label", matched.label)
+                    put("confidence", matched.confidence)
+                    put("bounds", buildJsonArray { matched.bounds.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
+                    put("centerX", (matched.bounds[0] + matched.bounds[2]) / 2)
+                    put("centerY", (matched.bounds[1] + matched.bounds[3]) / 2)
+                }
+            }
+            put("candidates", buildJsonArray {
+                for (icon in candidates) {
+                    add(buildJsonObject {
+                        put("label", icon.label)
+                        put("confidence", icon.confidence)
+                        put("bounds", buildJsonArray { icon.bounds.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
+                    })
+                }
+            })
+        }.toString()
+    }
 }

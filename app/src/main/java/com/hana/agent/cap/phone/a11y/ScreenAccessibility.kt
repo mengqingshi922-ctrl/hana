@@ -6,12 +6,17 @@ import android.accessibilityservice.GestureDescription
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
+import android.graphics.Rect
 import android.app.Notification
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
 import com.hana.agent.core.uistate.ScreenEvent
+import com.hana.agent.core.uistate.normalize
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -28,6 +33,23 @@ open class ScreenAccessibility : AccessibilityService() {
 
     private class DisplayEvent(val displayId: Int, val event: AccessibilityEvent)
 
+    private data class PendingTextInput(
+        val packageName: String,
+        val targetLabel: String,
+        val inputSample: String,
+        val resourceId: String?,
+        val normalizedBounds: List<Int>?,
+        val timestampMs: Long,
+    )
+
+    private val teachLock = Any()
+    private val teachHandler by lazy { Handler(Looper.getMainLooper()) }
+    private var pendingTextInput: PendingTextInput? = null
+    private var pendingTextRunnable: Runnable? = null
+    private val lastScrollState = HashMap<String, Pair<Int, Int>>()
+    private var lastScrollEmitKey: String? = null
+    private var lastScrollEmitUptimeMs: Long = 0L
+    private val teachFlushHook: () -> Unit = { flushPendingTextInput() }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -39,6 +61,7 @@ open class ScreenAccessibility : AccessibilityService() {
                 serviceInfo = info
             }
         }
+        com.hana.agent.teach.TeachRuntime.instance.registerFlushHook(teachFlushHook)
         _instance.value = this
     }
 
@@ -54,6 +77,14 @@ open class ScreenAccessibility : AccessibilityService() {
 
     private fun clearInstance() {
         _instance.compareAndSet(this, null)
+        com.hana.agent.teach.TeachRuntime.instance.unregisterFlushHook(teachFlushHook)
+        synchronized(teachLock) {
+            pendingTextRunnable?.let { teachHandler.removeCallbacks(it) }
+            pendingTextRunnable = null
+            pendingTextInput = null
+            lastScrollState.clear()
+            lastScrollEmitKey = null
+        }
         overlayHost?.closeAll()
         overlayHost = null
     }
@@ -75,34 +106,9 @@ open class ScreenAccessibility : AccessibilityService() {
         val access = (application as com.hana.agent.HanaApp).appAccess.current()
         if (access.denial(event.packageName?.toString()) != null) return
 
-        // 「教 Hana」示范录制捕获：当处于录制中时记录外部应用的点击与输入动作
+        // 「教 Hana」示范录制 2.0 捕获：支持点击/长按/滚动方向捕获、控件 resourceId 锚点提取及 800ms 输入防抖合并
         runCatching {
-            val teach = com.hana.agent.teach.TeachRuntime.instance
-            if (teach.state.value == com.hana.agent.teach.TeachState.RECORDING) {
-                val actionType = when (event.eventType) {
-                    AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
-                    AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> "long_press"
-                    AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "type_text"
-                    else -> null
-                }
-                if (actionType != null) {
-                    val pkg = event.packageName?.toString().orEmpty()
-                    if (pkg.isNotEmpty() && pkg != packageName) {
-                        val label = event.text.joinToString(" ").ifBlank {
-                            event.contentDescription?.toString().orEmpty()
-                        }.trim().take(80)
-                        val inputSample = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
-                            event.text.joinToString(" ").take(80)
-                        } else null
-                        teach.recordStep(
-                            packageName = pkg,
-                            actionType = actionType,
-                            targetLabel = label.ifBlank { "控件" },
-                            inputSample = inputSample,
-                        )
-                    }
-                }
-            }
+            captureTeachEvent(event)
         }
         if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED && notifications.subscriptionCount.value > 0) {
             val notification = event.parcelableData as? Notification
@@ -221,6 +227,178 @@ open class ScreenAccessibility : AccessibilityService() {
      * 事件所在的屏。API 33 起事件自带屏号;更早的系统按事件的窗口号去各屏窗口里找,
      * 找不到(如没有窗口号的通知类事件)就丢弃。
      */
+    /**
+     * 捕获「教 Hana」示范录制动作：
+     * - 支持点击（tap）、长按（long_press）、输入（type_text）、滚动方向（scroll_down / scroll_up）；
+     * - 提取控件 `viewIdResourceName` 作为稳定锚点，并附带归一化屏幕坐标；
+     * - 对 `TYPE_VIEW_TEXT_CHANGED` 采用 800ms 防抖合并，并在收到其它交互或切换控件时立即刷入，确保步骤顺序严谨。
+     */
+    private fun captureTeachEvent(event: AccessibilityEvent) {
+        val teach = com.hana.agent.teach.TeachRuntime.instance
+        if (teach.state.value != com.hana.agent.teach.TeachState.RECORDING) return
+        val pkg = event.packageName?.toString().orEmpty()
+        if (pkg.isEmpty() || pkg == packageName) return
+
+        val isRelevant = event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
+            event.eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED ||
+            event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED ||
+            event.eventType == AccessibilityEvent.TYPE_VIEW_SCROLLED
+        if (!isRelevant) return
+
+        val source = runCatching { event.source }.getOrNull()
+        var resourceId: String? = null
+        var normalizedBounds: List<Int>? = null
+        var sourceFallbackLabel = ""
+        if (source != null) {
+            try {
+                resourceId = source.viewIdResourceName?.trim()?.takeIf { it.isNotEmpty() }
+                sourceFallbackLabel = source.hintText?.toString().orEmpty()
+                    .ifBlank { source.contentDescription?.toString().orEmpty() }
+                    .ifBlank { source.text?.toString().orEmpty() }
+                    .trim()
+                val dm = resources.displayMetrics
+                if (dm.widthPixels > 0 && dm.heightPixels > 0) {
+                    val rect = Rect()
+                    source.getBoundsInScreen(rect)
+                    if (!rect.isEmpty) {
+                        normalizedBounds = listOf(
+                            normalize(rect.left.coerceIn(0, dm.widthPixels), dm.widthPixels),
+                            normalize(rect.top.coerceIn(0, dm.heightPixels), dm.heightPixels),
+                            normalize(rect.right.coerceIn(0, dm.widthPixels), dm.widthPixels),
+                            normalize(rect.bottom.coerceIn(0, dm.heightPixels), dm.heightPixels),
+                        )
+                    }
+                }
+            } finally {
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                    @Suppress("DEPRECATION")
+                    runCatching { source.recycle() }
+                }
+            }
+        }
+
+        val actionType = when (event.eventType) {
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
+            AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> "long_press"
+            AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "type_text"
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> resolveScrollAction(event, pkg, resourceId)
+            else -> null
+        } ?: return
+
+        val rawEventText = event.text.joinToString(" ").trim()
+        val label = rawEventText
+            .ifBlank { event.contentDescription?.toString().orEmpty().trim() }
+            .ifBlank { sourceFallbackLabel }
+            .take(80)
+            .ifBlank { "控件" }
+
+        val nowMs = System.currentTimeMillis()
+        if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+            val inputText = rawEventText.take(80)
+            val candidate = PendingTextInput(
+                packageName = pkg,
+                targetLabel = if (sourceFallbackLabel.isNotBlank() && sourceFallbackLabel != inputText) sourceFallbackLabel.take(80) else label,
+                inputSample = inputText,
+                resourceId = resourceId,
+                normalizedBounds = normalizedBounds,
+                timestampMs = nowMs,
+            )
+            scheduleDebouncedTextInput(candidate)
+            return
+        }
+
+        // 收到点击/长按/滚动等新动作时，先把防抖队列里未落盘的输入刷入，防止步骤乱序
+        flushPendingTextInput()
+
+        if (actionType == "scroll_down" || actionType == "scroll_up") {
+            val uptime = SystemClock.uptimeMillis()
+            val emitKey = "$pkg|$actionType|${resourceId.orEmpty()}"
+            synchronized(teachLock) {
+                if (emitKey == lastScrollEmitKey && uptime - lastScrollEmitUptimeMs < TEACH_SCROLL_THROTTLE_MS) {
+                    return
+                }
+                lastScrollEmitKey = emitKey
+                lastScrollEmitUptimeMs = uptime
+            }
+        }
+
+        teach.recordStep(
+            packageName = pkg,
+            actionType = actionType,
+            targetLabel = label,
+            inputSample = null,
+            resourceId = resourceId,
+            normalizedBounds = normalizedBounds,
+            timestampMs = nowMs,
+        )
+    }
+
+    private fun resolveScrollAction(event: AccessibilityEvent, pkg: String, resourceId: String?): String? {
+        val dy = event.scrollDeltaY
+        val key = "$pkg|${resourceId.orEmpty()}"
+        val curFrom = event.fromIndex
+        val curScrollY = event.scrollY
+        val prev = synchronized(teachLock) {
+            lastScrollState.put(key, curFrom to curScrollY)
+        }
+        return when {
+            dy > 0 -> "scroll_down"
+            dy < 0 -> "scroll_up"
+            prev != null && curScrollY >= 0 && prev.second >= 0 && curScrollY != prev.second ->
+                if (curScrollY > prev.second) "scroll_down" else "scroll_up"
+            prev != null && curFrom >= 0 && prev.first >= 0 && curFrom != prev.first ->
+                if (curFrom > prev.first) "scroll_down" else "scroll_up"
+            prev == null && (curScrollY > 0 || curFrom > 0) -> "scroll_down"
+            else -> null
+        }
+    }
+
+    private fun scheduleDebouncedTextInput(candidate: PendingTextInput) {
+        var toFlushFirst: PendingTextInput? = null
+        synchronized(teachLock) {
+            val prev = pendingTextInput
+            if (prev != null && !isSamePendingTarget(prev, candidate)) {
+                toFlushFirst = prev
+            }
+            pendingTextRunnable?.let { teachHandler.removeCallbacks(it) }
+            pendingTextInput = candidate
+            val runnable = Runnable { flushPendingTextInput() }
+            pendingTextRunnable = runnable
+            teachHandler.postDelayed(runnable, TEACH_TEXT_DEBOUNCE_MS)
+        }
+        toFlushFirst?.let { emitPendingTextInput(it) }
+    }
+
+    private fun flushPendingTextInput() {
+        val pending = synchronized(teachLock) {
+            pendingTextRunnable?.let { teachHandler.removeCallbacks(it) }
+            pendingTextRunnable = null
+            pendingTextInput.also { pendingTextInput = null }
+        } ?: return
+        emitPendingTextInput(pending)
+    }
+
+    private fun emitPendingTextInput(pending: PendingTextInput) {
+        val teach = com.hana.agent.teach.TeachRuntime.instance
+        if (teach.state.value != com.hana.agent.teach.TeachState.RECORDING) return
+        teach.recordStep(
+            packageName = pending.packageName,
+            actionType = "type_text",
+            targetLabel = pending.targetLabel,
+            inputSample = pending.inputSample,
+            resourceId = pending.resourceId,
+            normalizedBounds = pending.normalizedBounds,
+            timestampMs = pending.timestampMs,
+        )
+    }
+
+    private fun isSamePendingTarget(a: PendingTextInput, b: PendingTextInput): Boolean {
+        if (a.packageName != b.packageName) return false
+        if (a.resourceId != null && b.resourceId != null) return a.resourceId == b.resourceId
+        if (a.normalizedBounds != null && b.normalizedBounds != null) return a.normalizedBounds == b.normalizedBounds
+        return a.targetLabel == b.targetLabel
+    }
+
     private fun displayOf(event: AccessibilityEvent): Int {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return event.displayId
         val windowId = event.windowId
@@ -236,6 +414,10 @@ open class ScreenAccessibility : AccessibilityService() {
         private const val EVENT_BUFFER = 64
         /** 两次截图之间系统要求的间隔(安卓原版是一秒)。 */
         private const val SCREENSHOT_INTERVAL_MS = 1_000L
+        /** 示范录制文本输入防抖窗口（毫秒）：连续打字合并为最终文本。 */
+        private const val TEACH_TEXT_DEBOUNCE_MS = 800L
+        /** 示范录制同向滚动节流窗口（毫秒）：单次滑动只记一条方向动作。 */
+        private const val TEACH_SCROLL_THROTTLE_MS = 350L
 
         // 保持热流:调用方用 UNDISPATCHED 先订阅再操作,不要因服务切换引入异步订阅窗口。
         // 事件只作观察用,订阅方处理不过来时丢最旧的,不阻塞系统回调

@@ -8,8 +8,11 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkRequest
 import android.net.NetworkCapabilities
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.os.Process
 import android.provider.Settings
@@ -40,11 +43,26 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.net.Inet4Address
 import java.util.concurrent.atomic.AtomicReference
+
+/**
+ * 轻量级 Shizuku 就绪状态探测结果（通过标准包安装状态、ContentProvider 与 Binder 约定无侵入探测，不引入外部库依赖）。
+ */
+data class ShizukuProbeStatus(
+    val installed: Boolean = false,
+    val serviceRunning: Boolean = false,
+    val binderReady: Boolean = false,
+    val guidanceMarked: Boolean = false,
+    val detail: String = "",
+) {
+    /** 是否检测到 Shizuku 服务与 Binder 处于活跃就绪态，可用于免配对提示与引导。 */
+    val ready: Boolean get() = installed && serviceRunning && binderReady
+}
 
 /**
  * 内置助手的真实现:配对、经本机 adbd 起助手、看门狗。由 [com.hana.agent.cap.phone.PhoneServices] 建一份,
@@ -58,13 +76,18 @@ class BuiltinShellManager(
 ) {
     private val app = context.applicationContext
     private var started = false
+    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _scanningPorts = MutableStateFlow(false)
     /** 正在扫本机找无线调试端口(引导页显示「正在本机查找…」)。 */
     val scanningPorts: StateFlow<Boolean> = _scanningPorts.asStateFlow()
 
+    private val _shizukuStatus = MutableStateFlow(ShizukuProbeStatus())
+    /** 原生无侵入 Shizuku 就绪状态探测流。 */
+    val shizukuStatus: StateFlow<ShizukuProbeStatus> = _shizukuStatus.asStateFlow()
+
     private val platform: AndroidPlatform by lazy {
-        AndroidPlatform(app, hub, { lastConnectCandidates = it }, { _scanningPorts.value = it }, rootLauncher)
+        AndroidPlatform(app, hub, { lastConnectCandidates = it }, { _scanningPorts.value = it }, rootLauncher, backgroundScope)
     }
 
     /** 最近一次找连接端口时各来源给了几个候选(诊断信息用);这次进程里还没连过为 null。 */
@@ -114,11 +137,86 @@ class BuiltinShellManager(
         engine.retry()
     }
 
+    /**
+     * 轻量级 Shizuku 就绪状态探测（无侵入，不依赖外部 Shizuku SDK）：
+     * 1. 检查 `moe.shizuku.privileged.api` 包与 ContentProvider 注册；
+     * 2. 通过标准 `ContentProvider.call("getBinder")` 与系统 `ServiceManager` 约定探测活跃 Binder；
+     * 3. 更新引导标记与可观测状态流。
+     */
+    fun probeShizukuStatus(): ShizukuProbeStatus {
+        val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val pkgInstalled = runCatching {
+            app.packageManager.getPackageInfo(SHIZUKU_PACKAGE, 0) != null
+        }.getOrDefault(false)
+        val providerDeclared = runCatching {
+            app.packageManager.resolveContentProvider(SHIZUKU_PROVIDER_AUTHORITY, 0) != null
+        }.getOrDefault(false)
+        val installed = pkgInstalled || providerDeclared
+
+        var binder: IBinder? = null
+        var detail = if (installed) "installed" else "not_installed"
+
+        // 优先通过 Shizuku 标准 ContentProvider 约定获取服务端 Binder
+        runCatching {
+            val uri = Uri.parse(SHIZUKU_PROVIDER_URI)
+            val reply = app.contentResolver.call(uri, SHIZUKU_METHOD_GET_BINDER, null, Bundle())
+                ?: app.contentResolver.call(uri, SHIZUKU_METHOD_SEND_BINDER, null, Bundle())
+            binder = reply?.getBinder(SHIZUKU_EXTRA_BINDER)
+            if (reply != null && binder == null) {
+                detail = "provider_responded_without_binder"
+            }
+        }.onFailure { err ->
+            if (installed) detail = "provider_probe_failed:${err.javaClass.simpleName}"
+        }
+
+        // 兜底检查系统服务注册约定（部分精简定制 ROM 或测试环境可能直接注册在 ServiceManager）
+        if (binder == null) {
+            binder = probeSystemServiceBinder(SHIZUKU_SYSTEM_SERVICE)
+        }
+
+        val binderAlive = binder?.let { b ->
+            runCatching { b.isBinderAlive && b.pingBinder() }.getOrDefault(false)
+        } ?: false
+
+        val serviceRunning = binderAlive
+        val guidanceMarked = (installed && serviceRunning) || prefs.getBoolean(KEY_SHIZUKU_GUIDANCE_MARKED, false)
+        if (installed && serviceRunning) {
+            prefs.edit().putBoolean(KEY_SHIZUKU_GUIDANCE_MARKED, true).apply()
+            detail = "binder_ready"
+        }
+
+        val status = ShizukuProbeStatus(
+            installed = installed || serviceRunning,
+            serviceRunning = serviceRunning,
+            binderReady = binderAlive,
+            guidanceMarked = guidanceMarked,
+            detail = detail,
+        )
+        _shizukuStatus.value = status
+        return status
+    }
+
+    /** 是否已存在 Shizuku 就绪引导标记（用于引导页提示用户免重复配对）。 */
+    fun hasShizukuGuidanceReady(): Boolean = _shizukuStatus.value.ready ||
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_SHIZUKU_GUIDANCE_MARKED, false)
+
+    /** 是否已尝试下发过本地 5555 回环保活策略。 */
+    fun isTcpipKeepaliveAttempted(): Boolean =
+        app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_TCPIP_KEEPALIVE_ATTEMPTED, false)
+
+    @SuppressLint("PrivateApi")
+    private fun probeSystemServiceBinder(serviceName: String): IBinder? = runCatching {
+        val smClass = Class.forName("android.os.ServiceManager")
+        val checkMethod = smClass.getMethod("checkService", String::class.java)
+        checkMethod.invoke(null, serviceName) as? IBinder
+    }.getOrNull()
+
     @Synchronized
     fun start() {
         if (started || Build.VERSION.SDK_INT < MIN_SDK) return
         started = true
         usbScript.start()
+        backgroundScope.launch { runCatching { probeShizukuStatus() } }
         val e = engine
         // 无线调试一打开就试着连回去;关掉时状态马上变成「无线调试已关」
         app.contentResolver.registerContentObserver(
@@ -146,6 +244,7 @@ class BuiltinShellManager(
         private val candidates: (ConnectCandidates) -> Unit,
         private val scanning: (Boolean) -> Unit,
         private val rootLauncher: ((command: String, stdinLine: ByteArray) -> Result<Unit>)? = null,
+        private val backgroundScope: CoroutineScope,
     ) : BuiltinShellPlatform {
         /** 用户填的端口,下一次连接取走。 */
         val manualPort = AtomicReference<Int?>(null)
@@ -208,10 +307,32 @@ class BuiltinShellManager(
             val tls = AndroidAdb.tls(AndroidAdb.identity(app))
             val connection = connect(tls)
             // 流开着 sh 就一直等;交接到了(或超时)再关,交接结果仍由引擎从 HelperHub 判断
-            connection.use {
+            val handoff = connection.use {
                 val stream = it.exec(command)
                 stream.write(HelperHandoff.stdinLine(hub.issueLaunchNonce()))
                 withTimeoutOrNull(HANDOFF_WAIT_MS) { hub.shell.first { s -> s != null && s !== before } }
+            }
+            // 无线调试首次配对连接成功后，异步尝试下发 adb tcpip 5555 本地回环保活策略（安全容错，失败不影响原有链路）
+            if (handoff != null && paired() && !prefs.getBoolean(KEY_TCPIP_KEEPALIVE_ATTEMPTED, false)) {
+                scheduleTcpipKeepalive(tls)
+            }
+        }
+
+        private fun scheduleTcpipKeepalive(tls: AdbTls) {
+            prefs.edit().putBoolean(KEY_TCPIP_KEEPALIVE_ATTEMPTED, true).apply()
+            backgroundScope.launch {
+                runCatching {
+                    withTimeoutOrNull(TCPIP_KEEPALIVE_TIMEOUT_MS) {
+                        connect(tls).use { conn ->
+                            conn.open("tcpip:$TCPIP_KEEPALIVE_PORT").use { stream ->
+                                val reply = stream.readText()
+                                val ok = reply.contains(TCPIP_KEEPALIVE_PORT.toString()) ||
+                                    reply.contains("restarting", ignoreCase = true)
+                                prefs.edit().putBoolean(KEY_TCPIP_KEEPALIVE_ENABLED, ok).apply()
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -240,7 +361,11 @@ class BuiltinShellManager(
         override fun forget() {
             hub.forget()
             AndroidAdb.forget(app)
-            prefs.edit().remove("port").apply()
+            prefs.edit()
+                .remove("port")
+                .remove(KEY_TCPIP_KEEPALIVE_ATTEMPTED)
+                .remove(KEY_TCPIP_KEEPALIVE_ENABLED)
+                .apply()
         }
 
         @SuppressLint("PrivateApi")
@@ -259,5 +384,17 @@ class BuiltinShellManager(
         private const val LOCALHOST = AdbConnectPort.LOCALHOST
         private const val PORT_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
         private const val HANDOFF_WAIT_MS = 15_000L
+        private const val TCPIP_KEEPALIVE_PORT = 5555
+        private const val TCPIP_KEEPALIVE_TIMEOUT_MS = 3_000L
+        private const val KEY_TCPIP_KEEPALIVE_ATTEMPTED = "tcpip5555Attempted"
+        private const val KEY_TCPIP_KEEPALIVE_ENABLED = "tcpip5555Enabled"
+        private const val KEY_SHIZUKU_GUIDANCE_MARKED = "shizukuGuidanceMarked"
+        private const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
+        private const val SHIZUKU_PROVIDER_AUTHORITY = "moe.shizuku.privileged.api.shizuku"
+        private const val SHIZUKU_PROVIDER_URI = "content://moe.shizuku.privileged.api.shizuku"
+        private const val SHIZUKU_METHOD_GET_BINDER = "getBinder"
+        private const val SHIZUKU_METHOD_SEND_BINDER = "sendBinder"
+        private const val SHIZUKU_EXTRA_BINDER = "moe.shizuku.privileged.api.intent.extra.BINDER"
+        private const val SHIZUKU_SYSTEM_SERVICE = "shizuku"
     }
 }

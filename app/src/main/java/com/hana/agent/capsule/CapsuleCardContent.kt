@@ -12,6 +12,7 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -37,6 +38,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
@@ -90,7 +92,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hana.agent.confirm.ConfirmationCopy
+import com.hana.agent.core.gate.RiskTier
 import com.hana.agent.core.userscreen.CapturedScreen
+import com.hana.agent.proactive.ClipboardPortalSuggestion
+import com.hana.agent.proactive.NoticeBadgeHint
 import com.hana.agent.ui.MarkdownText
 import com.hana.agent.ui.ScreenCopy
 import com.hana.agent.ui.ScreenThumb
@@ -210,6 +215,12 @@ fun CapsuleCard(
     thread: ChatThread? = null,
     height: Dp = Dp.Unspecified,
     onHandle: (Rect) -> Unit = {},
+    proactiveHints: List<NoticeBadgeHint> = emptyList(),
+    onDismissHint: (String) -> Unit = {},
+    onActHint: (NoticeBadgeHint) -> Unit = {},
+    clipboardSuggestion: ClipboardPortalSuggestion? = null,
+    onAcceptClipboard: (ClipboardPortalSuggestion) -> Unit = {},
+    onDismissClipboard: () -> Unit = {},
 ) {
     val field = CapsuleCards.input(card)
     // 任务还在进行(干活中、Hana 问你、等条件)时,停止和对话页一样放在输入框右边,不另占一个按钮
@@ -223,11 +234,21 @@ fun CapsuleCard(
     val inputRow: @Composable () -> Unit = {
         field?.let { InputRow(it, input, actions, stop = stopKey?.let { k -> { actions.stop(k) } }) }
     }
+    val proactiveStrip: @Composable () -> Unit = {
+        ProactiveCardsStrip(
+            hints = proactiveHints,
+            onDismissHint = onDismissHint,
+            onActHint = onActHint,
+            clipboardSuggestion = clipboardSuggestion,
+            onAcceptClipboard = onAcceptClipboard,
+            onDismissClipboard = onDismissClipboard,
+        )
+    }
     Box(modifier.padding(CapsuleShadowRoom)) {
         when {
             zoomed && preview != null -> Zoomed(preview, actions)
-            card is CardView.Detail -> Detail(card, preview, actions, elapsed, h, handle, inputRow)
-            card is CardView.Chat -> ChatCard(card, thread, actions, elapsed, h, handle, inputRow)
+            card is CardView.Detail -> Detail(card, preview, actions, elapsed, h, handle, inputRow, proactiveStrip)
+            card is CardView.Chat -> ChatCard(card, thread, actions, elapsed, h, handle, inputRow, proactiveStrip)
             card is CardView.Kept -> KeptCard(card, preview, actions, h, handle)
         }
     }
@@ -489,13 +510,17 @@ private fun IconButton(icon: ImageVector, label: String, onClick: () -> Unit) {
 @Composable
 private fun Detail(
     card: CardView.Detail, preview: Bitmap?, actions: CardActions, elapsed: @Composable (Long?) -> String?,
-    height: Dp, handle: Modifier, input: @Composable () -> Unit,
+    height: Dp, handle: Modifier, input: @Composable () -> Unit, proactiveStrip: @Composable () -> Unit = {},
 ) {
     val c = HanaTheme.colors
     val r = card.run
     val sub = listOfNotNull(CapsuleCards.status(r.kind), elapsed(r.startedAt)).joinToString(" · ")
     CardFrame(height, fixed = false) {
         Header(ScreenCopy.plain(r.run.goal).ifBlank { "Hana" }, sub, actions, handle)
+        if (card.content is CardContent.Takeover) {
+            PrivacyShieldBanner()
+        }
+        proactiveStrip()
         val screen = preview?.takeIf { CapsuleCards.showsScreen(card.content) }
         // 步骤那段的高度上限 = 小画面的高;还没有画面时按主屏的宽高比算同样的高,画面来了不跳
         val config = LocalConfiguration.current
@@ -520,8 +545,14 @@ private fun Detail(
                                 content.queueLine?.let { Text(it, style = Sub, color = c.ink3) }
                             }
                             is CardContent.Confirm -> {
+                                if (content.fromUntrustedSource) {
+                                    UntrustedSourceWarningBanner()
+                                }
                                 Text(content.title, style = Strong, color = c.warn)
-                                Text(content.body, style = Body, color = c.ink2)
+                                val bill = remember(content.title, content.body, content.riskTier) {
+                                    CapsuleCards.parseConfirmBillElements(content.title, content.body, content.riskTier)
+                                }
+                                ConfirmBillCard(bill)
                                 Text(ConfirmationCopy.NOTE, style = Sub, color = c.ink3)
                             }
                             is CardContent.Question -> Text(content.prompt, style = Body, color = c.ink)
@@ -530,7 +561,7 @@ private fun Detail(
                             is CardContent.Result -> Unit
                         }
                     }
-                    Pinned(content, r.run.key, actions)
+                    Pinned(content, r.run.key, actions, showInlineDetails = false)
                 }
             }
         }
@@ -592,7 +623,12 @@ private const val KEPT_TICK_MS = 30_000L
 
 /** 要你点的按钮(接管、同意、选项、继续),固定在卡片中间那段的下面,不跟着滚。 */
 @Composable
-internal fun Pinned(content: CardContent?, key: String, actions: CardActions) {
+internal fun Pinned(
+    content: CardContent?,
+    key: String,
+    actions: CardActions,
+    showInlineDetails: Boolean = false,
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         when (content) {
             is CardContent.Takeover -> {
@@ -602,13 +638,36 @@ internal fun Pinned(content: CardContent?, key: String, actions: CardActions) {
             }
             is CardContent.Confirm -> {
                 Spacer(Modifier.height(4.dp))
-                com.hana.agent.ui.safegate.SlideToAuthorize(
-                    onAuthorized = { actions.approve(key, content.key) },
-                    onRejected = { actions.decline(key, content.key) },
-                    title = content.title.ifEmpty { "安全授权确认" },
-                    riskDescription = content.body,
-                    modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp),
-                )
+                val bill = remember(content.title, content.body, content.riskTier) {
+                    CapsuleCards.parseConfirmBillElements(content.title, content.body, content.riskTier)
+                }
+                when (content.riskTier) {
+                    RiskTier.L2_SOFT_COUNTDOWN -> L2SoftCountdownGate(
+                        content = content,
+                        bill = bill,
+                        runKey = key,
+                        actions = actions,
+                        showInlineDetails = showInlineDetails,
+                    )
+                    RiskTier.L1_AUTO -> L1AutoConfirmGate(
+                        content = content,
+                        bill = bill,
+                        runKey = key,
+                        actions = actions,
+                        showInlineDetails = showInlineDetails,
+                    )
+                    RiskTier.L3_HARD_SLIDE -> com.hana.agent.ui.safegate.SlideToAuthorize(
+                        onAuthorized = { actions.approve(key, content.key) },
+                        onRejected = { actions.decline(key, content.key) },
+                        title = content.title.ifEmpty { "安全授权确认" },
+                        riskDescription = bill.impact,
+                        modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp),
+                        fromUntrustedSource = showInlineDetails && content.fromUntrustedSource,
+                        targetLabel = if (showInlineDetails) bill.target else null,
+                        contentLabel = if (showInlineDetails) bill.content else null,
+                        impactLabel = if (showInlineDetails) bill.impact else null,
+                    )
+                }
             }
             is CardContent.Question -> if (content.options.isNotEmpty()) {
                 Spacer(Modifier.height(0.dp))
@@ -623,6 +682,374 @@ internal fun Pinned(content: CardContent?, key: String, actions: CardActions) {
     }
 }
 
+private const val L2_COUNTDOWN_MS = 4_000
+
+/**
+ * L2 风险等级（发消息、发帖、建日程）4 秒倒计时可撤回确认门：
+ * 倒计时期间展示视觉进度条，结束自动执行 `approve`，点击 `[✋ 立即撤回 / 取消]` 触发 `decline`。
+ */
+@Composable
+private fun L2SoftCountdownGate(
+    content: CardContent.Confirm,
+    bill: CapsuleCards.ConfirmBillElements,
+    runKey: String,
+    actions: CardActions,
+    showInlineDetails: Boolean,
+) {
+    val c = HanaTheme.colors
+    val shape = RoundedCornerShape(16.dp)
+    var settled by remember(runKey, content.key) { mutableStateOf(false) }
+    val progress = remember(runKey, content.key) { Animatable(1f) }
+
+    LaunchedEffect(runKey, content.key) {
+        progress.animateTo(0f, tween(durationMillis = L2_COUNTDOWN_MS, easing = LinearEasing))
+        if (!settled) {
+            settled = true
+            actions.approve(runKey, content.key)
+        }
+    }
+
+    val remainingSec = kotlin.math.ceil(progress.value * 4f).toInt().coerceIn(0, 4)
+
+    Column(
+        Modifier
+            .testTag("l2-countdown-gate")
+            .fillMaxWidth()
+            .clip(shape)
+            .background(c.surface)
+            .border(1.dp, c.accent.copy(alpha = 0.45f), shape)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (showInlineDetails && content.fromUntrustedSource) {
+            UntrustedSourceWarningBanner()
+        }
+        if (showInlineDetails) {
+            Text(content.title.ifEmpty { "操作预览" }, style = Strong, color = c.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            ConfirmBillCard(bill)
+        }
+
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "L2 轻确认 · ${remainingSec}s 后自动执行",
+                style = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+                color = c.accent,
+            )
+            Text(
+                "立即放行",
+                style = TextStyle(fontSize = 11.5.sp, fontWeight = FontWeight.Medium),
+                color = c.ink2,
+                modifier = Modifier
+                    .testTag("l2-countdown-now")
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(enabled = !settled) {
+                        settled = true
+                        actions.approve(runKey, content.key)
+                    }
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+        }
+
+        // 4 秒倒计时进度条
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(6.dp)
+                .clip(HanaShapes.Pill)
+                .background(c.fill),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth(progress.value.coerceIn(0f, 1f))
+                    .height(6.dp)
+                    .clip(HanaShapes.Pill)
+                    .background(c.accent),
+            )
+        }
+
+        // 撤回/取消按钮
+        Box(
+            Modifier
+                .testTag("l2-countdown-cancel")
+                .fillMaxWidth()
+                .height(38.dp)
+                .clip(HanaShapes.Pill)
+                .background(c.warnSoft)
+                .border(1.dp, c.warnSolid.copy(alpha = 0.4f), HanaShapes.Pill)
+                .clickable(enabled = !settled, role = Role.Button) {
+                    settled = true
+                    actions.decline(runKey, content.key)
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                "✋ 立即撤回 / 取消",
+                style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
+                color = c.warn,
+            )
+        }
+    }
+}
+
+/** L1 兜底轻量确认门（通常 L1 自动放行，若落入确认卡时供快速确认或取消）。 */
+@Composable
+private fun L1AutoConfirmGate(
+    content: CardContent.Confirm,
+    bill: CapsuleCards.ConfirmBillElements,
+    runKey: String,
+    actions: CardActions,
+    showInlineDetails: Boolean,
+) {
+    Column(
+        Modifier.testTag("l1-auto-gate").fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (showInlineDetails && content.fromUntrustedSource) {
+            UntrustedSourceWarningBanner()
+        }
+        if (showInlineDetails) {
+            ConfirmBillCard(bill)
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.weight(1f)) {
+                Action("确认执行", ButtonKind.Primary) { actions.approve(runKey, content.key) }
+            }
+            Box(Modifier.weight(1f)) {
+                Action(CardCopy.DECLINE, ButtonKind.Tonal) { actions.decline(runKey, content.key) }
+            }
+        }
+    }
+}
+
+/** 防 Prompt 注入高对比度黄牌警告横幅。 */
+@Composable
+private fun UntrustedSourceWarningBanner() {
+    val bg = Color(0xFFFEF3C7)
+    val border = Color(0xFFD97706)
+    val ink = Color(0xFF78350F)
+    Box(
+        Modifier
+            .testTag("confirm-untrusted-warning")
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(bg)
+            .border(1.dp, border, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+    ) {
+        Text(
+            "⚠️ 该操作指令源于外部网页/群聊内容，请确认是否本人意图",
+            style = TextStyle(fontSize = 11.5.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold),
+            color = ink,
+        )
+    }
+}
+
+/** 业务三要素账单视觉卡片：【操作对象 / 具体内容 / 金额或后果】。 */
+@Composable
+private fun ConfirmBillCard(bill: CapsuleCards.ConfirmBillElements) {
+    val c = HanaTheme.colors
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier
+            .testTag("confirm-three-elements")
+            .fillMaxWidth()
+            .clip(shape)
+            .background(c.fill)
+            .border(0.5.dp, c.edge, shape)
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        bill.appName?.let {
+            Text(
+                "来源应用 · $it",
+                style = TextStyle(fontSize = 10.5.sp, fontWeight = FontWeight.Medium),
+                color = c.ink3,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        ConfirmBillRow("操作对象", bill.target, c.ink)
+        ConfirmBillRow("具体内容", bill.content, c.ink2)
+        ConfirmBillRow("金额/后果", bill.impact, c.warn)
+    }
+}
+
+@Composable
+private fun ConfirmBillRow(label: String, value: String, valueColor: Color) {
+    val c = HanaTheme.colors
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            label,
+            style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+            color = c.ink3,
+            modifier = Modifier
+                .background(c.surface, RoundedCornerShape(4.dp))
+                .padding(horizontal = 5.dp, vertical = 1.dp),
+        )
+        Text(
+            value,
+            style = TextStyle(fontSize = 12.sp, lineHeight = 17.sp, fontWeight = FontWeight.Medium),
+            color = valueColor,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/** 接管态隐私护盾安全横幅。 */
+@Composable
+private fun PrivacyShieldBanner() {
+    val c = HanaTheme.colors
+    Box(
+        Modifier
+            .testTag("privacy-shield-banner")
+            .padding(top = 8.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(c.okSoft)
+            .border(1.dp, c.ok.copy(alpha = 0.45f), RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 7.dp),
+    ) {
+        Text(
+            "🔒 隐私护盾已开启：Hana 已暂停看屏与云端传输",
+            style = TextStyle(fontSize = 11.5.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold),
+            color = c.ok,
+        )
+    }
+}
+
+/** 主动能力摘要与剪贴板“任意门”非侵入式轻提示芯片组（Defer-by-Default）。 */
+@Composable
+private fun ProactiveCardsStrip(
+    hints: List<NoticeBadgeHint>,
+    onDismissHint: (String) -> Unit,
+    onActHint: (NoticeBadgeHint) -> Unit,
+    clipboardSuggestion: ClipboardPortalSuggestion?,
+    onAcceptClipboard: (ClipboardPortalSuggestion) -> Unit,
+    onDismissClipboard: () -> Unit,
+) {
+    if (hints.isEmpty() && clipboardSuggestion == null) return
+    val c = HanaTheme.colors
+    Column(
+        Modifier
+            .testTag("proactive-hints-strip")
+            .padding(top = 8.dp)
+            .fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        clipboardSuggestion?.let { clip ->
+            Row(
+                Modifier
+                    .testTag("clipboard-portal-chip")
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(c.accentSoft)
+                    .border(0.5.dp, c.accent.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        clip.pillTitle,
+                        style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                        color = c.accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        clip.previewSnippet,
+                        style = TextStyle(fontSize = 11.sp, lineHeight = 15.sp),
+                        color = c.ink2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text(
+                    clip.recommendedActionLabel,
+                    style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                    color = c.onAccent,
+                    modifier = Modifier
+                        .testTag("clipboard-portal-action")
+                        .clip(HanaShapes.Pill)
+                        .background(c.accent)
+                        .clickable(role = Role.Button) { onAcceptClipboard(clip) }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+                Box(
+                    Modifier
+                        .testTag("clipboard-portal-dismiss")
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .clickable(role = Role.Button, onClick = onDismissClipboard),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(HanaIcons.Close, null, Modifier.size(13.dp), tint = c.ink3)
+                }
+            }
+        }
+
+        hints.take(2).forEach { hint ->
+            Row(
+                Modifier
+                    .testTag("proactive-hint-${hint.id}")
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(c.fill)
+                    .border(0.5.dp, c.edge, RoundedCornerShape(12.dp))
+                    .clickable(role = Role.Button) { onActHint(hint) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(7.dp)
+                        .clip(CircleShape)
+                        .background(c.accent),
+                )
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(
+                        hint.title.ifBlank { "智能轻提示" },
+                        style = TextStyle(fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold),
+                        color = c.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (hint.previewText.isNotBlank()) {
+                        Text(
+                            hint.previewText,
+                            style = TextStyle(fontSize = 11.sp, lineHeight = 14.sp),
+                            color = c.ink2,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                Box(
+                    Modifier
+                        .testTag("proactive-hint-dismiss-${hint.id}")
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .clickable(role = Role.Button) { onDismissHint(hint.id) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(HanaIcons.Close, null, Modifier.size(13.dp), tint = c.ink3)
+                }
+            }
+        }
+    }
+}
+
 /**
  * 对话卡片:那个对话的来回在中间滚;要你回答、同意时按钮固定在来回下面,再下面是输入框和「回到 Hana」。
  * 不带任务时是空闲卡片(标题栏能切新对话)。
@@ -630,7 +1057,7 @@ internal fun Pinned(content: CardContent?, key: String, actions: CardActions) {
 @Composable
 private fun ChatCard(
     card: CardView.Chat, thread: ChatThread?, actions: CardActions, elapsed: @Composable (Long?) -> String?,
-    height: Dp, handle: Modifier, input: @Composable () -> Unit,
+    height: Dp, handle: Modifier, input: @Composable () -> Unit, proactiveStrip: @Composable () -> Unit = {},
 ) {
     val r = card.run
     CardFrame(height) {
@@ -640,11 +1067,15 @@ private fun ChatCard(
             listOfNotNull(CapsuleCards.status(r.kind), elapsed(r.startedAt)).joinToString(" · "),
             actions, handle,
         )
+        if (card.content is CardContent.Takeover) {
+            PrivacyShieldBanner()
+        }
+        proactiveStrip()
         Box(Modifier.padding(top = 8.dp).weight(1f).fillMaxWidth()) {
             // 换了对话(空闲卡片切到新对话)时从那个对话的最新一问重新读起
             if (thread != null) key(card.target) { ThreadList(thread, card.conversationId, actions) }
         }
-        if (r != null) Pinned(card.content, r.run.key, actions)
+        if (r != null) Pinned(card.content, r.run.key, actions, showInlineDetails = true)
         input()
         card.target?.let { id ->
             Box(Modifier.fillMaxWidth().padding(top = 6.dp), contentAlignment = Alignment.Center) {

@@ -5,11 +5,17 @@ import com.hana.agent.core.agent.QuoteMessage
 import com.hana.agent.core.cap.web.AttachedPage
 import com.hana.agent.ui.components.keepsKeyboard
 import com.hana.agent.ui.components.DesignSystemGateway
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -62,6 +68,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -132,6 +139,8 @@ import com.hana.agent.ui.components.PageBackground
 import com.hana.agent.ui.components.TopBar
 import com.hana.agent.ui.components.GrokBotFixedHeader
 import com.hana.agent.ui.components.GrokBotShapeDialog
+import com.hana.agent.ui.components.mascot.InlineEmotionTagParser
+import com.hana.agent.ui.components.mascot.StreamEmotionBus
 import com.hana.agent.ui.components.cardSurface
 import com.hana.agent.ui.components.floatShadow
 import com.hana.agent.ui.components.glassSource
@@ -143,7 +152,11 @@ import com.hana.agent.ui.theme.HanaSize
 import com.hana.agent.ui.theme.HanaTheme
 import com.hana.agent.ui.viewer.FileViewer
 import com.hana.agent.ui.theme.HanaType
+import com.hana.agent.voice.FullDuplexState
 import com.hana.agent.voice.HoldToTalk
+import com.hana.agent.voice.RealtimeFullDuplexBridge
+import com.hana.agent.voice.RealtimeVoiceClient
+import com.hana.agent.voice.RealtimeVoiceConfigResolver
 import com.hana.agent.voice.VoiceSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
@@ -328,12 +341,127 @@ fun ChatScreen(
         }
 
         // 屏幕顶端常驻固定灵动小精灵头部导航栏 (永久固定置顶，上下滑动绝不消失，不同工作自适应表情与动作)
+        val hanaApp = context.applicationContext as? com.hana.agent.HanaApp
+        val appTaskState = hanaApp?.taskState
+        val pipMuted by (appTaskState?.targetMuted?.collectAsState() ?: remember { mutableStateOf(false) })
+        val liveAudioAmplitude by (hanaApp?.voiceAmplitude?.collectAsState()
+            ?: remember { mutableStateOf(0f) })
+
+        // 全双工语音陪伴状态机（安全降级：未配置实时 WS 地址或缺少录音权限时保留原按住说话）
+        var fullDuplexActive by remember { mutableStateOf(false) }
+        var fullDuplexAmplitude by remember { mutableStateOf(0f) }
+        var fullDuplexBridge by remember { mutableStateOf<RealtimeFullDuplexBridge?>(null) }
+        val fullDuplexState by (fullDuplexBridge?.state?.collectAsState()
+            ?: remember { mutableStateOf<FullDuplexState>(FullDuplexState.Idle) })
+
+        fun stopFullDuplexSession() {
+            fullDuplexBridge?.release()
+            fullDuplexBridge = null
+            fullDuplexActive = false
+            fullDuplexAmplitude = 0f
+        }
+
+        fun launchFullDuplexSession() {
+            val config = RealtimeVoiceConfigResolver.resolve(context)
+            if (config == null) {
+                Toast.makeText(context, "未配置实时语音服务地址，已保留按住说话", Toast.LENGTH_SHORT).show()
+                return
+            }
+            stopFullDuplexSession()
+            val bridge = RealtimeFullDuplexBridge(
+                client = RealtimeVoiceClient(config),
+                isAssistantBusy = { vm.busy() },
+                onUserTranscript = { spoken ->
+                    val cleaned = InlineEmotionTagParser.stripAndExtract(spoken).first.trim()
+                    if (cleaned.isNotEmpty()) {
+                        scope.launch { vm.send(cleaned, check) }
+                    }
+                },
+                onAssistantTranscript = { assistantText, _ ->
+                    val (_, emo) = InlineEmotionTagParser.stripAndExtract(assistantText)
+                    if (emo != null) StreamEmotionBus.setStreamEmotion(emo)
+                },
+                onAmplitudeChanged = { amp -> fullDuplexAmplitude = amp },
+                onBargeIn = {
+                    scope.launch { (context as? MainActivity)?.stopVoiceAlert() }
+                },
+                onStopLocalPlayback = {
+                    (context as? MainActivity)?.stopVoiceAlert()
+                },
+            )
+            if (bridge.start(context)) {
+                fullDuplexBridge = bridge
+                fullDuplexActive = true
+            } else {
+                bridge.release()
+                Toast.makeText(context, "实时语音通道启动失败，已保留按住说话", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        val micPermissionLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) {
+                launchFullDuplexSession()
+            } else {
+                Toast.makeText(context, "未授予麦克风权限，已保留按住说话体验", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        val toggleFullDuplex: () -> Unit = {
+            if (fullDuplexActive) {
+                stopFullDuplexSession()
+            } else {
+                val config = RealtimeVoiceConfigResolver.resolve(context)
+                if (config == null) {
+                    Toast.makeText(context, "未配置实时语音服务地址，已保留按住说话", Toast.LENGTH_SHORT).show()
+                } else {
+                    val hasMicPerm = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasMicPerm) {
+                        launchFullDuplexSession()
+                    } else {
+                        micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                }
+            }
+        }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                fullDuplexBridge?.release()
+                fullDuplexBridge = null
+                StreamEmotionBus.setStreamEmotion(null)
+            }
+        }
+
+        LaunchedEffect(ui.conversationId) {
+            StreamEmotionBus.setStreamEmotion(null)
+        }
+
+        // 解析助手流式回复或最新完成回复中的内联情绪标签（[emo:XX] / [happy]），实时驱动顶栏小精灵变脸
+        val completedAnswer = (lastStatus as? ExchangeStatus.Done)?.answer
+        val rawEmotionSource = if (last?.live == true) last.draft else completedAnswer
+        LaunchedEffect(rawEmotionSource, last?.live, isRecentlyDone, fullDuplexActive) {
+            val parsedEmotion = rawEmotionSource?.let { InlineEmotionTagParser.stripAndExtract(it).second }
+            if (parsedEmotion != null) {
+                StreamEmotionBus.setStreamEmotion(parsedEmotion)
+            } else if (last?.live != true && !isRecentlyDone && !fullDuplexActive) {
+                StreamEmotionBus.setStreamEmotion(null)
+            }
+        }
+
+        val combinedAudioAmplitude = maxOf(liveAudioAmplitude, fullDuplexAmplitude)
+
         val sub = ChatCopy.subtitle(last, last?.let(vm::livePlace)) ?: kept?.let { ChatCopy.KEPT_PAGE to ChatCopy.Tone.Ok }
         val liveCoTText = if (last?.live == true) {
             val d = last.draft?.trim()
             val thinkingSnippet = d?.let { raw ->
-                val clean = raw.replace(Regex("<think>[\\s\\S]*?</think>"), "")
+                val withoutThink = raw.replace(Regex("<think>[\\s\\S]*?</think>"), "")
                     .replace("<think>", "").trim()
+                val clean = InlineEmotionTagParser.stripAndExtract(withoutThink).first
                 clean.lineSequence().firstOrNull { it.isNotBlank() }?.take(18)
             }
             when {
@@ -363,11 +491,12 @@ fun ChatScreen(
                 canSwitchConversation = vm.canSwitch(),
                 isOperatingPhone = ui.operatingPhone,
                 isBusy = vm.busy(),
-                isListening = voiceHolding,
+                isListening = voiceHolding || fullDuplexState is FullDuplexState.Listening || fullDuplexState is FullDuplexState.Interrupted,
                 isBlocked = ui.blocked != null,
                 isRecentlyDone = isRecentlyDone,
                 customSubtitle = liveCoTText ?: sub?.first,
                 isCollapsed = isHeaderCollapsed,
+                audioAmplitude = combinedAudioAmplitude,
                 onOpenShapeDialog = { showTopShapeDialog = true }
             )
         }
@@ -402,13 +531,11 @@ fun ChatScreen(
                 voiceHolding = holding
                 if (holding) (context as? MainActivity)?.stopVoiceAlert()
             },
+            fullDuplexActive = fullDuplexActive,
+            fullDuplexState = fullDuplexState,
+            onToggleFullDuplex = toggleFullDuplex,
             editRequest = editRequest,
         )
-
-        val appTaskState = (context.applicationContext as? com.hana.agent.HanaApp)?.taskState
-        val pipMuted by (appTaskState?.targetMuted?.collectAsState() ?: remember { mutableStateOf(false) })
-        val liveAudioAmplitude by (context.applicationContext as? com.hana.agent.HanaApp)?.voiceAmplitude?.collectAsState()
-            ?: remember { mutableStateOf(0f) }
 
         AgentPip(
             pip = ui.pip,
@@ -435,7 +562,7 @@ fun ChatScreen(
             },
             pipInput = appTaskState?.pipInput,
             pipTouchEnabled = remember { com.hana.agent.settings.FeatureFlags.get(context).pipTouchEnabled() },
-            audioAmplitude = liveAudioAmplitude,
+            audioAmplitude = combinedAudioAmplitude,
             isMuted = pipMuted,
             onToggleMute = appTaskState?.let { ts -> { ts.toggleTargetMute() } },
         )
@@ -724,10 +851,13 @@ private val ChatThumbWidth = 110.dp
 /** 正在生成的回答:和完成后的回答一样放在淡灰底上。 */
 @Composable
 private fun DraftText(text: String, generating: Boolean) {
-    MarkdownText(
-        text, AnswerText.copy(color = HanaTheme.colors.ink),
-        Modifier.fillMaxWidth().padding(bottom = 12.dp).answerSurface(), streaming = generating,
-    )
+    val cleanText = remember(text) { InlineEmotionTagParser.stripAndExtract(text).first }
+    if (cleanText.isNotBlank()) {
+        MarkdownText(
+            cleanText, AnswerText.copy(color = HanaTheme.colors.ink),
+            Modifier.fillMaxWidth().padding(bottom = 12.dp).answerSurface(), streaming = generating,
+        )
+    }
 }
 
 /** 插话交给模型之前已经说完的回复:和回答一样的底和字,长按一样能复制、引用、选择文字。 */
@@ -827,7 +957,7 @@ private fun WorkBlock(ex: Exchange, reduceMotion: Boolean, backgroundNote: Boole
             Spacer(Modifier.height(4.dp))
             StepLine(ex.steps, ex.stepActions, live = true, paused = paused, dotBg = c.surface)
         }
-        val liveThought = ex.draft?.takeIf(String::isNotBlank)
+        val liveThought = ex.draft?.let { InlineEmotionTagParser.stripAndExtract(it).first }?.takeIf(String::isNotBlank)
         if (liveThought != null) {
             Row(
                 Modifier
@@ -1198,7 +1328,10 @@ private fun StatusCard(
         }
         // 长按整块回答弹菜单;复制、引用的只是回答的字,不带上面的提示和下面的来源
         is ExchangeStatus.Done -> Box(Modifier.padding(bottom = 12.dp)) {
-            AnswerArea(key, status.answer, Modifier.fillMaxWidth().answerSurface()) {
+            val cleanAnswer = remember(status.answer) {
+                InlineEmotionTagParser.stripAndExtract(status.answer).first.ifBlank { status.answer }
+            }
+            AnswerArea(key, cleanAnswer, Modifier.fillMaxWidth().answerSurface()) {
                 Column {
                     status.unverifiedLine?.let { line ->
                         Row(Modifier.padding(bottom = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1208,7 +1341,7 @@ private fun StatusCard(
                             Text(line, style = HanaType.Caption, fontWeight = FontWeight.SemiBold, color = HanaTheme.colors.ink2)
                         }
                     }
-                    MarkdownText(status.answer, AnswerText.copy(color = HanaTheme.colors.ink))
+                    MarkdownText(cleanAnswer, AnswerText.copy(color = HanaTheme.colors.ink))
                     // 来源:旧记录里模型写的依据文字,或运行记录里代码记下的来源;都没有就不显示
                     if (status.evidence != null || runId != null) SourceChip(status.evidence, runId, loadSource, openSource)
                 }
@@ -1393,6 +1526,12 @@ internal fun Composer(
     steerTarget: String? = null,
     /** 按着说话时为 true:对话内容跟着虚化。 */
     onVoiceHolding: (Boolean) -> Unit = {},
+    /** 全双工语音实时连麦是否已开启。 */
+    fullDuplexActive: Boolean = false,
+    /** 全双工实时连接状态。 */
+    fullDuplexState: FullDuplexState = FullDuplexState.Idle,
+    /** 点击切换全双工实时陪伴模式。 */
+    onToggleFullDuplex: (() -> Unit)? = null,
 ) {
     val c = HanaTheme.colors
     val vh = rememberVoiceHold(voice, onVoiceText)
@@ -1485,6 +1624,41 @@ internal fun Composer(
                     }
                 }
             }
+            if (fullDuplexActive || fullDuplexState is FullDuplexState.Unavailable) {
+                val statusLabel = when (fullDuplexState) {
+                    is FullDuplexState.Connecting -> "全双工连接中…"
+                    is FullDuplexState.Listening -> "全双工实时聆听中"
+                    is FullDuplexState.AssistantSpeaking -> "小精灵播报中 · 随时开口即可打断"
+                    is FullDuplexState.Interrupted -> "已触发语音打断 · 继续聆听中"
+                    is FullDuplexState.Unavailable -> fullDuplexState.reason
+                    FullDuplexState.Idle -> "全双工语音待机"
+                }
+                val badgeBg = if (fullDuplexState is FullDuplexState.Unavailable) c.warnSoft else c.accent.copy(alpha = 0.14f)
+                val dotColor = if (fullDuplexState is FullDuplexState.Unavailable) c.warn else c.accent
+                Row(
+                    modifier = Modifier
+                        .padding(bottom = 6.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(badgeBg)
+                        .clickable(enabled = onToggleFullDuplex != null) { onToggleFullDuplex?.invoke() }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(dotColor))
+                    Text(
+                        statusLabel,
+                        style = HanaType.Caption,
+                        fontWeight = FontWeight.Medium,
+                        color = c.ink,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (onToggleFullDuplex != null) {
+                        Text("关闭", style = HanaType.Caption, color = c.ink3)
+                    }
+                }
+            }
             if (vh != null) {
                 val title = if (busy && !steerTarget.isNullOrBlank()) stringResource(R.string.voice_steer_to, steerTarget)
                 else stringResource(R.string.voice_listening)
@@ -1529,6 +1703,25 @@ internal fun Composer(
                     }
                 }
                 val canSend = AttachTray.canSend(text, attachments, importing)
+                if (onToggleFullDuplex != null) {
+                    val label = if (fullDuplexActive) "关闭全双工语音" else "开启全双工语音"
+                    Box(
+                        Modifier
+                            .size(HanaSize.IconButton)
+                            .testTag("composer-full-duplex")
+                            .clip(CircleShape)
+                            .background(if (fullDuplexActive) c.accent else Color.Transparent)
+                            .clickable(onClickLabel = label, onClick = onToggleFullDuplex),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            HanaIcons.Phone,
+                            label,
+                            Modifier.size(HanaSize.Icon),
+                            tint = if (fullDuplexActive) c.onAccent else c.ink2,
+                        )
+                    }
+                }
                 // 键盘出来以后长按输入框留给系统选字;话筒按住才听,点一下只提示按住
                 if (fieldFocused && vh != null) {
                     val hint = stringResource(R.string.voice_hold_to_talk)

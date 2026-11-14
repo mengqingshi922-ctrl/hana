@@ -4,12 +4,18 @@ import com.hana.agent.core.trace.RunTrace
 import com.hana.agent.core.guard.OperationGuards
 import com.hana.agent.core.guard.GuardVerdict
 import com.hana.agent.core.guard.TaintGuard
+import com.hana.agent.core.knowledge.AppTipsStore
 import com.hana.agent.core.memory.MemoryFlushHook
 import com.hana.agent.core.memory.StoreBackedMemoryFlushHook
+import com.hana.agent.core.memory.TaskNotePad
 import com.hana.agent.core.memory.TemporalFactGraph
+import com.hana.agent.core.route.RouteGraph
+import com.hana.agent.core.route.RouteGraphEdge
+import com.hana.agent.core.route.RouteGraphNode
 import com.hana.agent.core.route.SemanticRouteCache
 import com.hana.agent.core.usage.BudgetBreaker
 import com.hana.agent.core.usage.BudgetExceeded
+import com.hana.agent.core.watchdog.StructuralFrameFingerprint
 import com.hana.agent.core.watchdog.WatchdogVerdict
 import kotlinx.coroutines.withContext
 import com.hana.agent.core.observation.Place
@@ -21,6 +27,8 @@ import com.hana.agent.core.tool.parseArgs
 import com.hana.agent.core.action.ActionExecutor
 import com.hana.agent.core.action.ActionOutcome
 import com.hana.agent.core.action.ActionRecorder
+import com.hana.agent.core.action.ChainPredicateKind
+import com.hana.agent.core.action.MacroStep
 import com.hana.agent.core.action.OutwardPacing
 import com.hana.agent.core.action.ApprovalSettings
 import com.hana.agent.core.action.ConfirmChoice
@@ -519,6 +527,11 @@ class AgentLoop(
 
         // 任务此刻在哪(App、站点……);由能力一侧按每次调用的结果给出
         var place: Place? = null
+        // 自演进路由图谱轨迹记录与看门狗脱困经验上下文
+        val routeSteps = mutableListOf<RecordedRouteStep>()
+        var lastPageSig: String = StructuralFrameFingerprint.from(null, emptyList<String>())
+        var lastFailedActionSummary: String? = null
+        var hadObstacleOrStuck = false
         val stuckTracker = StuckTracker(guards)
         val track = StepTrack()
         var intent: IntentGate.Intent? = null
@@ -554,6 +567,17 @@ class AgentLoop(
                 is FastPathOutcome.HandedOver -> {
                     place = fast.place
                     lastFailurePlaceName = fast.place?.name
+                    val fastPkg = fast.place?.name
+                    val fastToSig = StructuralFrameFingerprint.from(fastPkg, emptyList<String>())
+                    routeSteps += RecordedRouteStep(
+                        fromSig = lastPageSig,
+                        toSig = fastToSig,
+                        tool = "phone_launch_app",
+                        args = buildJsonObject { fastPkg?.let { put("package", it) } },
+                        isRecovery = false,
+                        appPackage = fastPkg,
+                    )
+                    lastPageSig = fastToSig
                     acted = true
                 }
                 null -> Unit
@@ -716,6 +740,7 @@ class AgentLoop(
                     lastSubstantiveText = null
                     // 交出之前还有插话(核对、整理来源时到的):不收尾,带着它接着做;没有就关上收件箱,之后的话才是下一件事
                     if (inbox?.closeUnlessSteered() == false) { keepFinished(history, inbox); continue }
+                    persistRouteGraphIfEligible(task, routeSteps)
                     return result
                 }
                 continue
@@ -769,16 +794,58 @@ class AgentLoop(
                 continue
             }
             if (flags.batchSteps && first.name == DO_STEPS_TOOL) {
-                when (val end = batch(first, skipped, history, specs, guards, executor, track, step, note, tool, reason, narration, recordReply = ::recordReply,
+                val end = batch(first, skipped, history, specs, guards, executor, track, step, note, tool, reason, narration, recordReply = ::recordReply,
                     app = { place = it; lastFailurePlaceName = it.name }, steerWaiting = { inbox?.hasSteers() == true },
                     noteVerdicts = { s, sub, v ->
                         // 和单步一样计卡住提醒与同一段字的重复输入
                         val typed = StuckAdvice.typedText(tools.verb(s.tool), parseArgs(s.argsJson), sub?.content)
                         stuckTracker.advice(v, typed, place?.name)
-                    })) {
-                    null -> continue
-                    else -> return end
-                }
+                    },
+                    onBatchFinished = { executedSteps, batchExec, batchVerdicts ->
+                        val afterBatchTexts = extractScreenTexts(batchExec.content)
+                        if (afterBatchTexts.isNotEmpty()) latestObservedTextsForEval = afterBatchTexts
+                        val batchAfterSig = StructuralFrameFingerprint.from(
+                            batchExec.place?.name ?: place?.name,
+                            afterBatchTexts.ifEmpty { latestObservedTextsForEval },
+                        )
+                        val batchOk = batchExec.content["ok"] == JsonPrimitive(true)
+                        if (!batchOk || batchExec.changed == false || batchVerdicts.isNotEmpty() || batchExec.content["advice"] != null) {
+                            lastFailedActionSummary = formatActionSummary(first.name, first.argsJson)
+                            hadObstacleOrStuck = true
+                        }
+                        if (batchOk && executedSteps != null && ranAnyStep(batchExec.content)) {
+                            var cursorSig = lastPageSig
+                            val recoveryFlag = hadObstacleOrStuck
+                            executedSteps.forEachIndexed { idx, bStep ->
+                                val bVerb = tools.verb(bStep.tool)
+                                if (bVerb in ROUTE_GRAPH_ACTION_VERBS) {
+                                    val isLast = idx == executedSteps.lastIndex
+                                    val nextSig = if (isLast) batchAfterSig else "${cursorSig}#${idx}"
+                                    val cleanBatchArgs = sanitizeRouteStepArgs(parseArgs(bStep.argsJson), secret = bVerb == Verb.TypeText)
+                                    routeSteps += RecordedRouteStep(
+                                        cursorSig,
+                                        nextSig,
+                                        bStep.tool,
+                                        cleanBatchArgs,
+                                        isRecovery = recoveryFlag,
+                                        appPackage = batchExec.place?.name ?: place?.name,
+                                    )
+                                    cursorSig = nextSig
+                                }
+                            }
+                            if (batchExec.changed == true && (batchVerdicts.isNotEmpty() || batchExec.content["advice"] != null || hadObstacleOrStuck) && (batchExec.place?.name ?: place?.name) != null) {
+                                val recoveryPkg = batchExec.place?.name ?: place?.name
+                                val failedDesc = lastFailedActionSummary ?: "批处理受阻步骤"
+                                val recoveryDesc = executedSteps.firstOrNull()?.let { formatActionSummary(it.tool, it.argsJson) } ?: "do_steps"
+                                AppTipsStore.recordStructuredTip(recoveryPkg, failedDesc, recoveryDesc)
+                                hadObstacleOrStuck = false
+                                lastFailedActionSummary = null
+                            }
+                        }
+                        lastPageSig = batchAfterSig
+                    })
+                if (end != null) return end
+                continue
             }
 
             if (flags.batchSteps && first.name == "run_macro" && tools.ctx.config.shadowMacros.isNotEmpty()) {
@@ -901,6 +968,7 @@ class AgentLoop(
             if (verb == Verb.HandToUser && (args["reason"] as? JsonPrimitive)?.contentOrNull == PAYMENT) paymentHandedOver = true
             val isError = (exec.content["ok"] as? JsonPrimitive)?.booleanOrNull == false
             noteResultEvents(verb, exec.content)
+            val beforePageSig = lastPageSig
             exec.place?.let {
                 place = it
                 lastFailurePlaceName = it.name
@@ -908,6 +976,29 @@ class AgentLoop(
             val currentTexts = extractScreenTexts(exec.content)
             if (currentTexts.isNotEmpty()) {
                 latestObservedTextsForEval = currentTexts
+            }
+            val afterPageSig = StructuralFrameFingerprint.from(
+                place?.name,
+                currentTexts.ifEmpty { latestObservedTextsForEval },
+            )
+            lastPageSig = afterPageSig
+            if (isError || exec.changed == false || (advice != null && exec.changed != true)) {
+                lastFailedActionSummary = formatActionSummary(first.name, first.argsJson)
+                hadObstacleOrStuck = true
+            } else if (advice != null) {
+                hadObstacleOrStuck = true
+            }
+            if (!isError && exec.changed != false && verb in ROUTE_GRAPH_ACTION_VERBS) {
+                val isSecretInput = verb == Verb.TypeText && (exec.content["secret"] as? JsonPrimitive)?.booleanOrNull != false
+                val cleanArgs = sanitizeRouteStepArgs(args, secret = isSecretInput)
+                routeSteps += RecordedRouteStep(
+                    fromSig = beforePageSig,
+                    toSig = afterPageSig,
+                    tool = first.name,
+                    args = cleanArgs,
+                    isRecovery = hadObstacleOrStuck || consecutiveWatchdogFailures > 0,
+                    appPackage = place?.name,
+                )
             }
             if (exec.changed != null && verb in setOf(Verb.Tap, Verb.PhoneGesture, Verb.Scroll, Verb.Swipe, Verb.Back, Verb.LaunchApp, Verb.TypeText)) {
                 val reflection = watchdog.evaluatePostAction(
@@ -948,16 +1039,17 @@ class AgentLoop(
                     val screenContent = exec.content["screen"] ?: exec.content
                     val frameFingerprint = com.hana.agent.core.watchdog.StructuralFrameFingerprint.from(place?.name, screenContent)
                     watchdog.recordFrame(frameFingerprint)
-                } else if ((exec.changed == false && !isError && ran.verdicts.isEmpty()) || driftDetected) {
+                } else if ((exec.changed == false && !isError && ran.verdicts.none { it.severity == com.hana.agent.core.guard.Severity.Stop }) || driftDetected) {
                     val screenContent = exec.content["screen"] ?: exec.content
                     val frameFingerprint = com.hana.agent.core.watchdog.StructuralFrameFingerprint.from(place?.name, screenContent)
                     watchdog.recordFrame(frameFingerprint)
-                    val tripleReport = watchdog.evaluateTripleLoop(consecutiveWatchdogFailures)
+                    val tripleReport = watchdog.evaluateTripleLoop(consecutiveWatchdogFailures + 1)
                     val verdict = tripleReport.verdict
                     if (verdict != WatchdogVerdict.HEALTHY) {
                         consecutiveWatchdogFailures++
                         val healingTier = tripleReport.healingTier ?: watchdog.recommendHealing(consecutiveWatchdogFailures)
                         emit(RunEvent.State(now(), "watchdog_healing", "${verdict.name}:${healingTier.name}"))
+                        val cpPkgForHeal = checkpointManager.getLatestCheckpoint()?.packageName?.takeIf { it.isNotBlank() }
                         when (healingTier) {
                             com.hana.agent.core.watchdog.SelfHealingTier.TIER_1_DISMISS_OBSTACLE,
                             com.hana.agent.core.watchdog.SelfHealingTier.TIER_2_SAFETY_BACK -> {
@@ -966,8 +1058,18 @@ class AgentLoop(
                                     val healOutcome = runCatching { executor.run(healCall, Origin.Script(step)) }.getOrNull()
                                     if (healOutcome is ActionOutcome.Ran) {
                                         val changed = healOutcome.exec.changed
+                                        healOutcome.exec.place?.let {
+                                            place = it
+                                            lastFailurePlaceName = it.name
+                                        }
+                                        val healTexts = extractScreenTexts(healOutcome.exec.content)
+                                        if (healTexts.isNotEmpty()) latestObservedTextsForEval = healTexts
+                                        lastPageSig = StructuralFrameFingerprint.from(
+                                            place?.name,
+                                            healTexts.ifEmpty { latestObservedTextsForEval },
+                                        )
                                         track.after(tools.verb("phone_back"), ok = true, guard = false, changed = changed, recovery = true, app = place?.name)
-                                        if (changed == true) {
+                                        if (changed == true && (cpPkgForHeal == null || place?.name == cpPkgForHeal)) {
                                             watchdog.reset()
                                             consecutiveWatchdogFailures = 0
                                         }
@@ -982,8 +1084,18 @@ class AgentLoop(
                                     val healOutcome = runCatching { executor.run(healCall, Origin.Script(step)) }.getOrNull()
                                     if (healOutcome is ActionOutcome.Ran) {
                                         val changed = healOutcome.exec.changed
+                                        healOutcome.exec.place?.let {
+                                            place = it
+                                            lastFailurePlaceName = it.name
+                                        }
+                                        val healTexts = extractScreenTexts(healOutcome.exec.content)
+                                        if (healTexts.isNotEmpty()) latestObservedTextsForEval = healTexts
+                                        lastPageSig = StructuralFrameFingerprint.from(
+                                            place?.name,
+                                            healTexts.ifEmpty { latestObservedTextsForEval },
+                                        )
                                         track.after(tools.verb("phone_launch_app"), ok = true, guard = false, changed = changed, recovery = true, app = pkg)
-                                        if (changed == true) {
+                                        if (changed == true && (cpPkgForHeal == null || place?.name == cpPkgForHeal)) {
                                             watchdog.reset()
                                             consecutiveWatchdogFailures = 0
                                         }
@@ -993,8 +1105,18 @@ class AgentLoop(
                                     val healOutcome = runCatching { executor.run(healCall, Origin.Script(step)) }.getOrNull()
                                     if (healOutcome is ActionOutcome.Ran) {
                                         val changed = healOutcome.exec.changed
+                                        healOutcome.exec.place?.let {
+                                            place = it
+                                            lastFailurePlaceName = it.name
+                                        }
+                                        val healTexts = extractScreenTexts(healOutcome.exec.content)
+                                        if (healTexts.isNotEmpty()) latestObservedTextsForEval = healTexts
+                                        lastPageSig = StructuralFrameFingerprint.from(
+                                            place?.name,
+                                            healTexts.ifEmpty { latestObservedTextsForEval },
+                                        )
                                         track.after(tools.verb("phone_back"), ok = true, guard = false, changed = changed, recovery = true, app = place?.name)
-                                        if (changed == true) {
+                                        if (changed == true && (cpPkgForHeal == null || place?.name == cpPkgForHeal)) {
                                             watchdog.reset()
                                             consecutiveWatchdogFailures = 0
                                         }
@@ -1003,30 +1125,99 @@ class AgentLoop(
                             }
                         }
 
-                        // 认知记忆断点回滚与反思词注入 (Cognitive Rollback & Reflection Guidance)
+                        // 认知记忆断点回滚与物理页面重对齐 (Cognitive Rollback + 脑屏撕裂修复)
                         val latestCp = checkpointManager.getLatestCheckpoint()
+                        var rollbackTriggered = false
+                        var rollbackBackAttempts = 0
+                        var rollbackMismatchNote = ""
                         if (consecutiveWatchdogFailures >= 2 && latestCp != null && latestCp.historyMessageCount in 1 until history.size) {
                             while (history.size > latestCp.historyMessageCount) {
                                 history.removeAt(history.lastIndex)
                             }
-                            emit(RunEvent.State(now(), "cognitive_rollback", "checkpoint=${latestCp.checkpointId}:revertedTo=${latestCp.historyMessageCount}"))
+                            rollbackTriggered = true
+                            val expectedPkg = latestCp.packageName?.takeIf { it.isNotBlank() }
+                            val pkgMismatchBefore = expectedPkg != null && place?.name != expectedPkg
+                            val deepStuck = expectedPkg != null && driftDetected
+                            if ((pkgMismatchBefore || deepStuck) && tools.declared("phone_back") != null) {
+                                for (backIdx in 1..2) {
+                                    // 若已回到预期应用且不再处于明确漂移深层页，立即停止避免多退离开目标 App
+                                    if (place?.name == expectedPkg && !driftDetected && backIdx > 1) break
+                                    if (place?.name == expectedPkg && !pkgMismatchBefore && backIdx > 1) break
+                                    val backCall = Part.ToolCall("cognitive_rollback_back_${step}_$backIdx", "phone_back", "{}")
+                                    val backOutcome = runCatching { executor.run(backCall, Origin.Script(step)) }.getOrNull()
+                                    if (backOutcome is ActionOutcome.Ran) {
+                                        rollbackBackAttempts++
+                                        val backChanged = backOutcome.exec.changed
+                                        backOutcome.exec.place?.let {
+                                            place = it
+                                            lastFailurePlaceName = it.name
+                                        }
+                                        val backTexts = extractScreenTexts(backOutcome.exec.content)
+                                        if (backTexts.isNotEmpty()) latestObservedTextsForEval = backTexts
+                                        lastPageSig = StructuralFrameFingerprint.from(
+                                            place?.name,
+                                            backTexts.ifEmpty { latestObservedTextsForEval },
+                                        )
+                                        track.after(tools.verb("phone_back"), ok = true, guard = false, changed = backChanged, recovery = true, app = place?.name)
+                                        if (backChanged == false) break
+                                        if (pkgMismatchBefore && place?.name == expectedPkg) break
+                                        if (!pkgMismatchBefore && backChanged == true) break
+                                    } else {
+                                        break
+                                    }
+                                }
+                            }
+                            val actualPkg = place?.name ?: "未知应用"
+                            val actualTextPreview = latestObservedTextsForEval.take(3).joinToString(" | ").take(60)
+                            val cpLabel = buildString {
+                                append("Checkpoint[${latestCp.subgoalName.ifBlank { latestCp.checkpointId }}]")
+                                if (expectedPkg != null) append("(预期应用=$expectedPkg)")
+                            }
+                            rollbackMismatchNote = buildString {
+                                append(" 当前物理页面状态：应用=$actualPkg")
+                                if (actualTextPreview.isNotBlank()) append("，可见文案=[$actualTextPreview]")
+                                append("；回滚目标：$cpLabel")
+                                if (rollbackBackAttempts > 0) {
+                                    append("，已自动补发 ${rollbackBackAttempts} 次 phone_back 尝试对齐物理页面")
+                                }
+                                if (expectedPkg != null && actualPkg != expectedPkg) {
+                                    append("。注意：当前物理前台仍与预期 Checkpoint 不一致（脑屏存在差异），请先核对屏幕真实所在页面后再执行下一步，必要时重新拉起或返回目标页。")
+                                } else {
+                                    append("。")
+                                }
+                            }
+                            emit(RunEvent.State(now(), "cognitive_rollback", "checkpoint=${latestCp.checkpointId}:revertedTo=${latestCp.historyMessageCount}:back=$rollbackBackAttempts"))
                         }
-                        val reflectionGuidance = tripleReport.guidance ?: when (verdict) {
+                        val baseGuidance = tripleReport.guidance ?: when (verdict) {
                             WatchdogVerdict.STAGNATION ->
                                 "【自愈认知反思】连续操作未能产生界面有效状态改变（停滞死锁）。已执行回退自愈。请彻底反思前序尝试的假设，切勿重复点击同一区域或相同参数，换用备选路径或先重新观察界面。"
                             WatchdogVerdict.OSCILLATION ->
                                 "【自愈认知反思】检测到界面在多状态间往复循环死锁（震荡）。已触发自愈回退。请立即放弃当前往复循环逻辑，换用全新路径完成目标。"
                             else -> "【自愈认知反思】当前操作受阻，请重新审视界面寻找替代方案。"
                         }
+                        val reflectionGuidance = if (rollbackTriggered && rollbackMismatchNote.isNotEmpty()) {
+                            baseGuidance + rollbackMismatchNote
+                        } else {
+                            baseGuidance
+                        }
                         history += ctx.notice("watchdog_reflection", reflectionGuidance)
                         if (driftDetected) watchdog.reset()
-                    } else {
-                        consecutiveWatchdogFailures = 0
                     }
+                    // 注意：即使本次暂判 HEALTHY（如 TIER_1 仅切换了子层导致 frameHistory 存在单次差分），
+                    // 只要当前动作仍未产生真正变更 (exec.changed != true)，就不能清零 consecutiveWatchdogFailures，
+                    // 否则后续停滞无法顺利升级到 TIER_2 触发 cognitive_rollback。
                 }
             }
-            if (advice != null && exec.changed == true && place?.name != null) {
-                com.hana.agent.core.knowledge.AppTipsStore.recordTip(place?.name, "曾在此界面遇阻，换用其他动作或等待刷新可脱困")
+            if ((advice != null || hadObstacleOrStuck) && !isError && exec.changed == true && place?.name != null) {
+                val failedDesc = lastFailedActionSummary ?: "重复或受阻尝试"
+                val recoveryDesc = formatActionSummary(first.name, first.argsJson)
+                AppTipsStore.recordStructuredTip(
+                    packageName = place?.name,
+                    failedAction = failedDesc,
+                    recoveryAction = recoveryDesc,
+                )
+                hadObstacleOrStuck = false
+                lastFailedActionSummary = null
             }
             val picture = ran.picture
             val shotId = ran.shotId
@@ -1059,7 +1250,7 @@ class AgentLoop(
         }
         appendSteers(history, inbox)
         refreshOffer()
-        return finalTurn(task, history, specs, maxSteps + 1, labels, place, recorder, facts(), inbox)
+        return finalTurn(task, history, specs, maxSteps + 1, labels, place, recorder, facts(), inbox, routeSteps)
     }
 
     /** 运行记录里按结果另记的事:报告的障碍(供评测按 barrier 类归因;参数不对被拒的不算)、看过的个人技能、存下的记忆。 */
@@ -1089,7 +1280,11 @@ class AgentLoop(
     private suspend fun appendRuntimeState(history: MutableList<Message>, place: Place?, labels: Map<String, String>, step: Int) {
         val mode = if (place?.kind == PlaceKind.Site) tools.placeMode() else null
         val baseState = ctx.runtimeState(place, place?.name?.let(labels::get), mode, step, maxSteps, taskStartTimeMs.takeIf { it > 0L } ?: now(), latestWords)
-        val state = if (workingMemory.isNotEmpty() || subgoals.isNotEmpty() || goalTracker.trackedCount > 0) {
+        val notePad = TaskNotePad.getForRun(currentNotePadRunId())
+        val hasNotes = notePad.totalEntriesCount > 0
+        val regs = com.hana.agent.core.bus.RegisterBus.snapshot()
+        val tips = AppTipsStore.getTips(place?.name)
+        val state = if (workingMemory.isNotEmpty() || subgoals.isNotEmpty() || goalTracker.trackedCount > 0 || hasNotes) {
             val memoryBlock = buildString {
                 append("\n[Working Memory Pad]")
                 if (goalTracker.trackedCount > 0) {
@@ -1111,7 +1306,13 @@ class AgentLoop(
                         append("\n- $k: $v")
                     }
                 }
-                val regs = com.hana.agent.core.bus.RegisterBus.snapshot()
+                if (hasNotes) {
+                    val notesSummary = notePad.renderCompactSummary(maxChars = 600).trim()
+                    if (notesSummary.isNotEmpty()) {
+                        append("\n[Task Notes]\n")
+                        append(notesSummary)
+                    }
+                }
                 if (regs.isNotEmpty()) {
                     append("\n[Zero-Copy Registers]")
                     regs.entries.toList().takeLast(3).forEach { (k, v) ->
@@ -1119,7 +1320,6 @@ class AgentLoop(
                         append("\n- $k: \"$preview\" (${v.length}c)")
                     }
                 }
-                val tips = com.hana.agent.core.knowledge.AppTipsStore.getTips(place?.name)
                 if (tips.isNotEmpty()) {
                     append("\n[App Tips]")
                     tips.take(2).forEach { tip ->
@@ -1236,6 +1436,7 @@ class AgentLoop(
         recordReply: (String?) -> Unit, app: (Place) -> Unit, steerWaiting: () -> Boolean,
         noteVerdicts: (BatchStep, ToolExecution?, List<GuardVerdict>) -> String?,
         originalCalls: List<Part.ToolCall>? = null,
+        onBatchFinished: ((List<BatchStep>?, ToolExecution, List<GuardVerdict>) -> Unit)? = null,
     ): TaskState? {
         // 收着的组里的工具也能放进批里(和单步一样照常执行、展开它那一组)
         val (parsed, problem) = BatchRunner.parse(first.argsJson, tools.definitions().map { it.name }.toSet(), tools.batchable())
@@ -1294,8 +1495,15 @@ class AgentLoop(
         track.after(tools.verb(first.name), !isError || confirm, runner?.verdicts?.isNotEmpty() == true || exec.content["advice"] != null, exec.changed, false, currentPlace?.name)
         com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
         goalTracker.onActionExecuted(exec, currentPlace?.name, historySize = history.size)
-        if (exec.changed == true && currentPlace?.name != null && (runner?.verdicts?.isNotEmpty() == true || exec.content["advice"] != null)) {
-            com.hana.agent.core.knowledge.AppTipsStore.recordTip(currentPlace?.name, "批处理遇阻后成功恢复状态")
+        if (onBatchFinished != null) {
+            onBatchFinished(steps, exec, runner?.verdicts.orEmpty())
+        } else if (exec.changed == true && !isError && currentPlace?.name != null && (runner?.verdicts?.isNotEmpty() == true || exec.content["advice"] != null)) {
+            val recoveryDesc = steps?.firstOrNull()?.let { formatActionSummary(it.tool, it.argsJson) } ?: "do_steps"
+            AppTipsStore.recordStructuredTip(
+                packageName = currentPlace?.name,
+                failedAction = "批处理遇阻(${exec.content["advice"]?.let { (it as? JsonPrimitive)?.contentOrNull?.take(24) } ?: "守卫拦截"})",
+                recoveryAction = recoveryDesc,
+            )
         }
         // 批停下(核对没过、要确认):下一步交给主模型
         if (isError) track.markRecovery()
@@ -1420,7 +1628,7 @@ class AgentLoop(
      */
     private suspend fun finalTurn(
         task: String, history: MutableList<Message>, specs: List<ToolSpec>, step: Int, labels: Map<String, String>, place: Place?, recorder: ActionRecorder,
-        facts: ReviewFacts, inbox: RunInbox?,
+        facts: ReviewFacts, inbox: RunInbox?, routeSteps: List<RecordedRouteStep> = emptyList(),
     ): TaskState {
         TurnPolicy.finalTurn().let { history += ctx.notice(it.source, it.text) }
         repeat(3) { attempt ->
@@ -1453,7 +1661,9 @@ class AgentLoop(
             if (attempt < 2 && keepFinished(history, inbox)) return@repeat
             if (call == null) {
                 if (calls.isNotEmpty() || text.isEmpty() || reply.stopReason == StopReason.MaxTokens) return StopRules.stepLimit(maxSteps)
-                return conclude(task, text, step, facts, history = null)!!
+                val finalResult = conclude(task, text, step, facts, history = null)!!
+                persistRouteGraphIfEligible(task, routeSteps)
+                return finalResult
             }
             val started = now()
             // 只剩放弃,不改变手机
@@ -1464,7 +1674,128 @@ class AgentLoop(
         return StopRules.stepLimit(maxSteps)
     }
 
+    /** 单步记录到的物理页面迁移与动作边，用于任务成功收尾时构建语义路由图谱 */
+    private data class RecordedRouteStep(
+        val fromSig: String,
+        val toSig: String,
+        val tool: String,
+        val args: JsonObject,
+        val isRecovery: Boolean,
+        val appPackage: String? = null,
+    )
+
+    private fun currentNotePadRunId(): String {
+        val specId = tools.ctx.config.runSpec?.id?.value
+        if (specId != null && specId != "legacy") return specId
+        if (specId != null && TaskNotePad.getForRun(specId).totalEntriesCount > 0) return specId
+        return tools.ctx.config.conversationId ?: specId ?: "default"
+    }
+
+    private fun formatActionSummary(toolName: String, argsJson: String): String {
+        val obj = parseArgs(argsJson)
+        val detail = listOf("target", "package", "direction", "query", "label", "text", "ref")
+            .firstNotNullOfOrNull { key ->
+                (obj[key] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }?.take(24)
+            }
+        val verbLabel = tools.verb(toolName)?.name?.lowercase() ?: toolName
+        return if (detail != null) "$toolName($detail)" else "$toolName[$verbLabel]"
+    }
+
+    private fun sanitizeRouteStepArgs(args: JsonObject, secret: Boolean): JsonObject = buildJsonObject {
+        for ((k, v) in args) {
+            if (k in EPHEMERAL_ROUTE_ARG_KEYS) continue
+            if (secret && k in SENSITIVE_ROUTE_ARG_KEYS) {
+                put(k, "***")
+            } else {
+                put(k, v)
+            }
+        }
+    }
+
+    private fun buildRouteGraphFromSteps(task: String, steps: List<RecordedRouteStep>): Pair<RouteGraph, String?>? {
+        if (steps.isEmpty()) return null
+        val nodesBySig = LinkedHashMap<String, RouteGraphNode>()
+        fun ensureNode(sig: String, terminal: Boolean = false): RouteGraphNode {
+            val existing = nodesBySig[sig]
+            if (existing != null) {
+                if (terminal && !existing.isTerminal) {
+                    val updated = existing.copy(isTerminal = true)
+                    nodesBySig[sig] = updated
+                    return updated
+                }
+                return existing
+            }
+            val nodeId = "n_${nodesBySig.size}"
+            val node = RouteGraphNode(
+                nodeId = nodeId,
+                pageSignature = sig,
+                anchors = null,
+                isTerminal = terminal,
+            )
+            nodesBySig[sig] = node
+            return node
+        }
+        val edges = ArrayList<RouteGraphEdge>(steps.size)
+        steps.forEachIndexed { idx, step ->
+            val fromNode = ensureNode(step.fromSig, terminal = false)
+            val toNode = ensureNode(step.toSig, terminal = idx == steps.lastIndex)
+            edges += RouteGraphEdge(
+                edgeId = "e_$idx",
+                fromNodeId = fromNode.nodeId,
+                toNodeId = toNode.nodeId,
+                action = MacroStep(
+                    tool = step.tool,
+                    args = step.args,
+                    predicate = ChainPredicateKind.NONE,
+                ),
+                isRecoveryBranch = step.isRecovery,
+                weight = if (step.isRecovery) 0.8f else 1.0f,
+            )
+        }
+        val initialNodeId = nodesBySig[steps.first().fromSig]?.nodeId ?: "n_0"
+        val keyword = task.trim().take(80)
+        val appId = steps.firstNotNullOfOrNull { step ->
+            step.appPackage?.takeIf { it.isNotBlank() && it != "unknown" }
+        }
+        val graph = RouteGraph(
+            graphId = "rg_${keyword.hashCode().toUInt().toString(16)}_${now()}",
+            intentKeyword = keyword,
+            initialNodeId = initialNodeId,
+            nodes = nodesBySig.values.associateBy { it.nodeId },
+            edges = edges,
+            successCount = 1,
+        )
+        return graph to appId
+    }
+
+    /** 任务成功收尾前非阻塞地将手机操作轨迹沉淀进 SemanticRouteCache，完成“查后必存”自演进闭环 */
+    private suspend fun persistRouteGraphIfEligible(task: String, steps: List<RecordedRouteStep>) {
+        val cache = semanticRouteCache ?: return
+        if (steps.isEmpty() || task.trimStart().startsWith(WEB_CHANNEL_PREFIX)) return
+        try {
+            val (graph, appId) = buildRouteGraphFromSteps(task, steps) ?: return
+            cache.putRouteGraph(
+                graph = graph,
+                appId = appId,
+                entryNodeId = graph.initialNodeId,
+                intentAliases = listOf(task.trim()),
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // 非阻塞兜底：路由沉淀失败不影响主任务成功返回
+        }
+    }
+
     companion object {
+        private val ROUTE_GRAPH_ACTION_VERBS = setOf(
+            Verb.LaunchApp, Verb.OpenLink, Verb.Tap, Verb.TypeText, Verb.ClearText,
+            Verb.Scroll, Verb.Swipe, Verb.Back, Verb.PressKey, Verb.PhoneGesture,
+            Verb.PhoneSearch, Verb.PhoneSocialInteract, Verb.PhoneComment, Verb.SetWheel,
+            Verb.SetAlarm, Verb.SetTimer, Verb.AddCalendarEvent,
+        )
+        private val EPHEMERAL_ROUTE_ARG_KEYS = setOf("ref", "snapshotId", "imageId")
+        private val SENSITIVE_ROUTE_ARG_KEYS = setOf("text", "value", "password", "passcode", "pin")
         private val MEMO_TAG_REGEX = Regex("""<memo>\s*(.*?)\s*</memo>""", RegexOption.DOT_MATCHES_ALL)
         private val SUBGOAL_DONE_REGEX = Regex("""<subgoal_done(?:\s+index="?(\d+)"?)?\s*/?>""")
         private const val MAX_WORKING_MEMORY_ITEMS = 8

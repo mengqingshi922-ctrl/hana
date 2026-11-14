@@ -2,6 +2,7 @@ package com.hana.agent.proactive
 
 import android.content.Context
 import com.hana.agent.core.proactive.DigestItem
+import com.hana.agent.core.proactive.DigestRollup
 import com.hana.agent.core.proactive.IncomingNotice
 import com.hana.agent.core.proactive.NoticeDeduplicator
 import com.hana.agent.core.proactive.NoticeTriager
@@ -44,17 +45,28 @@ data class NoticeBadgeHint(
  * 4. 去重保真：经过 [NoticeDeduplicator] 窗口去重；
  * 5. 状态同步：通过 [badgeHints] 以不可变流形式对外通知胶囊小圆点或角标轻提示。
  */
-class ProactiveRuntime private constructor(private val context: Context) {
+class ProactiveRuntime internal constructor(
+    private val context: Context,
+    private val prefs: ProactivePrefs = ProactivePrefs.get(context),
+    private val flags: FeatureFlags = FeatureFlags.get(context),
+) {
 
-    private val prefs = ProactivePrefs.get(context)
-    private val flags = FeatureFlags.get(context)
     private val budget = ProactiveBudget(maxDailyDecisions = 60, maxDailyTokens = 30_000)
     private val deduplicator = NoticeDeduplicator(maxCacheSize = 200)
     private val triager = NoticeTriager()
     private val digestStore = ProactiveDigestStore(maxItemsPerRollup = 150)
+    private val clipboardDetector = ClipboardPortalDetector()
 
     private val _badgeHints = MutableStateFlow<List<NoticeBadgeHint>>(emptyList())
     val badgeHints: StateFlow<List<NoticeBadgeHint>> = _badgeHints.asStateFlow()
+
+    private val _clipboardSuggestion = MutableStateFlow<ClipboardPortalSuggestion?>(null)
+    val clipboardSuggestion: StateFlow<ClipboardPortalSuggestion?> = _clipboardSuggestion.asStateFlow()
+
+    init {
+        // 冷启动时自动从 SharedPreferences 恢复已保存的日摘要 JSON（防损坏兜底）
+        restoreDigestFromPrefs()
+    }
 
     /**
      * 接收并处理新到达的通知。
@@ -121,6 +133,40 @@ class ProactiveRuntime private constructor(private val context: Context) {
         _badgeHints.value = emptyList()
     }
 
+    /**
+     * 非侵入式检查剪贴板文本，命中安全意图时生成轻提示建议。
+     */
+    fun onClipboardText(rawText: String?, nowMs: Long = System.currentTimeMillis()): ClipboardPortalSuggestion? {
+        if (!flags.proactiveEnabled() && !prefs.isProactiveEnabled()) return null
+        val suggestion = clipboardDetector.inspect(rawText, nowMs)
+        if (suggestion != null) {
+            _clipboardSuggestion.value = suggestion
+        }
+        return suggestion
+    }
+
+    /**
+     * 安全检查系统剪贴板并更新非侵入式建议（无权限或敏感文本静默忽略）。
+     */
+    fun checkSystemClipboard(nowMs: Long = System.currentTimeMillis()): ClipboardPortalSuggestion? {
+        if (!flags.proactiveEnabled() && !prefs.isProactiveEnabled()) return null
+        val suggestion = clipboardDetector.inspectSystemClipboard(context, nowMs)
+        if (suggestion != null) {
+            _clipboardSuggestion.value = suggestion
+        }
+        return suggestion
+    }
+
+    /**
+     * 忽略当前剪贴板“任意门”轻提示。
+     */
+    fun dismissClipboardSuggestion() {
+        _clipboardSuggestion.value = null
+    }
+
+    fun getTodayDigest(today: String = LocalDate.now(ZoneId.systemDefault()).toString()): DigestRollup? =
+        digestStore.getRollup(today)
+
     fun getDigestStore(): ProactiveDigestStore = digestStore
 
     fun getBudget(): ProactiveBudget = budget
@@ -158,15 +204,39 @@ class ProactiveRuntime private constructor(private val context: Context) {
             TriageResult.CAPSULE_BADGE_HINT -> "IMPORTANT"
             else -> "GENERAL"
         }
+        val summaryText = if (prefs.isMaskSensitiveEnabled()) {
+            maskSensitiveText(notice.text).take(120)
+        } else {
+            notice.text.take(120)
+        }
         val item = DigestItem(
             id = notice.id,
             timestampMs = notice.postTimeMs,
             category = category,
             title = notice.title,
-            summary = notice.text.take(120),
+            summary = summaryText,
             sourcePackage = notice.packageName
         )
         digestStore.addItem(today, item)
+        persistDigestToPrefs()
+    }
+
+    private fun persistDigestToPrefs() {
+        runCatching {
+            val today = LocalDate.now(ZoneId.systemDefault()).toString()
+            digestStore.purgeOlderThan(retentionDays = DIGEST_RETENTION_DAYS, today = today)
+            prefs.setDigestJson(digestStore.exportToJson())
+        }
+    }
+
+    private fun restoreDigestFromPrefs() {
+        val saved = prefs.getDigestJson()
+        if (saved.isBlank()) return
+        runCatching {
+            digestStore.loadFromJson(saved)
+            val today = LocalDate.now(ZoneId.systemDefault()).toString()
+            digestStore.purgeOlderThan(retentionDays = DIGEST_RETENTION_DAYS, today = today)
+        }
     }
 
     private fun maskSensitiveText(text: String): String {
@@ -175,8 +245,12 @@ class ProactiveRuntime private constructor(private val context: Context) {
     }
 
     companion object {
+        private const val DIGEST_RETENTION_DAYS = 7
+
         @Volatile
         private var instance: ProactiveRuntime? = null
+
+        fun get(context: Context): ProactiveRuntime = getInstance(context)
 
         fun getInstance(context: Context): ProactiveRuntime {
             return instance ?: synchronized(this) {

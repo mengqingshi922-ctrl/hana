@@ -9,6 +9,7 @@ import android.graphics.RectF
 import com.hana.agent.core.vision.ImageOps
 import java.io.ByteArrayOutputStream
 import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.roundToInt
 
 /** 用系统 Bitmap 实现的图像处理;改过的图按 PNG 输出(不丢细节),只有 [toJpeg] 出 JPEG。 */
@@ -141,10 +142,19 @@ object BitmapImageOps : ImageOps {
         if (marks.isEmpty()) return@use img
         val out = bmp.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(out)
+        val w = out.width.toFloat()
+        val h = out.height.toFloat()
+
         val badgePaint = Paint().apply {
             isAntiAlias = true
             style = Paint.Style.FILL
-            color = Color.parseColor("#E6000000") // 90% black
+            color = Color.parseColor("#EB000000") // 高不透明度深黑底，保证复杂背景可读性
+        }
+        val badgeOuterStroke = Paint().apply {
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            color = Color.parseColor("#CC000000")
         }
         val strokePaint = Paint().apply {
             isAntiAlias = true
@@ -152,40 +162,157 @@ object BitmapImageOps : ImageOps {
             strokeWidth = 2f
             color = Color.parseColor("#FFFFD600") // Amber yellow
         }
+        val textSizePx = (w * 0.022f).coerceIn(16f, 34f)
         val textPaint = Paint().apply {
             isAntiAlias = true
             color = Color.parseColor("#FFFFD600")
-            textSize = max(18f, out.width * 0.024f)
+            textSize = textSizePx
             textAlign = Paint.Align.CENTER
             isFakeBoldText = true
         }
-        val boxStroke = Paint().apply {
+        val boxOuterStroke = Paint().apply {
             isAntiAlias = true
             style = Paint.Style.STROKE
-            strokeWidth = 3f
-            color = Color.parseColor("#80FFD600")
+            strokeWidth = 5f
+            color = Color.parseColor("#AA000000") // 外层暗色描边，防止白底黄框失真
+        }
+        val boxInnerStroke = Paint().apply {
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f
+            color = Color.parseColor("#FFFFD600") // 内层高对比度亮黄描边
+        }
+        val connectorPaint = Paint().apply {
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = Color.parseColor("#FFFFD600")
         }
 
-        for ((index, box) in marks) {
-            if (box.size != 4) continue
-            val l = toPx(box[0], out.width).toFloat()
-            val t = toPx(box[1], out.height).toFloat()
-            val r = toPx(box[2], out.width).toFloat()
-            val b = toPx(box[3], out.height).toFloat()
-            canvas.drawRect(RectF(l, t, r + 1, b + 1), boxStroke)
+        val targetRects = marks.mapNotNull { (index, box) ->
+            if (box.size != 4) null
+            else {
+                val l = toPx(box[0], out.width).toFloat()
+                val t = toPx(box[1], out.height).toFloat()
+                val r = toPx(box[2], out.width).toFloat() + 1f
+                val b = toPx(box[3], out.height).toFloat() + 1f
+                index to RectF(l, t, max(l + 1f, r), max(t + 1f, b))
+            }
+        }
+
+        // 先绘制所有目标框（底层暗描边 + 上层亮黄描边），避免后续角标压住边界线时轮廓断层
+        for ((_, rect) in targetRects) {
+            canvas.drawRect(rect, boxOuterStroke)
+            canvas.drawRect(rect, boxInnerStroke)
+        }
+
+        val placedBadges = mutableListOf<RectF>()
+        val allTargetRects = targetRects.map { it.second }
+        val fontMetrics = textPaint.fontMetrics
+
+        for ((index, target) in targetRects) {
             val label = "[$index]"
             val textWidth = textPaint.measureText(label)
-            val badgeW = textWidth + 12f
-            val badgeH = textPaint.textSize + 8f
-            val bx = l.coerceIn(0f, out.width - badgeW)
-            val by = (t - badgeH).coerceAtLeast(0f)
-            val badgeRect = RectF(bx, by, bx + badgeW, by + badgeH)
+            val badgeW = (textWidth + 14f).coerceAtMost(w)
+            val badgeH = (textPaint.textSize + 10f).coerceAtMost(h)
+
+            val badgeRect = chooseAntiOcclusionBadgeRect(
+                target = target,
+                badgeW = badgeW,
+                badgeH = badgeH,
+                canvasW = w,
+                canvasH = h,
+                placedBadges = placedBadges,
+                allTargets = allTargetRects,
+            )
+            placedBadges.add(badgeRect)
+
+            // 如果角标外挂在框外，绘制一条极短的高对比度锚定引线
+            if (!RectF.intersects(badgeRect, target)) {
+                val startX = badgeRect.centerX().coerceIn(target.left, target.right)
+                val startY = badgeRect.centerY().coerceIn(target.top, target.bottom)
+                val endX = target.centerX().coerceIn(badgeRect.left, badgeRect.right)
+                val endY = target.centerY().coerceIn(badgeRect.top, badgeRect.bottom)
+                canvas.drawLine(startX, startY, endX, endY, connectorPaint)
+            }
+
+            canvas.drawRoundRect(badgeRect, 6f, 6f, badgeOuterStroke)
             canvas.drawRoundRect(badgeRect, 6f, 6f, badgePaint)
             canvas.drawRoundRect(badgeRect, 6f, 6f, strokePaint)
-            val fontMetrics = textPaint.fontMetrics
-            val baseline = badgeRect.centerY() - (fontMetrics.top + fontMetrics.bottom) / 2
+            val baseline = badgeRect.centerY() - (fontMetrics.top + fontMetrics.bottom) / 2f
             canvas.drawText(label, badgeRect.centerX(), baseline, textPaint)
         }
         out.png()
+    }
+
+    /**
+     * 为角落和小图标挑选抗遮挡外挂角标位置：
+     * 优先尝试上、下、右、左四个不遮挡图标本体的外挂方位，并根据与已有角标及其他目标框的重合面积打分择优。
+     */
+    private fun chooseAntiOcclusionBadgeRect(
+        target: RectF,
+        badgeW: Float,
+        badgeH: Float,
+        canvasW: Float,
+        canvasH: Float,
+        placedBadges: List<RectF>,
+        allTargets: List<RectF>,
+    ): RectF {
+        val gap = 3f
+        val candidates = mutableListOf<RectF>()
+
+        // 1. 正上方外挂
+        if (target.top - gap - badgeH >= 0f) {
+            val x = target.left.coerceIn(0f, max(0f, canvasW - badgeW))
+            val y = target.top - gap - badgeH
+            candidates.add(RectF(x, y, x + badgeW, y + badgeH))
+        }
+        // 2. 正下方外挂（非常适合紧贴屏幕顶边的左上角返回、右上角关闭/更多按钮）
+        if (target.bottom + gap + badgeH <= canvasH) {
+            val x = target.left.coerceIn(0f, max(0f, canvasW - badgeW))
+            val y = target.bottom + gap
+            candidates.add(RectF(x, y, x + badgeW, y + badgeH))
+        }
+        // 3. 右侧外挂（非常适合左上角且下方也有控件的小图标）
+        if (target.right + gap + badgeW <= canvasW) {
+            val x = target.right + gap
+            val y = target.top.coerceIn(0f, max(0f, canvasH - badgeH))
+            candidates.add(RectF(x, y, x + badgeW, y + badgeH))
+        }
+        // 4. 左侧外挂（非常适合右上角小图标）
+        if (target.left - gap - badgeW >= 0f) {
+            val x = target.left - gap - badgeW
+            val y = target.top.coerceIn(0f, max(0f, canvasH - badgeH))
+            candidates.add(RectF(x, y, x + badgeW, y + badgeH))
+        }
+        // 5. 兜底：若目标框几乎占满全屏无法外挂，才落在框内左上角
+        val fallbackX = (target.left + 2f).coerceIn(0f, max(0f, canvasW - badgeW))
+        val fallbackY = (target.top + 2f).coerceIn(0f, max(0f, canvasH - badgeH))
+        candidates.add(RectF(fallbackX, fallbackY, fallbackX + badgeW, fallbackY + badgeH))
+
+        return candidates.minBy { cand ->
+            var penalty = 0f
+            // 严厉惩罚遮挡当前目标框本身
+            penalty += overlapArea(cand, target) * 10f
+            // 惩罚与其他已放置角标重叠
+            for (b in placedBadges) {
+                penalty += overlapArea(cand, b) * 5f
+            }
+            // 轻微惩罚遮挡其他目标框
+            for (t in allTargets) {
+                if (t !== target) {
+                    penalty += overlapArea(cand, t) * 2f
+                }
+            }
+            penalty
+        }
+    }
+
+    private fun overlapArea(a: RectF, b: RectF): Float {
+        val l = max(a.left, b.left)
+        val t = max(a.top, b.top)
+        val r = min(a.right, b.right)
+        val bot = min(a.bottom, b.bottom)
+        return if (r > l && bot > t) (r - l) * (bot - t) else 0f
     }
 }

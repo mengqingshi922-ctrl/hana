@@ -33,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -50,6 +51,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -84,9 +86,12 @@ object SafeGateHaptics {
     }
 }
 
+internal const val SLIDE_AUTHORIZE_THRESHOLD = 0.85f
+internal const val SLIDE_DAMPING_FACTOR = 0.85f
+
 /**
- * 人机协同安全接管门 UX：
- * 杜绝轻击误触的滑动放行组件，配合柔和琥珀色呼吸光晕与物理阻尼手感。
+ * 人机协同安全接管门 UX（L3 强阻尼滑动门禁）：
+ * 杜绝轻击误触的 85% 阻尼滑动放行组件，配合柔和琥珀色呼吸光晕、防注入红/黄牌警告与物理阻尼手感。
  */
 @Composable
 fun SlideToAuthorize(
@@ -95,6 +100,10 @@ fun SlideToAuthorize(
     title: String,
     riskDescription: String,
     modifier: Modifier = Modifier,
+    fromUntrustedSource: Boolean = false,
+    targetLabel: String? = null,
+    contentLabel: String? = null,
+    impactLabel: String? = null,
 ) {
     val context = LocalContext.current
     val c = HanaTheme.colors
@@ -114,6 +123,10 @@ fun SlideToAuthorize(
     )
 
     val amberColor = Color(0xFFF59E0B)
+    val emeraldColor = Color(0xFF10B981)
+    val untrustedBg = Color(0xFFFEF3C7)
+    val untrustedBorder = Color(0xFFD97706)
+    val untrustedInk = Color(0xFF78350F)
 
     Column(
         modifier = modifier
@@ -130,10 +143,28 @@ fun SlideToAuthorize(
             }
             .clip(shape)
             .background(c.surface)
-            .border(1.dp, amberColor.copy(alpha = 0.5f), shape)
-            .padding(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+            .border(1.dp, amberColor.copy(alpha = 0.55f), shape)
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        if (fromUntrustedSource) {
+            Box(
+                Modifier
+                    .testTag("safe-gate-untrusted-banner")
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(untrustedBg)
+                    .border(1.dp, untrustedBorder, RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+            ) {
+                Text(
+                    "⚠️ 该操作指令源于外部网页/群聊内容，请确认是否本人意图",
+                    style = TextStyle(fontSize = 11.5.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold),
+                    color = untrustedInk,
+                )
+            }
+        }
+
         // 头部警示标与标题
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -141,64 +172,97 @@ fun SlideToAuthorize(
         ) {
             Box(
                 Modifier
-                    .size(36.dp)
+                    .size(34.dp)
                     .clip(CircleShape)
                     .background(amberColor.copy(alpha = 0.15f)),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("⚠️", style = TextStyle(fontSize = 18.sp))
+                Text("⚠️", style = TextStyle(fontSize = 16.sp))
             }
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
                     title.ifEmpty { "安全授权确认" },
-                    style = TextStyle(fontSize = 16.sp, fontWeight = FontWeight.SemiBold),
+                    style = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
                     color = c.ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    "高危操作安全门禁",
-                    style = TextStyle(fontSize = 11.5.sp),
+                    "L3 高危操作强阻尼门禁 · 需滑至 85% 以上",
+                    style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium),
                     color = amberColor,
                 )
             }
         }
 
-        // 风险说明
-        Text(
-            riskDescription.ifEmpty { "智能体即将执行关键敏感动作，请仔细核对后滑动确认放行。" },
-            style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
-            color = c.ink2,
-        )
+        // 业务三要素账单摘要（若传入则结构化展示，否则展示风险说明）
+        if (!targetLabel.isNullOrBlank() || !contentLabel.isNullOrBlank() || !impactLabel.isNullOrBlank()) {
+            Column(
+                Modifier
+                    .testTag("safe-gate-bill")
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(c.fill)
+                    .border(0.5.dp, c.edge, RoundedCornerShape(12.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                targetLabel?.takeIf { it.isNotBlank() }?.let { BillLine("操作对象", it, c.ink) }
+                contentLabel?.takeIf { it.isNotBlank() }?.let { BillLine("具体内容", it, c.ink2) }
+                impactLabel?.takeIf { it.isNotBlank() }?.let { BillLine("金额/后果", it, amberColor) }
+            }
+        } else {
+            Text(
+                riskDescription.ifEmpty { "智能体即将执行关键敏感动作，请仔细核对后滑动确认放行。" },
+                style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
+                color = c.ink2,
+            )
+        }
 
-        // 滑动确认轨道区域
+        // 滑动确认轨道区域（85% 阻尼阈值）
         var trackWidthPx by remember { mutableFloatStateOf(0f) }
-        val thumbSize = 48.dp
+        var settled by remember { mutableStateOf(false) }
+        val thumbSize = 46.dp
         val density = LocalDensity.current
         val thumbSizePx = with(density) { thumbSize.toPx() }
         val maxDragPx = (trackWidthPx - thumbSizePx).coerceAtLeast(0f)
         val dragOffset = remember { Animatable(0f) }
+        val dragFraction = if (maxDragPx > 0) (dragOffset.value / maxDragPx).coerceIn(0f, 1f) else 0f
+        val reachedThreshold = dragFraction >= SLIDE_AUTHORIZE_THRESHOLD
+        val activeColor = if (reachedThreshold) emeraldColor else amberColor
 
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(56.dp)
+                .height(54.dp)
                 .clip(HanaShapes.Pill)
                 .background(c.fill)
-                .border(1.dp, c.edge, HanaShapes.Pill)
+                .border(1.dp, if (reachedThreshold) emeraldColor.copy(alpha = 0.6f) else c.edge, HanaShapes.Pill)
                 .onSizeChanged { trackWidthPx = it.width.toFloat() }
                 .testTag("slide-track"),
             contentAlignment = Alignment.CenterStart,
         ) {
+            // 轨道进度高亮底色
+            if (dragFraction > 0f && trackWidthPx > 0f) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(fraction = (dragFraction * 0.88f + 0.12f).coerceIn(0f, 1f))
+                        .height(54.dp)
+                        .clip(HanaShapes.Pill)
+                        .background(activeColor.copy(alpha = if (reachedThreshold) 0.22f else 0.14f)),
+                )
+            }
+
             // 背景引导文字
-            val dragFraction = if (maxDragPx > 0) (dragOffset.value / maxDragPx).coerceIn(0f, 1f) else 0f
             Text(
-                "向右滑动确认放行 ❯❯❯",
-                style = TextStyle(fontSize = 13.5.sp, fontWeight = FontWeight.Medium),
-                color = amberColor.copy(alpha = (1f - dragFraction).coerceIn(0.2f, 1f)),
+                if (reachedThreshold) "松手确认放行 ✓" else "向右滑动确认放行 ❯❯❯",
+                style = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Medium),
+                color = activeColor.copy(alpha = if (reachedThreshold) 1f else (1f - dragFraction * 0.7f).coerceIn(0.25f, 1f)),
                 modifier = Modifier.fillMaxWidth(),
                 textAlign = TextAlign.Center,
             )
 
-            // 滑块拇指
+            // 滑块拇指（带 0.85 阻尼手感）
             Box(
                 Modifier
                     .offset { IntOffset(dragOffset.value.roundToInt(), 0) }
@@ -206,14 +270,16 @@ fun SlideToAuthorize(
                     .size(thumbSize)
                     .shadow(4.dp, CircleShape)
                     .clip(CircleShape)
-                    .background(amberColor)
+                    .background(activeColor)
                     .draggable(
                         orientation = Orientation.Horizontal,
+                        enabled = !settled,
                         state = rememberDraggableState { delta ->
                             scope.launch {
                                 val prev = dragOffset.value
-                                val next = (prev + delta).coerceIn(0f, maxDragPx)
-                                val threshold = maxDragPx * 0.85f
+                                val dampedDelta = delta * SLIDE_DAMPING_FACTOR
+                                val next = (prev + dampedDelta).coerceIn(0f, maxDragPx)
+                                val threshold = maxDragPx * SLIDE_AUTHORIZE_THRESHOLD
                                 if (prev < threshold && next >= threshold && maxDragPx > 0) {
                                     SafeGateHaptics.triggerGateWarning(context)
                                 }
@@ -221,15 +287,17 @@ fun SlideToAuthorize(
                             }
                         },
                         onDragStopped = {
-                            if (maxDragPx > 0 && dragOffset.value >= maxDragPx * 0.85f) {
+                            if (!settled && maxDragPx > 0 && dragOffset.value >= maxDragPx * SLIDE_AUTHORIZE_THRESHOLD) {
                                 // 达到 85% 阈值，成功授权
+                                settled = true
                                 scope.launch {
                                     dragOffset.animateTo(maxDragPx, tween(100))
-                                    SafeGateHaptics.triggerClickThump(context)
+                                    SafeGateHaptics.triggerSuccessBloom(context)
                                     onAuthorized()
                                 }
                             } else {
-                                // 未达阈值，弹性回弹
+                                // 未达阈值，弹性回弹并触发回弹触感
+                                SafeGateHaptics.triggerElasticSnap(context)
                                 scope.launch {
                                     dragOffset.animateTo(0f, tween(250))
                                 }
@@ -240,8 +308,8 @@ fun SlideToAuthorize(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    "➔",
-                    style = TextStyle(fontSize = 20.sp, fontWeight = FontWeight.Bold),
+                    if (reachedThreshold) "✓" else "➔",
+                    style = TextStyle(fontSize = 19.sp, fontWeight = FontWeight.Bold),
                     color = Color.White,
                 )
             }
@@ -255,8 +323,8 @@ fun SlideToAuthorize(
             Box(
                 Modifier
                     .clip(RoundedCornerShape(8.dp))
-                    .clickable(onClick = onRejected)
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+                    .clickable(enabled = !settled, onClick = onRejected)
+                    .padding(horizontal = 14.dp, vertical = 6.dp)
                     .testTag("safe-gate-reject"),
                 contentAlignment = Alignment.Center,
             ) {
@@ -267,5 +335,30 @@ fun SlideToAuthorize(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun BillLine(label: String, value: String, valueColor: Color) {
+    val c = HanaTheme.colors
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            label,
+            style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+            color = c.ink3,
+            modifier = Modifier.padding(top = 1.dp),
+        )
+        Text(
+            value,
+            style = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.SemiBold),
+            color = valueColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }

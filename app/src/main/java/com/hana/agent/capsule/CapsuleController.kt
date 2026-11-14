@@ -10,6 +10,11 @@ import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.ViewConfiguration
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -18,8 +23,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.TransformOrigin
 import android.graphics.Rect
@@ -45,7 +55,11 @@ import com.hana.agent.core.assembly.knownTools
 import com.hana.agent.core.record.RunEvent
 import com.hana.agent.core.userscreen.CapturedScreen
 import com.hana.agent.core.userscreen.UserScreenMessage
+import com.hana.agent.proactive.ClipboardPortalSuggestion
+import com.hana.agent.proactive.NoticeBadgeHint
+import com.hana.agent.proactive.ProactiveRuntime
 import com.hana.agent.settings.FeatureFlags
+import com.hana.agent.ui.components.mascot.StreamEmotionBus
 import com.hana.agent.task.DeviceStateWatcher
 import com.hana.agent.task.TaskCenterState
 import com.hana.agent.task.TaskRun
@@ -118,6 +132,7 @@ class CapsuleController(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val model = CapsuleModel(::reasonLabel)
     private val flags = FeatureFlags.get(context)
+    private val proactive by lazy { ProactiveRuntime.get(context) }
     /** 任务结束后留在后台运行的那一页(没有任务时胶囊说它,卡片里能看画面、关掉)。 */
     private val keeper get() = (context.applicationContext as HanaApp).pageKeeper
     private val toolLabels by lazy { ToolLabels(knownTools()) }
@@ -134,6 +149,10 @@ class CapsuleController(
     private var audioAmplitude by mutableStateOf(0f)
     private var dock by mutableStateOf(flags.capsuleDock())
     private var inputUi by mutableStateOf(CardInputUi())
+    private var proactiveHints by mutableStateOf<List<NoticeBadgeHint>>(emptyList())
+    private var clipboardSuggestion by mutableStateOf<ClipboardPortalSuggestion?>(null)
+    private var privacyShieldOn = false
+    private var speedEnabled by mutableStateOf(flags.speedFlags().let { it.batchSteps && it.fastPath })
     /** 截到一屏时加一:一颗上闪一下。 */
     private var flash by mutableIntStateOf(0)
     private val taps = DoubleTap(ViewConfiguration.getDoubleTapTimeout().toLong())
@@ -259,6 +278,17 @@ class CapsuleController(
                 }
             }
         }
+        // 订阅主动感知轻提示与剪贴板建议（严格 Defer-by-Default，仅更新轻量角标状态，绝不抢焦点弹窗）
+        scope.launch {
+            proactive.badgeHints.collect { hints ->
+                proactiveHints = hints
+            }
+        }
+        scope.launch {
+            proactive.clipboardSuggestion.collect { suggestion ->
+                clipboardSuggestion = suggestion
+            }
+        }
         // 转屏:按记下的边和比例重新摆;系统给新尺寸可能稍晚一点,过一会儿再摆一次
         context.registerComponentCallbacks(object : ComponentCallbacks {
             override fun onConfigurationChanged(newConfig: Configuration) {
@@ -336,6 +366,11 @@ class CapsuleController(
         )
         val shown = model.update(inputs, System.currentTimeMillis()) as? CapsuleView.Shown
         schedule(model.nextChangeAt)
+        val nextShield = CapsuleCards.shouldActivatePrivacyShield(shown?.kind)
+        if (nextShield != privacyShieldOn) {
+            privacyShieldOn = nextShield
+            StreamEmotionBus.setPrivacyShield(nextShield)
+        }
         if (shown == null || service == null) {
             hide()
             return
@@ -452,6 +487,10 @@ class CapsuleController(
         talkIdle = null
         noteJob?.cancel()
         note = null
+        if (privacyShieldOn) {
+            privacyShieldOn = false
+            StreamEmotionBus.setPrivacyShield(false)
+        }
         panelWindow?.setFullScreen(false)
         panelWindow?.setVisible(false)
         window?.close()
@@ -1228,11 +1267,12 @@ class CapsuleController(
         }
     }
 
-    /** 展开卡片:先记下此刻那一颗的方位,卡片从那边长出来。 */
+    /** 展开卡片:先记下此刻那一颗的方位,卡片从那边长出来;用户主动点开时非侵入式检查一次剪贴板任意门意图。 */
     private fun open() {
         if (!expanded) anchorY = placedY + (window?.height ?: 0) / 2
         expanded = true
         closing = false
+        proactive.checkSystemClipboard()
     }
 
     /** 点在窗口外面:先关掉放大的画面,再收起卡片。 */
@@ -1316,7 +1356,33 @@ class CapsuleController(
         HanaTheme(reduceMotion = animationsOff(context)) {
             val height = if (cardHeight > 0) with(LocalDensity.current) { cardHeight.toDp() } else Dp.Unspecified
             OverlayMotion(open = !closing, origin = ::cardOrigin, onClosed = ::closed, onOpened = { cardOut = true }) {
-                CapsuleCard(c, preview, zoomed, actions, { elapsed(it) }, input = inputUi, thread = thread, height = height, onHandle = ::onHandle)
+                CapsuleCard(
+                    card = c,
+                    preview = preview,
+                    zoomed = zoomed,
+                    actions = actions,
+                    elapsed = { elapsed(it) },
+                    input = inputUi,
+                    thread = thread,
+                    height = height,
+                    onHandle = ::onHandle,
+                    proactiveHints = proactiveHints,
+                    onDismissHint = { id -> proactive.dismissHint(id) },
+                    onActHint = { hint ->
+                        proactive.dismissHint(hint.id)
+                        val conv = CapsuleCards.conversationOf(c) ?: ConversationStore.shared(context).newConversation()
+                        startIn(conv, "请帮我处理这条提醒：${hint.title} ${hint.previewText}".trim())
+                        refresh()
+                    },
+                    clipboardSuggestion = clipboardSuggestion,
+                    onAcceptClipboard = { clip ->
+                        proactive.dismissClipboardSuggestion()
+                        val conv = CapsuleCards.conversationOf(c) ?: ConversationStore.shared(context).newConversation()
+                        startIn(conv, clip.recommendedPrompt)
+                        refresh()
+                    },
+                    onDismissClipboard = { proactive.dismissClipboardSuggestion() },
+                )
             }
         }
     }
@@ -1341,46 +1407,94 @@ class CapsuleController(
         val n = note
         val v = if (n == null || shown.kind == CapsuleKind.HandedOver) shown
             else shown.copy(kind = n.kind, text = n.text, detail = null, count = 0, needCount = 0, pill = true, widthEpoch = -n.id)
+        val activeRunKey = v.runKey ?: shown.runKey
         val talking = talk.active && !talk.released
         val servicePaused by TaskService.isPaused.collectAsState()
         val isPaused = servicePaused || v.kind == CapsuleKind.Held
         val teleport by teleportCoordinator.state.collectAsState()
+        val hasProactiveBadge = (proactiveHints.isNotEmpty() || clipboardSuggestion != null) &&
+            v.kind == CapsuleKind.Idle && n == null
         HanaTheme(reduceMotion = animationsOff(context)) {
             OverlayMotion(open = true, origin = { TransformOrigin(if (dock.side == DockSide.Right) 1f else 0f, 0.5f) }, onClosed = {}) {
-                CapsuleContent(
-                    v,
-                    onTap = ::tapCapsule,
-                    onSendScreen = ::sendScreen,
-                    flash = flash,
-                    onStop = { v.runKey?.let { TaskService.cancel(context, it) } },
-                    onHandBack = { v.runKey?.let { TaskService.handBack(context, runKey = it) } },
-                    onPauseToggle = { v.runKey?.let { TaskService.togglePause(context, it) } },
-                    isPaused = isPaused,
-                    onTakeOver = { v.runKey?.let { TaskService.takeOver(context, runKey = it) } },
-                    side = dock.side,
-                    tapLabel = when {
-                        n?.opensHana == true -> tr(R.string.capsule_voice_open)
-                        v.kind == CapsuleKind.Idle -> CapsuleCopy.TALK
-                        else -> CapsuleCopy.EXPAND
-                    },
-                    onSwapSide = if (v.kind == CapsuleKind.HandedOver) null else ::swapSide,
-                    alpha = alpha,
-                    holding = talking && talk.byTouch,
-                    onTalk = if (canTalk()) ::toggleTalk else null,
-                    talkLabel = tr(if (talking && !talk.byTouch) R.string.capsule_voice_send else R.string.capsule_voice_talk),
-                    capsuleState = if (teleport.active) CapsuleState.EXPANDED else null,
-                    virtualScreenFrame = preview,
-                    onStateChange = { next ->
-                        if (next != CapsuleState.EXPANDED && teleport.active) {
-                            teleportCoordinator.restore(autoRestored = false)
-                        }
-                    },
-                    pipInput = tasks.pipInput,
-                    pipTouchEnabled = teleportCoordinator.isEffectiveTouchEnabled(flags.pipTouchEnabled()),
-                    audioAmplitude = audioAmplitude,
-                    teleportState = teleport,
-                    onTeleportTouch = { teleportCoordinator.onUserTouchInjected() },
-                )
+                Box {
+                    CapsuleContent(
+                        v,
+                        onTap = ::tapCapsule,
+                        onSendScreen = ::sendScreen,
+                        flash = flash,
+                        onStop = { activeRunKey?.let { TaskService.cancel(context, it) } },
+                        onHandBack = {
+                            activeRunKey?.let { key ->
+                                TaskService.handBack(context, waitKey = runFor(key)?.takeover?.waitKey, runKey = key)
+                            }
+                        },
+                        onPauseToggle = {
+                            activeRunKey?.let { key ->
+                                if (isPaused) TaskService.resume(context, key)
+                                else TaskService.pause(context, key)
+                            }
+                        },
+                        isPaused = isPaused,
+                        onTakeOver = {
+                            activeRunKey?.let { key ->
+                                val run = runFor(key)
+                                val waitKey = run?.takeover?.waitKey
+                                if (waitKey != null) {
+                                    TaskService.takeOver(context, waitKey = waitKey, runKey = key)
+                                } else {
+                                    TaskService.pause(context, key)
+                                    open(run?.conversationId ?: v.conversationId ?: shown.conversationId)
+                                }
+                            }
+                        },
+                        onSpeedToggle = { enabled ->
+                            val cur = flags.speedFlags()
+                            flags.setSpeed(cur.copy(batchSteps = enabled, fastPath = enabled, deepLinks = enabled))
+                            speedEnabled = enabled
+                            showNote(
+                                if (enabled) "极速模式已开启" else "极速模式已关闭",
+                                CapsuleKind.Idle,
+                                opensHana = false,
+                                NOTE_SHORT_MS,
+                            )
+                        },
+                        speedEnabled = speedEnabled,
+                        side = dock.side,
+                        tapLabel = when {
+                            n?.opensHana == true -> tr(R.string.capsule_voice_open)
+                            v.kind == CapsuleKind.Idle -> CapsuleCopy.TALK
+                            else -> CapsuleCopy.EXPAND
+                        },
+                        onSwapSide = if (v.kind == CapsuleKind.HandedOver) null else ::swapSide,
+                        alpha = alpha,
+                        holding = talking && talk.byTouch,
+                        onTalk = if (canTalk()) ::toggleTalk else null,
+                        talkLabel = tr(if (talking && !talk.byTouch) R.string.capsule_voice_send else R.string.capsule_voice_talk),
+                        capsuleState = if (teleport.active) CapsuleState.EXPANDED else null,
+                        virtualScreenFrame = preview,
+                        onStateChange = { next ->
+                            if (next != CapsuleState.EXPANDED && teleport.active) {
+                                teleportCoordinator.restore(autoRestored = false)
+                            }
+                        },
+                        pipInput = tasks.pipInput,
+                        pipTouchEnabled = teleportCoordinator.isEffectiveTouchEnabled(flags.pipTouchEnabled()),
+                        audioAmplitude = audioAmplitude,
+                        teleportState = teleport,
+                        onTeleportTouch = { teleportCoordinator.onUserTouchInjected() },
+                    )
+                    if (hasProactiveBadge) {
+                        Box(
+                            Modifier
+                                .testTag("proactive-capsule-dot")
+                                .align(Alignment.TopEnd)
+                                .padding(6.dp)
+                                .size(8.dp)
+                                .clip(CircleShape)
+                                .background(HanaTheme.colors.accent),
+                        )
+                    }
+                }
             }
         }
     }

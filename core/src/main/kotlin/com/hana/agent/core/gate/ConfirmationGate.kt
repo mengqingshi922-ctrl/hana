@@ -8,9 +8,35 @@ import com.hana.agent.core.uistate.UiElement
 import java.math.BigDecimal
 import kotlin.math.abs
 import com.hana.agent.core.tool.Verb
+import kotlinx.serialization.Serializable
 
-/** 模型申报的一次要花钱的操作;字段已去首尾空白、截短,界面上照此显示。[app] 是包名。 */
-data class ConfirmationRequest(val action: IrrevAction, val target: String, val content: String, val amount: String?, val app: String)
+/**
+ * 三级风险门禁等级（借鉴 Claude CUA + AutoGLM 分级授权策略）：
+ * - [L1_AUTO]：低风险只读或暂存操作（浏览、搜索、加购、草稿填写等），可自动放行并记入回执。
+ * - [L2_SOFT_COUNTDOWN]：中等外发或日程变更操作（发消息、发帖/评论、新建或修改闹钟/日历等），支持 4 秒倒计时可撤回胶囊预览。
+ * - [L3_HARD_SLIDE]：高风险不可逆操作（付款、转账、下单、删除、退群、修改安全设置等），必须强阻尼滑动授权与三要素核验。
+ */
+@Serializable
+enum class RiskTier {
+    L1_AUTO,
+    L2_SOFT_COUNTDOWN,
+    L3_HARD_SLIDE,
+}
+
+/**
+ * 模型申报的操作请求；字段已去首尾空白、截短，界面上照此显示。[app] 是包名。
+ * 新增字段均提供向后兼容默认值，用于三级风险门禁、TOCTOU 窗口代次校验与防注入血缘标记。
+ */
+data class ConfirmationRequest(
+    val action: IrrevAction,
+    val target: String,
+    val content: String,
+    val amount: String?,
+    val app: String,
+    val riskTier: RiskTier = RiskTier.L3_HARD_SLIDE,
+    val windowGeneration: Long? = null,
+    val fromUntrustedSource: Boolean = false,
+)
 
 sealed interface DeclareResult {
     /** 申报的 App 和前台不一致(或读不到前台),不交给用户。 */
@@ -72,15 +98,26 @@ class ConfirmationGate {
     /**
      * [screen] 是此刻的一屏;[typing] 是这一步要输入并回车的文字(type_text 时)。
      * [seen] 是看图找到的点复看确认过的所见文字:读屏里没有文字(自绘界面)时,对象可以对它核,
-     * 要发的字读不到也就不核(画面上的字核不了)。有同意时不论结果都用掉它。付款永远不放行。
+     * 要发的字读不到也就不核(画面上的字核不了)。
+     * [currentWindowGeneration] 是执行前此刻窗口焦点快照代次，用于 TOCTOU 焦点漂移校验。
+     * 有同意时不论结果都用掉它。付款永远不放行。
      */
-    @Synchronized fun permits(hit: Irreversible, screen: ScreenSnapshot?, step: Int, typing: String? = null, seen: List<String> = emptyList()): Permit {
+    @Synchronized fun permits(
+        hit: Irreversible,
+        screen: ScreenSnapshot?,
+        step: Int,
+        typing: String? = null,
+        seen: List<String> = emptyList(),
+        currentWindowGeneration: Long? = null,
+    ): Permit {
         val g = grant ?: return Permit.NoGrant
         grant = null
         val r = g.request
         val reason = when {
             hit.action == IrrevAction.pay -> "payment is never approved here"
             step - g.step > MAX_STEPS -> "the approval expired ($MAX_STEPS steps)"
+            r.windowGeneration != null && currentWindowGeneration != null && r.windowGeneration != currentWindowGeneration ->
+                "window changed during authorization (TOCTOU)"
             hit.action != r.action -> "approved ${r.action.name} but this step is ${hit.action.name}"
             screen?.packageName == null || screen.packageName != r.app -> "approved in ${r.app} but the screen shows ${screen?.packageName ?: "unknown"}"
             !targetShown(r, screen) && !(textless(screen) && seenShows(r, seen)) -> "the target \"${r.target}\" is not shown " + (if (r.action == IrrevAction.send) "in the title area" else "on the screen")

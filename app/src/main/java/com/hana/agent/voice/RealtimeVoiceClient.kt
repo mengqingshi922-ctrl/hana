@@ -74,6 +74,9 @@ sealed interface RealtimeDownlinkEvent {
     /** 服务端语音转文字增量流 */
     data class TranscriptDelta(val text: String, val isFinal: Boolean = false) : RealtimeDownlinkEvent
 
+    /** 用户上行语音的实时转写结果（用于全双工插话注入对话） */
+    data class UserTranscript(val text: String, val isFinal: Boolean = true) : RealtimeDownlinkEvent
+
     /** 本轮响应生成结束 */
     object ResponseDone : RealtimeDownlinkEvent
 
@@ -234,6 +237,11 @@ class RealtimeVoiceClient(
     }
 
     /**
+     * 取消当前服务端响应生成（[bargeInCancel] 的标准全双工别名）。
+     */
+    fun cancelResponse(): Boolean = bargeInCancel()
+
+    /**
      * 与端侧 [VoiceActivityDetector] 及 [VoiceSpeaker] 联动：
      * 当 VAD 触发 Barge-in 事件时，自动停止 TTS 播报并下发打断帧。
      */
@@ -372,6 +380,18 @@ class RealtimeVoiceClient(
             "response.audio_transcript.done" -> {
                 val transcript = root["transcript"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 _events.tryEmit(RealtimeDownlinkEvent.TranscriptDelta(transcript, isFinal = true))
+            }
+            "conversation.item.input_audio_transcription.completed" -> {
+                val transcript = root["transcript"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
+                if (transcript.isNotEmpty()) {
+                    _events.tryEmit(RealtimeDownlinkEvent.UserTranscript(transcript, isFinal = true))
+                }
+            }
+            "conversation.item.input_audio_transcription.delta" -> {
+                val delta = root["delta"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                if (delta.isNotEmpty()) {
+                    _events.tryEmit(RealtimeDownlinkEvent.UserTranscript(delta, isFinal = false))
+                }
             }
             "response.done" -> {
                 _state.value = RealtimeSessionState.Connected

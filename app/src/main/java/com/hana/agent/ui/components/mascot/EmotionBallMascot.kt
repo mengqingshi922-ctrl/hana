@@ -1,5 +1,8 @@
 package com.hana.agent.ui.components.mascot
 
+import android.graphics.RenderEffect as AndroidRenderEffect
+import android.graphics.RuntimeShader
+import android.os.Build
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
@@ -16,6 +19,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -23,12 +27,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
@@ -71,10 +78,16 @@ fun EmotionBallMascot(
     pipDocked: Boolean = false,
     onTap: (() -> Unit)? = null,
 ) {
+    // 订阅跨组件总线：隐私护盾优先级最高，其次是流式内联情绪标签，最后回落参数 emotionId
+    val privacyShieldActive by StreamEmotionBus.privacyShieldActive.collectAsState()
+    val streamOverrideId by StreamEmotionBus.overrideEmotionId.collectAsState()
+    val gazeTarget by MascotGazeBus.target.collectAsState()
+    val resolvedEmotionId = resolveEffectiveEmotionId(emotionId, streamOverrideId, privacyShieldActive)
+
     // 关键帧序列可以把表情"交给下一个"（例如 唤醒 → 待机放空）
     var autoNext by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(emotionId) { autoNext = null }
-    val activeId = autoNext ?: emotionId
+    LaunchedEffect(resolvedEmotionId) { autoNext = null }
+    val activeId = if (privacyShieldActive) PRIVACY_SHIELD_EMOTION_ID else (autoNext ?: resolvedEmotionId)
     val spec = remember(activeId) { MascotData.emotion(activeId) }
 
     val targetShape = remember(shapeKey) { MascotData.resolveShape(shapeKey) }
@@ -191,6 +204,49 @@ fun EmotionBallMascot(
         }
     }
 
+    // ---- 视线追踪（优先响应 MascotGazeBus，TTL 过期后平滑回落自然待机游移） ----
+    var activeGaze by remember { mutableStateOf<GazeTarget?>(null) }
+    LaunchedEffect(gazeTarget, privacyShieldActive) {
+        val current = gazeTarget
+        if (privacyShieldActive || current == null) {
+            activeGaze = null
+            return@LaunchedEffect
+        }
+        val remaining = current.expiresAtMs - MascotGazeBus.nowMsProvider()
+        if (remaining <= 0L) {
+            activeGaze = null
+        } else {
+            activeGaze = current
+            delay(remaining)
+            activeGaze = null
+        }
+    }
+    val gazeOffsetTarget = remember(activeGaze) {
+        activeGaze?.let {
+            ((it.normX - 0.5f) * 2f * MAX_GAZE_SHIFT_X) to ((it.normY - 0.5f) * 2f * MAX_GAZE_SHIFT_Y)
+        }
+    }
+    val trackedGazeX by animateFloatAsState(
+        targetValue = gazeOffsetTarget?.first ?: 0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 220f),
+        label = "mascotGazeX",
+    )
+    val trackedGazeY by animateFloatAsState(
+        targetValue = gazeOffsetTarget?.second ?: 0f,
+        animationSpec = spring(dampingRatio = 0.68f, stiffness = 220f),
+        label = "mascotGazeY",
+    )
+    val idleGazeWeight by animateFloatAsState(
+        targetValue = if (gazeOffsetTarget == null) 1f else 0f,
+        animationSpec = tween(320),
+        label = "mascotIdleGazeWeight",
+    )
+    val shieldCoverProgress by animateFloatAsState(
+        targetValue = if (privacyShieldActive) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.65f, stiffness = 280f),
+        label = "mascotPrivacyShield",
+    )
+
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val pressScale by animateFloatAsState(if (pressed) 0.92f else 1f, spring(0.45f, 700f), label = "mascotPress")
@@ -201,11 +257,22 @@ fun EmotionBallMascot(
 
     val rings = MascotData.rings
     val headCenter = MascotData.HEAD_C
+    val auroraIntensity = when {
+        privacyShieldActive -> 0.85f
+        isWorking -> 0.90f
+        smoothAmp > 0.03f -> (0.35f + smoothAmp * 0.65f).coerceIn(0f, 1f)
+        else -> 0.22f
+    }
 
     Canvas(
         modifier = modifier
             .size(size)
             .graphicsLayer { scaleX = pressScale; scaleY = pressScale }
+            .mascotLiquidAuroraEffect(
+                intensity = auroraIntensity,
+                timeSec = orbitT * 2f * PI.toFloat(),
+                isDark = isDark,
+            )
             .then(
                 if (onTap != null) Modifier.clickable(
                     interactionSource = interaction,
@@ -379,13 +446,15 @@ fun EmotionBallMascot(
         )
         drawPath(bodyPath, color = if (pipDocked) c.accent.copy(alpha = 0.45f) else rimColor, style = Stroke(width = (if (pipDocked) 1.5f else 1.1f) * unit * 2.2f))
 
-        // ---- 眼睛 ----
+        // ---- 眼睛（支持 MascotGazeBus 实时焦点注视 + 隐私护盾闭目捂眼） ----
         val a = floor(morph).toInt().coerceIn(0, rings.lastIndex)
         val b = (a + 1).coerceAtMost(rings.lastIndex)
         val f = morph - a
         val openBase = openness * lid
-        val gazeX = sin(t * 2f * PI.toFloat() * 0.5f) * 1.6f
-        val gazeY = sin(t * 2f * PI.toFloat() * 0.37f) * 1.1f
+        val idleGazeX = sin(t * 2f * PI.toFloat() * 0.5f) * 1.6f
+        val idleGazeY = sin(t * 2f * PI.toFloat() * 0.37f) * 1.1f
+        val gazeX = trackedGazeX + idleGazeX * idleGazeWeight
+        val gazeY = trackedGazeY + idleGazeY * idleGazeWeight
 
         for (eye in 0..1) {
             val ra = rings[a][eye]
@@ -395,7 +464,9 @@ fun EmotionBallMascot(
             for (i in 0 until sz) pts[i] = ra[i] + (rb[i] - ra[i]) * f
 
             val seqOpen = if (eye == 0) pose?.openL ?: -1f else pose?.openR ?: -1f
-            val open = (openBase * (if (seqOpen >= 0f) seqOpen else 1f)).coerceIn(0.02f, 2.4f)
+            val baseOpen = (openBase * (if (seqOpen >= 0f) seqOpen else 1f)).coerceIn(0.02f, 2.4f)
+            // 开启捂眼隐私护盾时，双眼平滑闭合成温和防窥弧线
+            val open = lerpF(baseOpen, 0.14f, shieldCoverProgress)
             val eyeSx = (pose?.eyeSx ?: 1f).coerceIn(0.2f, 2.6f)
             val eyeSy = (pose?.eyeSy ?: 1f).coerceIn(0.2f, 2.6f)
             val eyeYOff = pose?.eyeY ?: 0f
@@ -421,6 +492,49 @@ fun EmotionBallMascot(
             }
             eyePath.close()
             drawPath(eyePath, color = eyeColor)
+        }
+
+        // ---- 接管态双手捂眼隐私护盾演出 ----
+        if (shieldCoverProgress > 0.02f) {
+            val shieldCenter = body(headCenter, headCenter)
+            val shieldRadius = MascotData.VIEW_SIZE * 0.44f * unit
+            drawCircle(
+                color = Color(0xFF38BDF8).copy(alpha = 0.34f * shieldCoverProgress),
+                radius = shieldRadius,
+                center = shieldCenter,
+                style = Stroke(width = 2.2f * unit * 1.4f),
+            )
+
+            val pawColor = lerp(bodyColor, Color.White, if (isDark) 0.20f else 0.28f)
+            val pawBorder = if (isDark) Color.White.copy(alpha = 0.35f) else Color(0xFF4A4E5A).copy(alpha = 0.22f)
+            val liftY = lerpF(52f, 0f, shieldCoverProgress)
+            val pawW = 36f * faceSx * unit * scaleX
+            val pawH = 26f * faceSy * unit * scaleY
+
+            for (side in 0..1) {
+                val sign = if (side == 0) -1f else 1f
+                val eyeAnchorX = headCenter + sign * 28f * faceSx + faceFx
+                val eyeAnchorY = headCenter - 2f * faceSy + faceFy + liftY
+                val pawCenter = body(eyeAnchorX, eyeAnchorY)
+                val pawTilt = sign * (-18f) + spin
+                rotate(degrees = pawTilt, pivot = pawCenter) {
+                    val topLeft = Offset(pawCenter.x - pawW / 2f, pawCenter.y - pawH / 2f)
+                    val corner = CornerRadius(pawW * 0.45f, pawH * 0.45f)
+                    drawRoundRect(
+                        color = pawColor.copy(alpha = shieldCoverProgress.coerceIn(0f, 1f)),
+                        topLeft = topLeft,
+                        size = Size(pawW, pawH),
+                        cornerRadius = corner,
+                    )
+                    drawRoundRect(
+                        color = pawBorder.copy(alpha = shieldCoverProgress.coerceIn(0f, 1f)),
+                        topLeft = topLeft,
+                        size = Size(pawW, pawH),
+                        cornerRadius = corner,
+                        style = Stroke(width = 1.6f * unit),
+                    )
+                }
+            }
         }
 
         if (spec.zzz) {
@@ -570,3 +684,117 @@ fun mascotEmotionId(
     mood == GrokBotMood.Sleepy -> "00"             // 睡眠：zzz
     else -> "02"                                   // 待机放空
 }
+
+internal const val MAX_GAZE_SHIFT_X = 14f
+internal const val MAX_GAZE_SHIFT_Y = 10f
+internal const val PRIVACY_SHIELD_EMOTION_ID = "14"
+
+/**
+ * 决定最终生效的小精灵情绪 ID：
+ * 优先级：捂眼隐私护盾 > 流式内联标签覆盖 > 基础工作/心情映射。
+ */
+internal fun resolveEffectiveEmotionId(
+    baseEmotionId: String,
+    streamOverrideId: String?,
+    privacyShieldActive: Boolean,
+): String = when {
+    privacyShieldActive -> PRIVACY_SHIELD_EMOTION_ID
+    !streamOverrideId.isNullOrBlank() -> streamOverrideId
+    else -> baseEmotionId
+}
+
+/**
+ * 根据当前时间戳与 TTL 计算注视焦点偏移（过期则返回 `null`）。
+ */
+internal fun computeGazeOffset(
+    target: GazeTarget?,
+    nowMs: Long,
+    maxShiftX: Float = MAX_GAZE_SHIFT_X,
+    maxShiftY: Float = MAX_GAZE_SHIFT_Y,
+): Pair<Float, Float>? {
+    if (target == null || nowMs >= target.expiresAtMs) return null
+    val nx = if (target.normX.isFinite()) target.normX.coerceIn(0f, 1f) else 0.5f
+    val ny = if (target.normY.isFinite()) target.normY.coerceIn(0f, 1f) else 0.5f
+    return ((nx - 0.5f) * 2f * maxShiftX) to ((ny - 0.5f) * 2f * maxShiftY)
+}
+
+internal fun isAgslShaderSupported(sdkInt: Int = Build.VERSION.SDK_INT): Boolean =
+    sdkInt >= Build.VERSION_CODES.TIRAMISU
+
+/**
+ * Android 13 (API 33+) 原生 AGSL 液态极光果冻边缘光晕修饰器：
+ * 零 SO 库体积开销；低于 API 33 或设备不支持编译时自动降级为原 Canvas 渲染。
+ */
+internal fun Modifier.mascotLiquidAuroraEffect(
+    intensity: Float,
+    timeSec: Float,
+    isDark: Boolean,
+): Modifier = composed {
+    if (!isAgslShaderSupported()) return@composed this
+    val shader = remember {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                RuntimeShader(MASCOT_AURORA_AGSL)
+            } else {
+                null
+            }
+        }.getOrNull()
+    } ?: return@composed this
+
+    this.graphicsLayer {
+        clip = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val w = size.width.coerceAtLeast(1f)
+            val h = size.height.coerceAtLeast(1f)
+            shader.setFloatUniform("uResolution", w, h)
+            shader.setFloatUniform("uTime", timeSec)
+            shader.setFloatUniform("uIntensity", intensity.coerceIn(0f, 1f))
+            shader.setFloatUniform("uIsDark", if (isDark) 1f else 0f)
+            renderEffect = AndroidRenderEffect
+                .createRuntimeShaderEffect(shader, "composable")
+                .asComposeRenderEffect()
+        }
+    }
+}
+
+private const val MASCOT_AURORA_AGSL = """
+    uniform shader composable;
+    uniform float2 uResolution;
+    uniform float uTime;
+    uniform float uIntensity;
+    uniform float uIsDark;
+
+    half4 main(float2 fragCoord) {
+        half4 base = composable.eval(fragCoord);
+        float minDim = max(min(uResolution.x, uResolution.y), 1.0);
+        float stepPx = clamp(minDim * 0.028, 1.5, 5.0);
+
+        half aL = composable.eval(fragCoord + float2(-stepPx, 0.0)).a;
+        half aR = composable.eval(fragCoord + float2(stepPx, 0.0)).a;
+        half aU = composable.eval(fragCoord + float2(0.0, -stepPx)).a;
+        half aD = composable.eval(fragCoord + float2(0.0, stepPx)).a;
+
+        half maxN = max(max(aL, aR), max(aU, aD));
+        half minN = min(min(aL, aR), min(aU, aD));
+
+        float outerHalo = clamp(float(maxN - base.a), 0.0, 1.0);
+        float innerRim = float(base.a) * clamp(float(1.0 - minN), 0.0, 1.0);
+
+        float2 center = uResolution * 0.5;
+        float2 rel = (fragCoord - center) / minDim;
+        float wave = 0.5 + 0.5 * sin(atan(rel.y, rel.x) * 3.0 + uTime * 2.0 + length(rel) * 6.0);
+        float wave2 = 0.5 + 0.5 * cos(atan(rel.y, rel.x) * 2.0 - uTime * 1.5);
+
+        half3 auroraA = half3(0.22, 0.74, 0.97); // 冰川青
+        half3 auroraB = half3(0.66, 0.33, 0.97); // 极光紫
+        half3 auroraC = half3(1.00, 0.32, 0.66); // 樱花粉
+        half3 auroraCol = mix(mix(auroraA, auroraB, half(wave)), auroraC, half(wave2 * 0.55));
+
+        float haloBoost = (0.18 + 0.36 * uIntensity) * (uIsDark > 0.5 ? 1.0 : 0.65);
+        float rimBoost = (0.12 + 0.24 * uIntensity) * (uIsDark > 0.5 ? 1.0 : 0.70);
+
+        half3 outRgb = base.rgb + auroraCol * half(outerHalo * haloBoost + innerRim * rimBoost);
+        half outA = clamp(base.a + half(outerHalo * haloBoost * 0.85), half(0.0), half(1.0));
+        return half4(outRgb, outA);
+    }
+"""

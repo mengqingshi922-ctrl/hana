@@ -68,6 +68,7 @@ import com.hana.agent.core.shell.SetupPhase
 import com.hana.agent.core.shell.SetupStep
 import com.hana.agent.core.shell.SetupView
 import com.hana.agent.core.shell.StepMark
+import com.hana.agent.settings.AccessibilityState
 import com.hana.agent.settings.SystemStatus
 import com.hana.agent.cap.phone.PhoneServices
 import com.hana.agent.ui.components.PageBackground
@@ -89,8 +90,10 @@ import com.hana.agent.ui.components.ProgressDots
 import com.hana.agent.ui.theme.HanaType
 import com.hana.agent.ui.theme.HanaShapes
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 用户确认做好的几步,转屏、进后台后还在。 */
 private val StepSetSaver = Saver<Set<SetupStep>, String>(
@@ -110,6 +113,7 @@ fun PhoneSetupScreen(status: SystemStatus, repair: Boolean, onFix: (Fix) -> Unit
     val pairing = phone.pairing
     val discovery by phone.shellControl.pairingDiscovery.collectAsState()
     val scanning by phone.shellManager.scanningPorts.collectAsState()
+    val shizukuStatus by phone.shellManager.shizukuStatus.collectAsState()
     val shell = status.builtinShell
     var repairStarted by rememberSaveable { mutableStateOf(false) }
     if (repair && !repairStarted) { repairStarted = true; pairing.startRepair() }
@@ -165,8 +169,11 @@ fun PhoneSetupScreen(status: SystemStatus, repair: Boolean, onFix: (Fix) -> Unit
         }
     }
     LaunchedEffect(view.phase) { if (view.phase == SetupPhase.Success) phone.setupPrompt.clear() }
-    // 打开引导页时把「用电脑启动」的脚本备好(助手不在时带新口令)
-    LaunchedEffect(Unit) { phone.shellManager.usbScript.refresh() }
+    // 打开引导页时把「用电脑启动」的脚本备好(助手不在时带新口令)，并异步探测 Shizuku 就绪状态
+    LaunchedEffect(Unit) {
+        phone.shellManager.usbScript.refresh()
+        withContext(Dispatchers.IO) { runCatching { phone.shellManager.probeShizukuStatus() } }
+    }
     val usbCommand = remember { phone.shellManager.usbScript.command() }
 
     val copyUsbCommand = {
@@ -218,6 +225,10 @@ fun PhoneSetupScreen(status: SystemStatus, repair: Boolean, onFix: (Fix) -> Unit
         usbCommand = usbCommand,
         onAskUsb = { usbAsked = true },
         onCopyUsbCommand = copyUsbCommand,
+        accessibilityReady = status.accessibility == AccessibilityState.On,
+        shizukuReady = shizukuStatus.ready,
+        onQuickAccessibility = { onFix(Fix.OpenAccessibility) },
+        onQuickWireless = { pairing.begin(); onFix(Fix.OpenWirelessDebugging) },
     )
     // 卡在哪一步都能把诊断信息发给作者:用的是引导页此刻的输入,用户确认过的步骤也在里面
     if (diagnosticsOpen) {
@@ -259,6 +270,10 @@ fun PhoneSetupContent(
     usbCommand: String? = null,
     onAskUsb: () -> Unit = {},
     onCopyUsbCommand: () -> Unit = {},
+    accessibilityReady: Boolean = view.marks[SetupStep.Accessibility] == StepMark.Done,
+    shizukuReady: Boolean = false,
+    onQuickAccessibility: () -> Unit = { onStepAction(SetupStep.Accessibility) },
+    onQuickWireless: () -> Unit = { onStepAction(SetupStep.PairingCode) },
 ) {
     val canRevisit = view.phase == SetupPhase.Guide || view.phase == SetupPhase.Failed
     fun revisitable(step: SetupStep) = canRevisit && step != view.current && step in PhoneSetupFlow.REVISITABLE &&
@@ -287,8 +302,15 @@ fun PhoneSetupContent(
                         )
                     } else {
                         Text(
-                            PhoneSetupCopy.INTRO, Modifier.padding(top = 4.dp, bottom = 16.dp),
+                            PhoneSetupCopy.INTRO, Modifier.padding(top = 4.dp, bottom = 12.dp),
                             fontSize = 14.5.sp, lineHeight = 23.sp, color = c.ink2,
+                        )
+                        TwoStageOnboardingCard(
+                            accessibilityReady = accessibilityReady,
+                            shizukuReady = shizukuReady,
+                            onQuickAccessibility = onQuickAccessibility,
+                            onQuickWireless = onQuickWireless,
+                            onTryForegroundNow = onClose,
                         )
                     }
                     GroupCard {
@@ -341,6 +363,116 @@ fun PhoneSetupContent(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 两阶段渐进式引导卡片：
+ * - Stage 1：仅开无障碍即可 10 秒体验前台自动化，降低首屏上手门槛；
+ * - Stage 2：开启无线调试解锁后台静默虚拟双屏（如探测到 Shizuku 就绪，同步提示免重复配置能力）。
+ */
+@Composable
+private fun TwoStageOnboardingCard(
+    accessibilityReady: Boolean,
+    shizukuReady: Boolean,
+    onQuickAccessibility: () -> Unit,
+    onQuickWireless: () -> Unit,
+    onTryForegroundNow: () -> Unit,
+) {
+    val c = HanaTheme.colors
+    Column(
+        Modifier
+            .padding(bottom = 14.dp)
+            .fillMaxWidth()
+            .cardSurface(c, HanaShapes.Card)
+            .padding(14.dp)
+            .testTag("setup-two-stage"),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        // Stage 1：10 秒前台自动化极速体验
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(if (accessibilityReady) c.okSoft else c.accentSoft, RoundedCornerShape(12.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Stage 1：仅开无障碍 10 秒体验前台自动化",
+                    Modifier.weight(1f),
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = c.ink,
+                )
+                if (accessibilityReady) {
+                    RowValue("已就绪", ValueTone.Ok)
+                }
+            }
+            Text(
+                "无需开发者选项与配对，开启无障碍即可直接识屏操作并体验「教 Hana」示范录制。",
+                fontSize = 12.5.sp,
+                lineHeight = 18.sp,
+                color = c.ink2,
+            )
+            if (accessibilityReady) {
+                HanaButton(
+                    "先用前台模式立即体验",
+                    onTryForegroundNow,
+                    Modifier.testTag("setup-stage1-try"),
+                    kind = ButtonKind.Tonal,
+                    size = ButtonSize.Small,
+                )
+            } else {
+                HanaButton(
+                    "一键去开启无障碍",
+                    onQuickAccessibility,
+                    Modifier.testTag("setup-stage1-a11y"),
+                    kind = ButtonKind.Primary,
+                    size = ButtonSize.Small,
+                )
+            }
+        }
+
+        // Stage 2：无线调试解锁后台静默虚拟双屏
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(c.fill, RoundedCornerShape(12.dp))
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(
+                "Stage 2：开启无线调试解锁后台静默虚拟双屏",
+                fontSize = 14.sp,
+                lineHeight = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = c.ink,
+            )
+            Text(
+                "完成下方配对后，Hana 可在后台虚拟屏静默执行任务，全程不抢占你的前台屏幕。",
+                fontSize = 12.5.sp,
+                lineHeight = 18.sp,
+                color = c.ink2,
+            )
+            if (shizukuReady) {
+                Text(
+                    "已检测到本机 Shizuku 服务就绪，可配合快速唤醒并降低重复配对成本。",
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = c.ok,
+                )
+            }
+            HanaButton(
+                "一键直达无线调试",
+                onQuickWireless,
+                Modifier.testTag("setup-stage2-wireless"),
+                kind = ButtonKind.Tonal,
+                size = ButtonSize.Small,
+            )
         }
     }
 }

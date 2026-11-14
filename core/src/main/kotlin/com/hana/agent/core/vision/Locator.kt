@@ -76,11 +76,27 @@ private val DESCRIBE_PROMPT: String by lazy { Prompts.role("describe") }
  * 否则让视觉模型框出来,再核对名字、画红框复看确认。找到的点登记进 [registry]。
  * 受保护的页面(系统防截屏)的画面一律不交给视觉模型。
  */
-class Locator(private val screen: ScreenPort, private val vision: VisionService, private val registry: LocateRegistry, family: ScreenFamily) {
+class Locator(
+    private val screen: ScreenPort,
+    private val vision: VisionService,
+    private val registry: LocateRegistry,
+    family: ScreenFamily,
+    private val enableTwoStageRoi: Boolean = false,
+) {
     private val m = LocateMessages(family)
     private class Box(val l: Int, val t: Int, val r: Int, val b: Int, val seen: String?)
 
-    suspend fun locate(target: String, text: String?): LocateResult {
+    internal data class RoiWindow(val l: Int, val t: Int, val r: Int, val b: Int, val zoomFactor: Double)
+
+    suspend fun locate(target: String, text: String?): LocateResult = locateInternal(target, text, useRoiStage = enableTwoStageRoi)
+
+    /**
+     * Ferret-UI 2 风格显式二阶段自适应 ROI 放大精定位入口：
+     * 首次粗定位若命中微小控件（面积占比 < 2.5%）或边缘贴边目标，自动裁剪高倍率放大 ROI 再次精定位并校验坐标回射范围。
+     */
+    suspend fun locateWithRoiRefinement(target: String, text: String?): LocateResult = locateInternal(target, text, useRoiStage = true)
+
+    private suspend fun locateInternal(target: String, text: String?, useRoiStage: Boolean): LocateResult {
         val first = capture().let { it as? Shot.Ok ?: return (it as Shot.Missing).asNotFound() }
         val beforeGrid = try { screen.frameGrid() } catch (e: Exception) { null }
         val elements = if (text != null) readElements() else null
@@ -122,7 +138,7 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
 
         clearForVision()?.let { return it.asNotFound() }
         val (locatePrompt, confirmPrompt) = PROMPTS
-        val box = try {
+        var box = try {
             parseBox(vision.ask(locatePrompt, if (text != null) "$target (label: \"$text\")" else target, listOf(second.png)))
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             return LocateResult.NotFound("vision_unavailable", "Locating by sight failed this time. ${m.notFoundNext}")
@@ -130,6 +146,12 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
 
         if (text != null && box.seen != null && disagree(box.seen, text)) {
             return LocateResult.NotFound("name_mismatch", "The closest match reads \"${box.seen.take(40)}\", not \"$text\", so it was not used. ${m.notFoundNext}")
+        }
+        if (useRoiStage) {
+            box = refineBoxWithRoiIfNeeded(second.png, box, target, text, locatePrompt)
+            if (text != null && box.seen != null && disagree(box.seen, text)) {
+                return LocateResult.NotFound("name_mismatch", "The closest match reads \"${box.seen.take(40)}\", not \"$text\", so it was not used. ${m.notFoundNext}")
+            }
         }
         val x = mid(box.l, box.r); val y = mid(box.t, box.b)
         val occupant = if (text != null && synced) elementAt(elements!!, x, y) else null
@@ -266,16 +288,127 @@ class Locator(private val screen: ScreenPort, private val vision: VisionService,
         b.size == 4 && x in b[0]..b[2] && y in b[1]..b[3] && area(e) < 999L * 999 / 2
     }.minByOrNull(::area)
 
+    /**
+     * Ferret-UI 2 风格小目标判定：
+     * 1. 目标框面积占比过小（< 2.5%），如关闭按钮 `×`、复选框、微小图标；
+     * 2. 或首次粗定位中心/边界贴近屏幕边缘且目标尺寸较小（防止边角控件点击偏移）。
+     */
+    internal fun shouldUseRoi(l: Int, t: Int, r: Int, b: Int): Boolean {
+        val w = r - l
+        val h = b - t
+        if (w <= 0 || h <= 0) return false
+        val areaRatio = (w.toLong() * h.toLong()).toDouble() / (999.0 * 999.0)
+        if (areaRatio < SMALL_TARGET_AREA_RATIO) return true
+        val cx = mid(l, r)
+        val cy = mid(t, b)
+        val nearEdge = cx < EDGE_MARGIN || cy < EDGE_MARGIN || cx > 999 - EDGE_MARGIN || cy > 999 - EDGE_MARGIN ||
+            l <= 35 || t <= 35 || r >= 964 || b >= 964
+        return nearEdge && areaRatio < EDGE_TARGET_MAX_AREA_RATIO && minOf(w, h) <= 220
+    }
+
+    /**
+     * 计算自适应 ROI 裁剪窗口与放大倍率（边缘自动向内安全裁剪，确保不越界且保留足够局部上下文）。
+     */
+    internal fun computeRoiWindow(l: Int, t: Int, r: Int, b: Int): RoiWindow? {
+        if (!shouldUseRoi(l, t, r, b)) return null
+        val w = r - l
+        val h = b - t
+        val padX = maxOf(50, w).coerceAtMost(180)
+        val padY = maxOf(50, h).coerceAtMost(180)
+        val cl = (l - padX).coerceIn(0, 998)
+        val ct = (t - padY).coerceIn(0, 998)
+        val cr = (r + padX).coerceIn(cl + 1, 999)
+        val cb = (b + padY).coerceIn(ct + 1, 999)
+        if (cr <= cl || cb <= ct) return null
+        val zoomFactor = (320.0 / maxOf(cr - cl, cb - ct)).coerceIn(2.0, 4.0)
+        return RoiWindow(cl, ct, cr, cb, zoomFactor)
+    }
+
+    /** 将全局 [0..999] 框坐标投影到 ROI 局部 [0..999] 坐标系，并校验范围合法性。 */
+    internal fun projectGlobalBoxToRoi(globalBox: IntArray, roi: RoiWindow): IntArray? {
+        if (globalBox.size != 4) return null
+        val rw = (roi.r - roi.l).toDouble()
+        val rh = (roi.b - roi.t).toDouble()
+        if (rw <= 0.0 || rh <= 0.0) return null
+        val ll = (((globalBox[0] - roi.l) / rw) * 999.0).roundToInt().coerceIn(0, 998)
+        val lt = (((globalBox[1] - roi.t) / rh) * 999.0).roundToInt().coerceIn(0, 998)
+        val lr = (((globalBox[2] - roi.l) / rw) * 999.0).roundToInt().coerceIn(ll + 1, 999)
+        val lb = (((globalBox[3] - roi.t) / rh) * 999.0).roundToInt().coerceIn(lt + 1, 999)
+        return intArrayOf(ll, lt, lr, lb)
+    }
+
+    /** 将 ROI 局部 [0..999] 框坐标回射至全局 [0..999] 坐标系，并严格校验回射边界不越界、不坍缩。 */
+    internal fun projectRoiBoxToGlobal(roiBox: IntArray, roi: RoiWindow): IntArray? {
+        if (roiBox.size != 4) return null
+        if (roiBox.any { it !in 0..999 } || roiBox[2] <= roiBox[0] || roiBox[3] <= roiBox[1]) return null
+        val rw = (roi.r - roi.l).toDouble()
+        val rh = (roi.b - roi.t).toDouble()
+        if (rw <= 0.0 || rh <= 0.0) return null
+        val gl = (roi.l + roiBox[0] * rw / 999.0).roundToInt()
+        val gt = (roi.t + roiBox[1] * rh / 999.0).roundToInt()
+        val gr = (roi.l + roiBox[2] * rw / 999.0).roundToInt()
+        val gb = (roi.t + roiBox[3] * rh / 999.0).roundToInt()
+        // 校验回射范围必须落在 ROI 窗口与屏幕合法范围内
+        if (gl !in 0..999 || gt !in 0..999 || gr !in 0..999 || gb !in 0..999) return null
+        if (gl < roi.l - 1 || gt < roi.t - 1 || gr > roi.r + 1 || gb > roi.b + 1) return null
+        val clampedL = gl.coerceIn(roi.l, roi.r - 1)
+        val clampedT = gt.coerceIn(roi.t, roi.b - 1)
+        val clampedR = gr.coerceIn(clampedL + 1, roi.r)
+        val clampedB = gb.coerceIn(clampedT + 1, roi.b)
+        if (clampedR <= clampedL || clampedB <= clampedT) return null
+        return intArrayOf(clampedL, clampedT, clampedR, clampedB)
+    }
+
+    private suspend fun refineBoxWithRoiIfNeeded(
+        png: ByteArray,
+        coarse: Box,
+        target: String,
+        text: String?,
+        locatePrompt: String,
+    ): Box {
+        val roi = computeRoiWindow(coarse.l, coarse.t, coarse.r, coarse.b) ?: return coarse
+        val zoomedRoi = runCatching {
+            val cropped = vision.ops.crop(png, intArrayOf(roi.l, roi.t, roi.r, roi.b))
+            vision.ops.scale(cropped, roi.zoomFactor)
+        }.getOrNull() ?: return coarse
+        val roiQuery = if (text != null) {
+            "$target (label: \"$text\", zoomed ROI crop for fine localization)"
+        } else {
+            "$target (zoomed ROI crop for fine localization)"
+        }
+        val refinedLocal = try {
+            parseBox(vision.ask(locatePrompt, roiQuery, listOf(zoomedRoi)))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        } ?: return coarse
+
+        val globalBounds = projectRoiBoxToGlobal(
+            intArrayOf(refinedLocal.l, refinedLocal.t, refinedLocal.r, refinedLocal.b),
+            roi,
+        ) ?: return coarse
+        return Box(
+            l = globalBounds[0],
+            t = globalBounds[1],
+            r = globalBounds[2],
+            b = globalBounds[3],
+            seen = refinedLocal.seen ?: coarse.seen,
+        )
+    }
+
     private fun cropRoiIfSmall(png: ByteArray, box: Box): ByteArray? {
-        val w = box.r - box.l
-        val h = box.b - box.t
-        if (w !in 1..150 || h !in 1..150) return null
-        val pad = 50
-        val cl = (box.l - pad).coerceAtLeast(0)
-        val ct = (box.t - pad).coerceAtLeast(0)
-        val cr = (box.r + pad).coerceAtMost(999)
-        val cb = (box.b + pad).coerceAtMost(999)
-        return runCatching { vision.ops.crop(png, intArrayOf(cl, ct, cr, cb)) }.getOrNull()
+        val roi = computeRoiWindow(box.l, box.t, box.r, box.b) ?: return null
+        val cropped = runCatching { vision.ops.crop(png, intArrayOf(roi.l, roi.t, roi.r, roi.b)) }.getOrNull() ?: return null
+        val zoomed = runCatching { vision.ops.scale(cropped, roi.zoomFactor) }.getOrElse { cropped }
+        val localBox = projectGlobalBoxToRoi(intArrayOf(box.l, box.t, box.r, box.b), roi) ?: return zoomed
+        return runCatching { vision.ops.drawFrame(zoomed, localBox, expandPx = 2, strokePx = 3) }.getOrElse { zoomed }
+    }
+
+    companion object {
+        private const val SMALL_TARGET_AREA_RATIO = 0.025
+        private const val EDGE_TARGET_MAX_AREA_RATIO = 0.08
+        private const val EDGE_MARGIN = 90
     }
 
     private fun parseBox(reply: String): Box? {

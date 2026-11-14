@@ -772,6 +772,31 @@ class TaskRun(
                 store = (service.application as HanaApp).childRuns,
                 ownerAlive = { job?.isActive == true },
             ).also { children = it } else null
+            val staticMacros = listOf(
+                com.hana.agent.core.replay.ShadowMacroLibrary.scrollUntilText(),
+                com.hana.agent.core.replay.ShadowMacroLibrary.dismissPopupStack(),
+            )
+            // 从本地已保存成功路线中按高频模式动态挖掘影子宏（带容错与数量上限保护；无历史路线时平滑回退仅 2 个静态宏）
+            val minedMacros = withContext(Dispatchers.IO) {
+                runCatching {
+                    val candidateRoutes = routeStore.all()
+                        .asSequence()
+                        .filter { !it.disabled && it.steps.isNotEmpty() }
+                        .sortedByDescending { it.lastUsedMs }
+                        .take(100)
+                        .toList()
+                    if (candidateRoutes.isEmpty()) {
+                        emptyList()
+                    } else {
+                        val staticIds = staticMacros.mapTo(HashSet()) { it.id }
+                        val staticNames = staticMacros.mapTo(HashSet()) { it.name }
+                        com.hana.agent.core.replay.ShadowMacroMiner
+                            .mineFromRoutes(candidateRoutes, minSupport = 2)
+                            .filter { it.id !in staticIds && it.name !in staticNames }
+                            .take(8)
+                    }
+                }.getOrDefault(emptyList())
+            }
             val tools = toolDispatcher(accessedPhone, model.capabilities.vision, catalog, recordFrames = true, vision = vision?.let { VisionService(it, BitmapImageOps) },
                 // 设置里允许 Hana 改自己时,才把 settings_list、settings_set 发给模型
                 selfConfig = if (FeatureFlags.get(service).selfConfig()) {
@@ -809,10 +834,7 @@ class TaskRun(
                 mcpServers = taskMcpServers,
                 taskMemories = memoryRuntime.taskMemoryStore(),
                 factGraph = memoryRuntime.factGraph(),
-                shadowMacros = listOf(
-                    com.hana.agent.core.replay.ShadowMacroLibrary.scrollUntilText(),
-                    com.hana.agent.core.replay.ShadowMacroLibrary.dismissPopupStack(),
-                ),
+                shadowMacros = staticMacros + minedMacros,
                 enableNotetaker = true,
                 enableClarifyIntent = true,
                 enableCompactDsl = FeatureFlags.get(service).compactDslEnabled(),

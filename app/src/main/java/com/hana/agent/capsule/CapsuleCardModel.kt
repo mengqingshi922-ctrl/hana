@@ -7,6 +7,7 @@ import com.hana.agent.i18n.trPlural
 import com.hana.agent.confirm.ConfirmationCopy
 import com.hana.agent.confirm.ConfirmationNotifier
 import com.hana.agent.core.agent.TaskState
+import com.hana.agent.core.gate.RiskTier
 import com.hana.agent.ui.Exchange
 import com.hana.agent.ui.ExchangeStatus
 import com.hana.agent.ui.StatusCopy
@@ -73,8 +74,14 @@ sealed interface CardContent {
      */
     data class Takeover(val need: String, val body: String, val queueLine: String?, val canTakeOver: Boolean) : CardContent
 
-    /** 要你同意一次花钱的操作(只能同意这一次):和对话页的确认卡片同一套字和编号 [key]。 */
-    data class Confirm(val title: String, val body: String, val key: Int) : CardContent
+    /** 要你同意一次操作(只能同意这一次):和对话页的确认卡片同一套字和编号 [key]，支持三级风险门禁与防注入预警。 */
+    data class Confirm(
+        val title: String,
+        val body: String,
+        val key: Int,
+        val riskTier: RiskTier = RiskTier.L3_HARD_SLIDE,
+        val fromUntrustedSource: Boolean = false,
+    ) : CardContent
 
     /** Hana 问你:给了 [options] 就列成按钮;没有选项的回答在 Hana 里打字(卡片里的输入下一步再做)。 */
     data class Question(val prompt: String, val options: List<String>) : CardContent
@@ -175,11 +182,22 @@ object CapsuleCards {
                 canTakeOver = r.ahead == 0 && r.kind == CapsuleKind.NeedTakeover,
             )
             is TaskState.WaitingConfirmation -> (ex?.status as? ExchangeStatus.NeedsConfirmation)
-                ?.let { CardContent.Confirm(it.title, it.body, it.key) }
+                ?.let {
+                    CardContent.Confirm(
+                        title = it.title,
+                        body = it.body,
+                        key = it.key,
+                        riskTier = s.request.riskTier,
+                        fromUntrustedSource = s.request.fromUntrustedSource,
+                    )
+                }
                 // 还没推出这一问一答时(刚开始跟)用包名代替 App 名
                 ?: CardContent.Confirm(
-                    ConfirmationCopy.title(s.request), ConfirmationCopy.detail(s.request, s.request.app),
-                    ConfirmationNotifier.requestKey(s),
+                    title = ConfirmationCopy.title(s.request),
+                    body = ConfirmationCopy.detail(s.request, s.request.app),
+                    key = ConfirmationNotifier.requestKey(s),
+                    riskTier = s.request.riskTier,
+                    fromUntrustedSource = s.request.fromUntrustedSource,
                 )
             is TaskState.WaitingInput -> CardContent.Question(s.prompt.trim(), s.options.orEmpty().filter(String::isNotBlank))
             is TaskState.Held -> CardContent.Held(s.reason.why.trim().ifEmpty { tr(R.string.capsule_hold) }, s.reason.resumable)
@@ -216,4 +234,100 @@ object CapsuleCards {
     /** 这种内容旁边放不放虚拟屏小画面(还要那件事真有画面):干活中、要你接管、等条件时放。 */
     fun showsScreen(content: CardContent): Boolean =
         content is CardContent.Working || content is CardContent.Takeover || content is CardContent.Held
+
+    /** 确认卡三要素账单模型：【操作对象 / 具体内容 / 金额或后果】。 */
+    data class ConfirmBillElements(
+        val target: String,
+        val content: String,
+        val impact: String,
+        val appName: String? = null,
+    )
+
+    private val BILL_AMOUNT_REGEX = Regex("""([¥￥$＄]\s*\d+(?:\.\d+)?|\d+(?:\.\d+)?\s*元)""")
+    private val COLON_SPLIT = Regex("""[:：∶]""")
+
+    /**
+     * 将确认卡的文本 [body] 结构化解析为【操作对象 / 具体内容 / 金额或后果】三要素账单。
+     * 同时兼容换行分隔、中点 ` · ` 分隔以及 [ConfirmationCopy] 转义后的 `∶` 冒号。
+     */
+    fun parseConfirmBillElements(
+        title: String,
+        body: String,
+        riskTier: RiskTier = RiskTier.L3_HARD_SLIDE,
+    ): ConfirmBillElements {
+        val segments = body.split('\n')
+            .flatMap { it.split(" · ") }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        var appName: String? = null
+        var target: String? = null
+        var content: String? = null
+        var impact: String? = null
+        val leftovers = mutableListOf<String>()
+
+        for (seg in segments) {
+            when {
+                seg.startsWith("在 ") && seg.length > 2 -> {
+                    appName = seg.removePrefix("在 ").trim()
+                }
+                else -> {
+                    val m = COLON_SPLIT.find(seg)
+                    if (m != null) {
+                        val key = seg.substring(0, m.range.first).trim()
+                        val value = seg.substring(m.range.last + 1).trim()
+                        when {
+                            key in setOf("对象", "收款人", "联系人", "目标", "接收方", "商户") && value.isNotEmpty() -> {
+                                if (target == null) target = value else leftovers += seg
+                            }
+                            key in setOf("内容", "商品", "操作", "详情", "正文") && value.isNotEmpty() -> {
+                                if (content == null) content = value else leftovers += seg
+                            }
+                            key in setOf("金额", "费用", "价格", "实付", "总计", "后果", "影响") && value.isNotEmpty() -> {
+                                if (impact == null) impact = value else leftovers += seg
+                            }
+                            else -> leftovers += seg
+                        }
+                    } else {
+                        leftovers += seg
+                    }
+                }
+            }
+        }
+
+        val resolvedTarget = target
+            ?: appName?.let { "$it 当前对象" }
+            ?: leftovers.firstOrNull()
+            ?: title.ifBlank { "当前操作对象" }
+
+        val remainingForContent = if (target == null && appName == null && leftovers.isNotEmpty()) {
+            leftovers.drop(1)
+        } else {
+            leftovers
+        }
+
+        val resolvedContent = content
+            ?: remainingForContent.joinToString(" · ").ifBlank { null }
+            ?: body.trim().ifBlank { null }
+            ?: title.ifBlank { "执行已申报动作" }
+
+        val resolvedImpact = impact
+            ?: BILL_AMOUNT_REGEX.find(body)?.value?.trim()
+            ?: when (riskTier) {
+                RiskTier.L1_AUTO -> "低风险常规操作"
+                RiskTier.L2_SOFT_COUNTDOWN -> "将立即发送或写入（4 秒内可撤回）"
+                RiskTier.L3_HARD_SLIDE -> "不可逆高风险操作，需核对后滑动放行"
+            }
+
+        return ConfirmBillElements(
+            target = resolvedTarget,
+            content = resolvedContent,
+            impact = resolvedImpact,
+            appName = appName,
+        )
+    }
+
+    /** 处于接管态（待接管或已交给用户操作）时开启小精灵捂眼隐私护盾，其余状态关闭。 */
+    fun shouldActivatePrivacyShield(kind: CapsuleKind?): Boolean =
+        kind == CapsuleKind.NeedTakeover || kind == CapsuleKind.HandedOver
 }
