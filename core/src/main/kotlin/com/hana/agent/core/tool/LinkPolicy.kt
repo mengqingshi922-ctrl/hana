@@ -190,6 +190,174 @@ object LinkPolicy {
         return null
     }
 
+    /** 常见国内头部应用的静态包名与 Scheme 映射，用于 Shortcuts-First 跨端提示与推导 */
+    val STATIC_PACKAGE_TO_SCHEMES: Map<String, List<String>> = mapOf(
+        "com.tencent.mm" to listOf("weixin"),
+        "com.eg.android.AlipayGphone" to listOf("alipays", "alipayqr"),
+        "com.autonavi.minimap" to listOf("amapuri"),
+        "com.baidu.BaiduMap" to listOf("baidumap"),
+        "com.ss.android.ugc.aweme" to listOf("snssdk1128"),
+        "com.xingin.xhs" to listOf("xhsdiscover"),
+        "com.taobao.taobao" to listOf("taobao"),
+        "com.jingdong.app.mall" to listOf("openapp.jdmobile"),
+        "tv.danmaku.bili" to listOf("bilibili"),
+        "com.zhihu.android" to listOf("zhihu"),
+        "com.sankuai.meituan.takeoutnew" to listOf("meituanwaimai"),
+        "com.sankuai.meituan" to listOf("imeituan"),
+        "com.tencent.qqmusic" to listOf("qqmusic"),
+        "com.netease.cloudmusic" to listOf("orpheus"),
+        "com.sina.weibo" to listOf("sinaweibo"),
+        "com.ss.android.article.news" to listOf("snssdk141"),
+        "me.ele" to listOf("eleme"),
+        "com.xunmeng.pinduoduo" to listOf("pinduoduo"),
+        "com.dianping.v1" to listOf("dianping"),
+    )
+
+    /**
+     * 查询指定包名下已注册的静态与动态 DeepLink schemes 及快捷直达模板提示。
+     * 用于在规划阶段为大模型直接提供当前 App 的所有可用 Shortcuts 候选。
+     */
+    fun shortcutsHintForPackage(pkg: String): List<String> {
+        val hints = linkedSetOf<String>()
+        val schemes = linkedSetOf<String>()
+        STATIC_PACKAGE_TO_SCHEMES[pkg]?.let { schemes.addAll(it) }
+        dynamicPackageToSchemes[pkg]?.let { schemes.addAll(it) }
+        dynamicPackageToDefaultScheme[pkg]?.let { schemes.add(it) }
+
+        // 1. 静态快捷方式
+        for ((_, uri) in COMMON_SHORTCUTS) {
+            val s = SCHEME.find(uri)?.groupValues?.get(1)?.lowercase()
+            if (s != null && s in schemes) {
+                hints.add(uri)
+            }
+        }
+
+        // 2. 静态与动态模板的 uriTemplate
+        for (template in ROUTE_TEMPLATES) {
+            if (template.targetPackage.equals(pkg, ignoreCase = true)) {
+                hints.add(template.uriTemplate)
+            }
+        }
+        for (template in dynamicRouteTemplates) {
+            if (template.targetPackage.equals(pkg, ignoreCase = true)) {
+                hints.add(template.uriTemplate)
+            }
+        }
+
+        // 3. 动态 schemes 前缀
+        for (s in schemes) {
+            hints.add("$s://")
+        }
+
+        return hints.toList()
+    }
+
+    /**
+     * 根据用户意图目标与可选包名，按最高优先级自动推导最佳直达 DeepLink URI。
+     * 支撑 Shortcuts-First 优先走直达路由跳过层层点击与开屏弹窗。
+     */
+    fun bestShortcutForIntent(goal: String, packageName: String? = null): String? {
+        val trimmed = goal.trim()
+        if (trimmed.isEmpty()) return null
+
+        // 1. 提取包名或目标包关联的 schemes
+        val targetSchemes = if (packageName != null) {
+            val s = mutableSetOf<String>()
+            STATIC_PACKAGE_TO_SCHEMES[packageName]?.let { s.addAll(it) }
+            dynamicPackageToSchemes[packageName]?.let { s.addAll(it) }
+            dynamicPackageToDefaultScheme[packageName]?.let { s.add(it) }
+            s
+        } else null
+
+        // 2. 精准匹配静态 COMMON_SHORTCUTS
+        val direct = COMMON_SHORTCUTS[trimmed]
+        if (direct != null) {
+            if (targetSchemes == null) return direct
+            val uriScheme = SCHEME.find(direct)?.groupValues?.get(1)?.lowercase()
+            if (uriScheme in targetSchemes) return direct
+        }
+
+        // 3. 高优先级功能意图关键词匹配（扫一扫、收付款、乘车码、购物车、我的订单、路线等）
+        val intentKeywords = listOf(
+            listOf("扫一扫", "扫码", "二维码") to listOf("扫一扫"),
+            listOf("付款", "收付款", "支付码", "付款码") to listOf("收付款"),
+            listOf("乘车码", "公交码", "地铁码") to listOf("乘车码"),
+            listOf("购物车") to listOf("购物车"),
+            listOf("订单", "我的订单", "已买到") to listOf("我的订单"),
+            listOf("朋友圈") to listOf("朋友圈"),
+            listOf("热榜") to listOf("热榜"),
+            listOf("路线", "查路线", "导航") to listOf("查路线"),
+            listOf("回家") to listOf("回家"),
+            listOf("去公司") to listOf("去公司"),
+            listOf("动态") to listOf("动态"),
+        )
+
+        for ((synonyms, targetKeys) in intentKeywords) {
+            if (synonyms.any { trimmed.contains(it) }) {
+                for (tKey in targetKeys) {
+                    val matchedEntry = COMMON_SHORTCUTS.entries.firstOrNull { (k, uri) ->
+                        if (!k.contains(tKey)) return@firstOrNull false
+                        if (targetSchemes != null) {
+                            val uriScheme = SCHEME.find(uri)?.groupValues?.get(1)?.lowercase()
+                            uriScheme in targetSchemes
+                        } else {
+                            val appMention = listOf("微信", "支付宝", "高德", "淘宝", "京东", "小红书", "知乎", "哔哩哔哩", "B站").firstOrNull { trimmed.contains(it) }
+                            if (appMention != null) k.contains(appMention) else true
+                        }
+                    }
+                    if (matchedEntry != null) {
+                        return matchedEntry.value
+                    }
+                }
+            }
+        }
+
+        // 4. 从 ROUTE_TEMPLATES 与 dynamicRouteTemplates 中做关键词与意图填槽匹配
+        val allTemplates = ROUTE_TEMPLATES + dynamicRouteTemplates
+        for (tpl in allTemplates) {
+            if (packageName != null && !tpl.targetPackage.equals(packageName, ignoreCase = true)) {
+                continue
+            }
+            val res = tpl.resolve(trimmed)
+            if (res != null) return res
+
+            if (trimmed.contains("搜索") || trimmed.contains("搜")) {
+                val query = trimmed
+                    .replace(Regex("^(?:请帮我|帮我|在|去|打开)?(?:微信|支付宝|淘宝|京东|小红书|高德地图|B站|哔哩哔哩|知乎)?(?:搜索|搜一下|搜一搜|搜)"), "")
+                    .trim()
+                    .removePrefix(":")
+                    .removePrefix("：")
+                    .trim()
+                if (query.isNotEmpty()) {
+                    val encoded = runCatching { java.net.URLEncoder.encode(query, "UTF-8") }.getOrDefault(query)
+                    return tpl.uriTemplate.replace("{keyword}", encoded).replace("{query}", encoded)
+                }
+            }
+        }
+
+        // 5. 尝试通用 resolveShortcut
+        val resolved = resolveShortcut(trimmed)
+        if (resolved != null) return resolved
+
+        if (packageName != null) {
+            // 仅当 trimmed 看起来像合法英文路径/查询参数且无中文空白时，才尝试拼接包名前缀路径
+            if (!trimmed.any { it.isWhitespace() || it in '\u4e00'..'\u9fff' }) {
+                val byPkg = resolveShortcut("$packageName:$trimmed")
+                if (byPkg != null) return byPkg
+            }
+        }
+
+        // 6. 若指定了 packageName 且有默认动态 scheme，兜底返回 scheme 根协议
+        if (packageName != null) {
+            val defaultScheme = dynamicPackageToDefaultScheme[packageName]
+            if (defaultScheme != null) {
+                return "$defaultScheme://"
+            }
+        }
+
+        return null
+    }
+
     fun isTrustedAppUri(uri: String): Boolean {
         val s = SCHEME.find(uri)?.groupValues?.get(1)?.lowercase() ?: return false
         return s in TRUSTED_SCHEMES || s in dynamicTrustedSchemes

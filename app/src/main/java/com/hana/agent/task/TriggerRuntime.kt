@@ -20,6 +20,7 @@ import com.hana.agent.ui.MainActivity
 import com.hana.agent.core.trigger.Scheduled
 import com.hana.agent.core.trigger.TriggerDefinition
 import com.hana.agent.core.trigger.TriggerEngine
+import com.hana.agent.core.trigger.TriggerWindow
 import com.hana.agent.core.trigger.ConditionOutcome
 import com.hana.agent.core.trigger.TriggerSnapshot
 import com.hana.agent.core.trigger.TriggerWindowState
@@ -115,6 +116,19 @@ object TriggerRuntime {
         catch (e: Exception) { reportStartFailure(context, store, trigger, window.key, e, resetCondition = true) }
     }
 
+    @Synchronized fun duplicate(context: Context, id: String): TriggerDefinition? {
+        val store = store(context)
+        val newId = "${id}-copy-${System.currentTimeMillis() % 100000}"
+        val copy = store.duplicate(id, newId)
+        if (copy != null) {
+            engine(context, store).rearm(System.currentTimeMillis())
+        }
+        return copy
+    }
+
+    @Synchronized fun recentExecutions(context: Context, id: String, limit: Int = 10): List<TriggerWindow> =
+        store(context).recentWindows(id, limit)
+
     @Synchronized fun list(context: Context): List<TriggerDefinition> = store(context).all()
 
     fun canScheduleExactly(context: Context): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
@@ -188,11 +202,20 @@ object TriggerRuntime {
     private fun engine(context: Context, store: FileTriggerStore) = TriggerEngine(store,
         { at -> arm(context, at) }, isIdle = { !((context.applicationContext as HanaApp).taskState.busy.value) }) { trigger, window ->
             if (trigger.reminderText != null) deliverReminder(context, store, trigger, window.key)
+            else if (trigger.isInQuietHours(System.currentTimeMillis())) {
+                store.mark(window.key, TriggerWindowState.Skipped, "quiet_hours")
+                store.retireDeliveredOneShots()
+            }
             else try { TaskService.startTrigger(context, trigger.goal, trigger.threadId, window.key, trigger.conditionGoal) }
                 catch (e: Exception) { reportStartFailure(context, store, trigger, window.key, e); throw e }
         }
 
     private fun deliverReminder(context: Context, store: FileTriggerStore, trigger: TriggerDefinition, key: String) {
+        if (trigger.isInQuietHours(System.currentTimeMillis())) {
+            store.mark(key, TriggerWindowState.Skipped, "quiet_hours")
+            store.retireDeliveredOneShots()
+            return
+        }
         val text = trigger.reminderText ?: return
         val conversations = ConversationStore.shared(context)
         val runId = "reminder:$key"

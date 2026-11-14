@@ -27,6 +27,16 @@ data class DiscoveredAppFunction(
 )
 
 /**
+ * AppFunction 执行结果结构化模型
+ */
+@Serializable
+data class AppFunctionExecutionResult(
+    val ok: Boolean,
+    val output: String,
+    val error: String? = null,
+)
+
+/**
  * 契约类型别名，无缝桥接核心 MCP 规范
  */
 typealias McpToolDef = McpToolDescriptor
@@ -144,15 +154,22 @@ object AppFunctionBridge {
     }
 
     /**
+     * 生成合法消毒的 tool name
+     */
+    internal fun buildToolName(fn: DiscoveredAppFunction): String {
+        val cleanPkg = fn.packageName.replace(Regex("[^a-zA-Z0-9_]"), "_")
+        val cleanId = fn.functionId.replace(Regex("[^a-zA-Z0-9_]"), "_")
+        val rawName = "appfn_${cleanPkg}_$cleanId"
+        return if (rawName.length > 64) rawName.substring(0, 64) else rawName
+    }
+
+    /**
      * 将已探测的 [DiscoveredAppFunction] 转换为标准的 MCP 工具描述符 [McpToolDescriptor]。
      * 生成合法消毒的 tool name 及 JSON Schema，支持作为本地工具直接注册到 Agent 规划执行体系中。
      */
     fun toMcpToolDefs(functions: List<DiscoveredAppFunction>): List<McpToolDescriptor> {
         return functions.map { fn ->
-            val cleanPkg = fn.packageName.replace(Regex("[^a-zA-Z0-9_]"), "_")
-            val cleanId = fn.functionId.replace(Regex("[^a-zA-Z0-9_]"), "_")
-            val rawName = "appfn_${cleanPkg}_$cleanId"
-            val toolName = if (rawName.length > 64) rawName.substring(0, 64) else rawName
+            val toolName = buildToolName(fn)
 
             val schema = buildJsonObject {
                 put("type", "object")
@@ -186,6 +203,76 @@ object AppFunctionBridge {
                 inputSchema = schema,
                 annotations = McpAnnotations(openWorldHint = true),
                 estimatedCostUnits = 0L,
+            )
+        }
+    }
+
+    /**
+     * 将 [DiscoveredAppFunction] 列表映射为 MCP 工具描述符列表以及由工具名到原始 AppFunction 契约对象的查找字典。
+     */
+    fun toToolDescriptorsAndIds(functions: List<DiscoveredAppFunction>): Pair<List<McpToolDescriptor>, Map<String, DiscoveredAppFunction>> {
+        val descriptors = toMcpToolDefs(functions)
+        val idMap = functions.associateBy { buildToolName(it) }
+        return descriptors to idMap
+    }
+
+    /**
+     * 探测当前系统中的 AppFunctions 并转换为工具描述符列表以及工具名映射表。
+     */
+    fun toToolDescriptorsAndIds(context: Context): Pair<List<McpToolDescriptor>, Map<String, DiscoveredAppFunction>> {
+        return toToolDescriptorsAndIds(discoverAppFunctions(context))
+    }
+
+    /**
+     * 在 Android 16+ (API 36+) 上执行指定的 AppFunction。
+     * 低于 Android 16 或执行失败时优雅降级，绝对不崩溃。
+     */
+    suspend fun executeAppFunction(
+        context: Context,
+        packageName: String,
+        functionId: String,
+        argsJson: String = "{}",
+    ): AppFunctionExecutionResult {
+        if (Build.VERSION.SDK_INT < MIN_APP_FUNCTIONS_SDK_INT) {
+            return AppFunctionExecutionResult(
+                ok = false,
+                output = "",
+                error = "unsupported_sdk",
+            )
+        }
+
+        return runCatching {
+            val appFunctionManager = context.getSystemService("app_function")
+                ?: return AppFunctionExecutionResult(
+                    ok = false,
+                    output = "",
+                    error = "service_unavailable",
+                )
+
+            val managerClass = appFunctionManager.javaClass
+            val method = managerClass.methods.firstOrNull { m ->
+                m.name == "executeAppFunction" || m.name == "executeFunction"
+            }
+
+            if (method == null) {
+                return AppFunctionExecutionResult(
+                    ok = false,
+                    output = "",
+                    error = "method_not_found",
+                )
+            }
+
+            val result = method.invoke(appFunctionManager, packageName, functionId, argsJson)
+            AppFunctionExecutionResult(
+                ok = true,
+                output = result?.toString() ?: "{}",
+                error = null,
+            )
+        }.getOrElse { e ->
+            AppFunctionExecutionResult(
+                ok = false,
+                output = "",
+                error = e.message ?: e.javaClass.simpleName,
             )
         }
     }

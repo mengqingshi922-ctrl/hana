@@ -29,14 +29,13 @@ object SkillOutcomes {
     /** 追加一次结果并只留最近 [KEEP] 次;按规则可能转为停用。 */
     fun record(s: PersonalSkill, r: SkillResult, followed: Boolean): PersonalSkill {
         val outcomes = (s.outcomes + r.name).takeLast(KEEP)
-        if (s.status == SkillStatus.trial) return s.copy(outcomes = outcomes, status = when (r) {
-            SkillResult.verified -> SkillStatus.active
-            SkillResult.failed, SkillResult.verifier_rejected -> SkillStatus.suspended
-            else -> SkillStatus.trial
-        })
-        val suspend = s.status == SkillStatus.active &&
-            shouldSuspend(outcomes, followed && r == SkillResult.verifier_rejected)
-        return s.copy(outcomes = outcomes, status = if (suspend) SkillStatus.suspended else s.status)
+        val suspend = shouldSuspend(outcomes, followed && r == SkillResult.verifier_rejected)
+        val nextStatus = when {
+            suspend -> SkillStatus.suspended
+            s.status == SkillStatus.trial && r == SkillResult.verified -> SkillStatus.active
+            else -> s.status
+        }
+        return s.copy(outcomes = outcomes, status = nextStatus)
     }
 
     /** 最近 3 次(没核对过的不算)里有 2 次不是核实过的,或这次照着做被核查退回。 */
@@ -50,6 +49,7 @@ object SkillOutcomes {
      * 回答如实说没办成、只办了一部分的算 failed;没判成的不说明技能灵不灵,算 unreviewed;
      * 办成的按 [LearnGate] 算 verified(没跑核查也算),核查跑过却没通过的算 unverified;
      * 失败的只有放弃、步数用完算 failed,模型出错、环境出问题、操作保护停下的算 unreviewed。
+     * 若原因属于预算或 Token 耗尽,不计为技能失败,判为 unreviewed。
      */
     fun resultOf(end: TaskState, outcome: RunOutcome): SkillResult? = when (end) {
         is TaskState.Succeeded -> when {
@@ -61,6 +61,10 @@ object SkillOutcomes {
             else -> SkillResult.unverified
         }
         is TaskState.Failed -> when {
+            end.kind == FailKind.Guard ||
+                end.reason.contains("预算", ignoreCase = true) ||
+                end.reason.contains("budget", ignoreCase = true) ||
+                end.reason.contains("token", ignoreCase = true) -> SkillResult.unreviewed
             VERIFIER_REJECTED_MARK in end.reason -> SkillResult.verifier_rejected
             end.kind == FailKind.GaveUp || end.kind == FailKind.StepLimit -> SkillResult.failed
             // 模型出错、运行环境出问题、操作保护停下:和照着做灵不灵无关

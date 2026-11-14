@@ -171,6 +171,7 @@ class AgentLoop(
     private val semanticRouteCache: SemanticRouteCache? = null,
     private val factGraph: TemporalFactGraph? = null,
     private val memoryFlushHook: MemoryFlushHook? = null,
+    private val onFailureTrajectory: ((com.hana.agent.core.eval.EvalTask, String) -> Unit)? = null,
 ) {
     init {
         require(maxSteps > 0) { "maxSteps must be positive" }
@@ -253,6 +254,11 @@ class AgentLoop(
     @Volatile private var activeTaintSessionId: String = "default"
     val activeAsk: Delivery.Ask? get() = user.activeAsk
 
+    @Volatile private var lastFailurePlaceName: String? = null
+    private val recentActionsForEval = ArrayDeque<String>(24)
+    @Volatile private var latestObservedTextsForEval: List<String> = emptyList()
+    private var consecutivePostActionMismatches = 0
+
     /** 新入口:同一对话里的插话和控制经 [inbox] 进入;旧入口继续使用相同的执行路径。 */
     suspend fun run(spec: RunSpec, inbox: RunInbox): TaskState = runInternal(spec.goal, spec.priorTurns, inbox, spec.provenance, spec.threadId)
 
@@ -280,6 +286,10 @@ class AgentLoop(
         com.hana.agent.core.privacy.PocketPrivacyGuard.reset()
         goalTracker.initialize(task)
         watchdog.reset()
+        lastFailurePlaceName = null
+        recentActionsForEval.clear()
+        latestObservedTextsForEval = emptyList()
+        consecutivePostActionMismatches = 0
         // 从用户长目标中自动识别子目标列表（支持分步 1. 2. 3. 或 -> 分割）
         val goalParts = task.split(Regex("(?:\\n\\s*\\d+[.、]\\s*|\\s*->\\s*|\\s*(?:然后|接着|再去|最后)\\s*)"))
             .map { it.trim() }
@@ -326,6 +336,23 @@ class AgentLoop(
             job = null
             user.clear()
             confirmations?.reset()
+        }
+        val failureExporter = onFailureTrajectory
+        if (end is TaskState.Failed && failureExporter != null) {
+            runCatching {
+                val currentVerdict = watchdog.evaluate().takeIf { it != WatchdogVerdict.HEALTHY }
+                val trajectory = com.hana.agent.core.eval.FailureTrajectory(
+                    goal = task,
+                    apps = listOfNotNull(lastFailurePlaceName).distinct(),
+                    verdict = currentVerdict,
+                    failureReason = end.reason,
+                    lastObservedTexts = latestObservedTextsForEval,
+                    executedActions = recentActionsForEval.toList(),
+                )
+                val evalTask = com.hana.agent.core.eval.FailureTrajectoryExporter.export(trajectory)
+                val json = com.hana.agent.core.eval.FailureTrajectoryExporter.exportToJson(trajectory)
+                failureExporter.invoke(evalTask, json)
+            }
         }
         _state.value = end
         return end
@@ -384,6 +411,13 @@ class AgentLoop(
         taskStartTimeMs = now()
         goalTracker.initialize(task)
         watchdog.reset()
+        lastFailurePlaceName = null
+        recentActionsForEval.clear()
+        latestObservedTextsForEval = emptyList()
+        consecutivePostActionMismatches = 0
+        recentActionsForEval.clear()
+        latestObservedTextsForEval = emptyList()
+        lastFailurePlaceName = null
         var consecutiveWatchdogFailures = 0
         latestWords = ownWords(raw, opening)
         val priorTurns = shots.collapse(rawPrior)
@@ -501,7 +535,11 @@ class AgentLoop(
         if (flags.replay && replay != null && !task.trimStart().startsWith(WEB_CHANNEL_PREFIX)) {
             val reviewRoute = provenance.origin == RunOrigin.Ui && intentGate != null && routeMatcher?.candidates(task)?.isNotEmpty() == true
             if (reviewRoute) resolveIntent()
-            tryReplay(task, history, executor, ctx, track, intent)?.let { place = it; acted = true }
+            tryReplay(task, history, executor, ctx, track, intent)?.let {
+                place = it
+                lastFailurePlaceName = it.name
+                acted = true
+            }
         }
 
         // Google ARTEMIS 极速直达快轨 (Fast-Path):
@@ -515,6 +553,7 @@ class AgentLoop(
                 }
                 is FastPathOutcome.HandedOver -> {
                     place = fast.place
+                    lastFailurePlaceName = fast.place?.name
                     acted = true
                 }
                 null -> Unit
@@ -731,7 +770,7 @@ class AgentLoop(
             }
             if (flags.batchSteps && first.name == DO_STEPS_TOOL) {
                 when (val end = batch(first, skipped, history, specs, guards, executor, track, step, note, tool, reason, narration, recordReply = ::recordReply,
-                    app = { place = it }, steerWaiting = { inbox?.hasSteers() == true },
+                    app = { place = it; lastFailurePlaceName = it.name }, steerWaiting = { inbox?.hasSteers() == true },
                     noteVerdicts = { s, sub, v ->
                         // 和单步一样计卡住提醒与同一段字的重复输入
                         val typed = StuckAdvice.typedText(tools.verb(s.tool), parseArgs(s.argsJson), sub?.content)
@@ -750,7 +789,7 @@ class AgentLoop(
                         k to ((v as? JsonPrimitive)?.contentOrNull ?: v.toString())
                     }.orEmpty()
                     when (val end = runMacroBatch(first, skipped, macro, macroParams, history, guards, executor, track, step, note, tool, reason, narration,
-                        recordReply = ::recordReply, app = { place = it }, steerWaiting = { inbox?.hasSteers() == true },
+                        recordReply = ::recordReply, app = { place = it; lastFailurePlaceName = it.name }, steerWaiting = { inbox?.hasSteers() == true },
                         noteVerdicts = { s, sub, v ->
                             val typed = StuckAdvice.typedText(tools.verb(s.tool), parseArgs(s.argsJson), sub?.content)
                             stuckTracker.advice(v, typed, place?.name)
@@ -778,7 +817,7 @@ class AgentLoop(
                 }.toString()
                 val burstCall = Part.ToolCall(first.id, DO_STEPS_TOOL, syntheticArgsJson)
                 when (val end = batch(burstCall, emptyList(), history, specs, guards, executor, track, step, note, tool, reason, narration, recordReply = ::recordReply,
-                    app = { place = it }, steerWaiting = { inbox?.hasSteers() == true },
+                    app = { place = it; lastFailurePlaceName = it.name }, steerWaiting = { inbox?.hasSteers() == true },
                     noteVerdicts = { s, sub, v ->
                         val typed = StuckAdvice.typedText(tools.verb(s.tool), parseArgs(s.argsJson), sub?.content)
                         stuckTracker.advice(v, typed, place?.name)
@@ -794,6 +833,11 @@ class AgentLoop(
             gateState = running
             var advice: String? = null
             var waitsForUser = false
+            val actionFormatted = "${first.name}(${Redactor.args(verb, first.argsJson, secretField = true) ?: "{}"})"
+            recentActionsForEval.addLast(actionFormatted)
+            while (recentActionsForEval.size > 20) {
+                recentActionsForEval.removeFirst()
+            }
             val action = executor.run(first, Origin.Model(step), object : FollowUp {
                 override suspend fun resolve(exec: ToolExecution): ToolExecution? {
                     var e = exec
@@ -857,7 +901,33 @@ class AgentLoop(
             if (verb == Verb.HandToUser && (args["reason"] as? JsonPrimitive)?.contentOrNull == PAYMENT) paymentHandedOver = true
             val isError = (exec.content["ok"] as? JsonPrimitive)?.booleanOrNull == false
             noteResultEvents(verb, exec.content)
-            exec.place?.let { place = it }
+            exec.place?.let {
+                place = it
+                lastFailurePlaceName = it.name
+            }
+            val currentTexts = extractScreenTexts(exec.content)
+            if (currentTexts.isNotEmpty()) {
+                latestObservedTextsForEval = currentTexts
+            }
+            if (exec.changed != null && verb in setOf(Verb.Tap, Verb.PhoneGesture, Verb.Scroll, Verb.Swipe, Verb.Back, Verb.LaunchApp, Verb.TypeText)) {
+                val reflection = watchdog.evaluatePostAction(
+                    expectation = com.hana.agent.core.watchdog.PostActionExpectation(
+                        actionTool = first.name,
+                        expectScreenChange = verb in setOf(Verb.Tap, Verb.LaunchApp),
+                    ),
+                    actualChanged = exec.changed == true,
+                    actualTexts = currentTexts,
+                    actualPackage = exec.place?.name,
+                )
+                if (!reflection.met) {
+                    consecutivePostActionMismatches++
+                    if (consecutivePostActionMismatches >= 2) {
+                        emit(RunEvent.State(now(), "post_action_mismatch", "${first.name}:${reflection.mismatchReason ?: "unmet"}"))
+                    }
+                } else {
+                    consecutivePostActionMismatches = 0
+                }
+            }
             track.after(tools.verb(first.name), !isError, ran.verdicts.isNotEmpty() || advice != null, exec.changed, false, exec.place?.name)
             com.hana.agent.core.bus.RegisterBus.captureFromToolContent(exec.content, step)
             goalTracker.onActionExecuted(exec, place?.name, historySize = history.size)
@@ -866,7 +936,6 @@ class AgentLoop(
                 !(verb == Verb.Wait && place == null && exec.place == null)
             ) {
                 watchdog.recordAction(first.name, verb)
-                val currentTexts = extractScreenTexts(exec.content)
                 val isPostSubmit = (verb == Verb.Tap || first.name.contains("submit", ignoreCase = true)) && exec.changed == false && !isError
                 if (currentTexts.isNotEmpty()) {
                     watchdog.recordScreenTexts(currentTexts, isPostSubmit = isPostSubmit, stagnated = exec.changed == false)

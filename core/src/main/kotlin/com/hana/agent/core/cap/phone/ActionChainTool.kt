@@ -1,6 +1,7 @@
 package com.hana.agent.core.cap.phone
 
 import com.hana.agent.core.action.ChainPredicateKind
+import com.hana.agent.core.action.CompactActionDsl
 import com.hana.agent.core.action.MacroActionChain
 import com.hana.agent.core.action.MacroStep
 import com.hana.agent.core.tool.Args
@@ -45,29 +46,35 @@ internal object ActionChainTool : PhoneTool {
                     put("required", buildJsonArray { add("tool"); add("args") })
                 })
             },
+            "compact" to str("Optional compact DSL action sequence string (e.g. 't(e3); tp(e3, \"hello\"); bk()')"),
             "fallbackStrategy" to str("Fallback strategy: backtrack, stop_and_query", listOf("backtrack", "stop_and_query"))
         ),
-        required = listOf("steps")
+        required = emptyList()
     )
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution = execute(a.o, ctx)
 
-    fun parseChain(args: JsonObject): MacroActionChain {
-        val stepsArray = args["steps"] as? JsonArray ?: return MacroActionChain(emptyList())
-        val steps = stepsArray.mapNotNull { it as? JsonObject }.map { stepObj ->
-            val tool = stepObj["tool"]?.jsonPrimitive?.contentOrNull ?: ""
-            val stepArgs = when (val rawArgs = stepObj["args"]) {
-                is JsonObject -> rawArgs
-                is JsonPrimitive -> runCatching { Json.parseToJsonElement(rawArgs.content).jsonObject }.getOrNull() ?: JsonObject(emptyMap())
-                else -> JsonObject(emptyMap())
+    fun parseChain(args: JsonObject, allowCompact: Boolean = true): MacroActionChain {
+        val compactStr = args["compact"]?.jsonPrimitive?.contentOrNull
+        val steps = if (allowCompact && !compactStr.isNullOrBlank()) {
+            CompactActionDsl.parseBatch(compactStr)
+        } else {
+            val stepsArray = args["steps"] as? JsonArray ?: return MacroActionChain(emptyList())
+            stepsArray.mapNotNull { it as? JsonObject }.map { stepObj ->
+                val tool = stepObj["tool"]?.jsonPrimitive?.contentOrNull ?: ""
+                val stepArgs = when (val rawArgs = stepObj["args"]) {
+                    is JsonObject -> rawArgs
+                    is JsonPrimitive -> runCatching { Json.parseToJsonElement(rawArgs.content).jsonObject }.getOrNull() ?: JsonObject(emptyMap())
+                    else -> JsonObject(emptyMap())
+                }
+                val predicateStr = stepObj["predicate"]?.jsonPrimitive?.contentOrNull
+                val predicate = predicateStr?.let {
+                    runCatching { ChainPredicateKind.valueOf(it) }.getOrNull()
+                } ?: ChainPredicateKind.NONE
+                val expectText = stepObj["expectText"]?.jsonPrimitive?.contentOrNull
+                val timeoutMs = stepObj["timeoutMs"]?.jsonPrimitive?.longOrNull ?: 300L
+                MacroStep(tool, stepArgs, predicate, expectText, timeoutMs)
             }
-            val predicateStr = stepObj["predicate"]?.jsonPrimitive?.contentOrNull
-            val predicate = predicateStr?.let {
-                runCatching { ChainPredicateKind.valueOf(it) }.getOrNull()
-            } ?: ChainPredicateKind.NONE
-            val expectText = stepObj["expectText"]?.jsonPrimitive?.contentOrNull
-            val timeoutMs = stepObj["timeoutMs"]?.jsonPrimitive?.longOrNull ?: 300L
-            MacroStep(tool, stepArgs, predicate, expectText, timeoutMs)
         }
         val fallback = args["fallbackStrategy"]?.jsonPrimitive?.contentOrNull ?: "backtrack"
         return MacroActionChain(steps, fallback)
@@ -75,11 +82,16 @@ internal object ActionChainTool : PhoneTool {
 
     /** 无上下文的契约测试调用（兼容 ActionChainExecutionTest） */
     suspend fun execute(args: JsonObject): ToolExecution {
-        val steps = args["steps"] as? JsonArray ?: return ToolExecution(buildJsonObject { put("ok", false); put("error", "missing_steps") })
+        val hasSteps = args.containsKey("steps") && args["steps"] is JsonArray
+        val hasCompact = args.containsKey("compact") && !args["compact"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()
+        if (!hasSteps && !hasCompact) {
+            return ToolExecution(buildJsonObject { put("ok", false); put("error", "missing_steps") })
+        }
+        val chain = parseChain(args)
         return ToolExecution(buildJsonObject {
             put("ok", true)
-            put("stepsCount", steps.size)
-            put("strategy", args["fallbackStrategy"]?.jsonPrimitive?.contentOrNull ?: "backtrack")
+            put("stepsCount", chain.steps.size)
+            put("strategy", chain.fallbackStrategy)
         })
     }
 
@@ -92,8 +104,15 @@ internal object ActionChainTool : PhoneTool {
                 put("message", "Action chain requires an active execution context with chainExecutor or sub.")
             })
         }
-        val steps = args["steps"] as? JsonArray ?: return ToolExecution(buildJsonObject { put("ok", false); put("error", "missing_steps") })
-        val chain = parseChain(args)
+        val hasSteps = args.containsKey("steps") && args["steps"] is JsonArray
+        val hasCompact = args.containsKey("compact") && !args["compact"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()
+        if (!hasSteps && !hasCompact) {
+            return ToolExecution(buildJsonObject { put("ok", false); put("error", "missing_steps") })
+        }
+        if (!ctx.config.enableCompactDsl && hasCompact && !hasSteps) {
+            return ToolExecution(buildJsonObject { put("ok", false); put("error", "compact_dsl_disabled") })
+        }
+        val chain = parseChain(args, allowCompact = ctx.config.enableCompactDsl)
         val chainExecutor = ctx.chainExecutor
         if (chainExecutor != null) {
             val result = chainExecutor(chain)

@@ -108,6 +108,32 @@ enum class SelfHealingTier {
 }
 
 /**
+ * 单步动作后置预期。
+ * @property actionTool 刚执行的动作工具名（如 phone_tap, phone_swipe 等）
+ * @property expectScreenChange 预期操作后屏幕是否应当发生可见变化
+ * @property expectedTextTokens 预期操作后屏幕上应当出现的文本关键词 tokens
+ * @property expectedPackage 预期操作后应当停留在的目标应用包名
+ */
+data class PostActionExpectation(
+    val actionTool: String,
+    val expectScreenChange: Boolean = true,
+    val expectedTextTokens: List<String> = emptyList(),
+    val expectedPackage: String? = null,
+)
+
+/**
+ * MadeAgents 分层反思校验评估结果。
+ * @property met 动作后置预期是否全部达成
+ * @property mismatchReason 未达成预期的具体原因（若达成则为 null）
+ * @property suggestedRecovery 建议触发的自愈阶梯级别（若达成则为 null）
+ */
+data class StepReflectionResult(
+    val met: Boolean,
+    val mismatchReason: String? = null,
+    val suggestedRecovery: SelfHealingTier? = null,
+)
+
+/**
  * 带视觉样式线索的表单文本观测条目（颜色十六进制或红字标记由端侧 OCR / 视觉通道提供）
  */
 data class FormTextObservation(
@@ -271,6 +297,62 @@ class StateEntropyWatchdog(
         }
         lastScreenTexts = normalized
         return alert
+    }
+
+    /**
+     * MadeAgents 分层步后反思校验：
+     * 在动作执行后立即审计界面状态是否达成预期（屏幕变化、预期文案、目标包名），
+     * 补充循环级状态熵监控，在单步偏离时快速推荐自愈手段。
+     */
+    fun evaluatePostAction(
+        expectation: PostActionExpectation,
+        actualChanged: Boolean,
+        actualTexts: List<String>,
+        actualPackage: String?,
+    ): StepReflectionResult {
+        // 1. 预期屏幕产生变化，但实际界面完全未改变
+        if (expectation.expectScreenChange && !actualChanged) {
+            val reason = "Screen state did not change as expected after ${expectation.actionTool}"
+            return StepReflectionResult(
+                met = false,
+                mismatchReason = reason,
+                suggestedRecovery = SelfHealingTier.TIER_1_DISMISS_OBSTACLE,
+            )
+        }
+
+        // 2. 预期留在特定包名，但发生意料之外的应用跳转/漂移
+        if (expectation.expectedPackage != null && actualPackage != null && expectation.expectedPackage != actualPackage) {
+            val reason = "Package mismatch: expected ${expectation.expectedPackage}, but got $actualPackage"
+            return StepReflectionResult(
+                met = false,
+                mismatchReason = reason,
+                suggestedRecovery = SelfHealingTier.TIER_2_SAFETY_BACK,
+            )
+        }
+
+        // 3. 预期关键文本 tokens 是否全部出现在实际界面中
+        if (expectation.expectedTextTokens.isNotEmpty()) {
+            val missingTokens = expectation.expectedTextTokens.filter { expected ->
+                actualTexts.none { actual -> actual.contains(expected, ignoreCase = true) }
+            }
+            if (missingTokens.isNotEmpty()) {
+                val hasErrorCopy = actualTexts.any { looksLikeErrorCopy(it) }
+                val reason = "Expected text tokens not found: $missingTokens"
+                val recovery = if (hasErrorCopy) {
+                    SelfHealingTier.TIER_1_DISMISS_OBSTACLE
+                } else {
+                    SelfHealingTier.TIER_2_SAFETY_BACK
+                }
+                return StepReflectionResult(
+                    met = false,
+                    mismatchReason = reason,
+                    suggestedRecovery = recovery,
+                )
+            }
+        }
+
+        // 全部预期均已满足
+        return StepReflectionResult(met = true, mismatchReason = null, suggestedRecovery = null)
     }
 
     /**

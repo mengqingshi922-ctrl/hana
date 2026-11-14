@@ -405,6 +405,8 @@ fun ChatScreen(
             editRequest = editRequest,
         )
 
+        val appTaskState = (context.applicationContext as? com.hana.agent.HanaApp)?.taskState
+        val pipMuted by (appTaskState?.targetMuted?.collectAsState() ?: remember { mutableStateOf(false) })
         val liveAudioAmplitude by (context.applicationContext as? com.hana.agent.HanaApp)?.voiceAmplitude?.collectAsState()
             ?: remember { mutableStateOf(0f) }
 
@@ -431,9 +433,11 @@ fun ChatScreen(
                 val card = count - 1 - after
                 if (card >= 0) scope.launch { if (reduceMotion) listState.scrollToItem(card) else listState.animateScrollToItem(card) }
             },
-            pipInput = (context.applicationContext as? com.hana.agent.HanaApp)?.taskState?.pipInput,
+            pipInput = appTaskState?.pipInput,
             pipTouchEnabled = remember { com.hana.agent.settings.FeatureFlags.get(context).pipTouchEnabled() },
             audioAmplitude = liveAudioAmplitude,
+            isMuted = pipMuted,
+            onToggleMute = appTaskState?.let { ts -> { ts.toggleTargetMute() } },
         )
 
         // 长按消息的菜单盖在最上面:复制纯文字;引用放到输入框上方;选择文字让那条换回系统的长按选中

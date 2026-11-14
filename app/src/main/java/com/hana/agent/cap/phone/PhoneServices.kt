@@ -16,14 +16,17 @@ import com.hana.agent.settings.RecoverySettings
  * 自动恢复与授权)、任务和启动恢复共用的那条 shell 连接、配对流程、「去设置」提示。
  * 助手进程(HelperMain、ShellService)跑在 shell 身份下,没有 App 对象,不经这里。
  */
-class PhoneServices(context: Context) {
+class PhoneServices(
+    context: Context,
+    rootLauncher: ((command: String, stdinLine: ByteArray) -> Result<Unit>)? = null,
+) {
     private val app = context.applicationContext
 
     /** 助手交来 Binder 的落点:助手只认一个进程里的一个落点。 */
     val hub = HelperHub(app)
 
     /** 配对、经 adbd 起助手、看门狗。 */
-    val shellManager = BuiltinShellManager(app, hub) { recoverySettings.consent.value }
+    val shellManager = BuiltinShellManager(app, hub, rootLauncher) { recoverySettings.consent.value }
 
     /** 内置助手本身(状态、配对、重试、解除配对)。 */
     val shellControl: BuiltinShellControl get() = shellManager.engine

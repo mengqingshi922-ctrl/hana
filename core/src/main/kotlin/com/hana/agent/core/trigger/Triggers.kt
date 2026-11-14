@@ -26,11 +26,31 @@ data class TriggerDefinition(
     val calendarTime: String? = null,
     val calendarZone: String? = null,
     val calendarDays: List<Int> = emptyList(),
+    val calendarTimes: List<String> = emptyList(),
+    val quietStartMinute: Int? = null, // 0..1439
+    val quietEndMinute: Int? = null,    // 0..1439
 ) {
     init {
         require(id.isNotBlank() && threadId.isNotBlank() && goal.isNotBlank())
         require(nextAtMs >= 0 && (intervalMs == null || intervalMs > 0))
-        require(calendarTime == null || (intervalMs == null && calendarZone != null && calendarDays.all { it in 1..7 }))
+        require((calendarTime == null && calendarTimes.isEmpty()) || (intervalMs == null && calendarZone != null && calendarDays.all { it in 1..7 }))
+        require(quietStartMinute == null || quietStartMinute in 0..1439)
+        require(quietEndMinute == null || quietEndMinute in 0..1439)
+    }
+
+    /**
+     * 判断指定时间戳当前是否处于免打扰时段内（支持跨零点，例如 23:00~07:00）。
+     */
+    fun isInQuietHours(nowMs: Long, zoneId: ZoneId = ZoneId.systemDefault()): Boolean {
+        val start = quietStartMinute ?: return false
+        val end = quietEndMinute ?: return false
+        val localTime = Instant.ofEpochMilli(nowMs).atZone(zoneId).toLocalTime()
+        val currentMinute = localTime.hour * 60 + localTime.minute
+        return if (start <= end) {
+            currentMinute in start..end
+        } else {
+            currentMinute >= start || currentMinute <= end
+        }
     }
 }
 
@@ -62,6 +82,10 @@ interface TriggerStore {
     /** 一次性任务只在结果确定送达后删除。 */
     fun retireDeliveredOneShots()
     fun remove(id: String)
+    /** 复制指定计划为新 ID 的副本。 */
+    fun duplicate(id: String, newId: String): TriggerDefinition? = null
+    /** 查询指定触发器的最近执行记录窗口。 */
+    fun recentWindows(triggerId: String, limit: Int = 10): List<TriggerWindow> = emptyList()
 }
 
 @Serializable data class TriggerSnapshot(val triggers: List<TriggerDefinition>, val windows: List<TriggerWindow>)
@@ -99,6 +123,8 @@ class MemoryTriggerStore(initial: TriggerSnapshot = TriggerSnapshot(emptyList(),
             val window = TriggerWindow(t.id, t.nextAtMs, nowMs, missed)
             ledger[window.key] = window
             triggers[t.id] = when {
+                t.calendarTimes.isNotEmpty() -> t.copy(nextAtMs = nextMultiCalendarAt(t.calendarTimes, t.calendarZone!!,
+                    t.calendarDays, nowMs))
                 t.calendarTime != null -> t.copy(nextAtMs = nextCalendarAt(t.calendarTime, t.calendarZone!!,
                     t.calendarDays, nowMs))
                 interval != null -> t.copy(nextAtMs = t.nextAtMs + (missed + 1) * interval)
@@ -133,11 +159,21 @@ class MemoryTriggerStore(initial: TriggerSnapshot = TriggerSnapshot(emptyList(),
     }
 
     @Synchronized override fun retireDeliveredOneShots() {
-        val retired = triggers.values.filter { it.intervalMs == null && it.calendarTime == null && ledger.values.any { w ->
+        val retired = triggers.values.filter { it.intervalMs == null && it.calendarTime == null && it.calendarTimes.isEmpty() && ledger.values.any { w ->
             w.triggerId == it.id && w.dueAtMs == it.nextAtMs && w.state == TriggerWindowState.Delivered } }
             .map { it.id }
         retired.forEach { id -> triggers.remove(id); ledger.entries.removeAll { it.value.triggerId == id } }
     }
+
+    @Synchronized override fun duplicate(id: String, newId: String): TriggerDefinition? {
+        val existing = triggers[id] ?: return null
+        val copy = existing.copy(id = newId)
+        triggers[newId] = copy
+        return copy
+    }
+
+    @Synchronized override fun recentWindows(triggerId: String, limit: Int): List<TriggerWindow> =
+        ledger.values.filter { it.triggerId == triggerId }.sortedByDescending { it.dueAtMs }.take(limit)
 }
 
 /** 以当地日历递进，跨夏令时仍保持同一钟点；不存在的钟点使用系统的向前调整规则。 */
@@ -151,6 +187,13 @@ fun nextCalendarAt(time: String, zone: String, days: List<Int>, afterMs: Long): 
         date = date.plusDays(1)
     }
     error("calendar schedule has no matching day")
+}
+
+/** 计算多个时刻中在 [afterMs] 之后最近的下一个触发时间戳。 */
+fun nextMultiCalendarAt(times: List<String>, zone: String, days: List<Int>, afterMs: Long): Long {
+    require(times.isNotEmpty()) { "times cannot be empty" }
+    return times.map { nextCalendarAt(it, zone, days, afterMs) }.minOrNull()
+        ?: error("calendar schedule has no matching day")
 }
 
 /** 排期由宿主实现；核心负责先记账再派发，异常重启时不会重复执行已认领的时段。 */

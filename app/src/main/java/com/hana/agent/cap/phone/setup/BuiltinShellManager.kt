@@ -50,7 +50,12 @@ import java.util.concurrent.atomic.AtomicReference
  * 内置助手的真实现:配对、经本机 adbd 起助手、看门狗。由 [com.hana.agent.cap.phone.PhoneServices] 建一份,
  * App 启动时由 [start] 开始看着助手;[hub] 是助手交来 Binder 的落点;[consent] 是用户对那几项能力的选择(「自动打开无线调试」看它)。
  */
-class BuiltinShellManager(context: Context, private val hub: HelperHub, private val consent: () -> RecoveryConsent) {
+class BuiltinShellManager(
+    context: Context,
+    private val hub: HelperHub,
+    private val rootLauncher: ((command: String, stdinLine: ByteArray) -> Result<Unit>)? = null,
+    private val consent: () -> RecoveryConsent,
+) {
     private val app = context.applicationContext
     private var started = false
 
@@ -59,7 +64,7 @@ class BuiltinShellManager(context: Context, private val hub: HelperHub, private 
     val scanningPorts: StateFlow<Boolean> = _scanningPorts.asStateFlow()
 
     private val platform: AndroidPlatform by lazy {
-        AndroidPlatform(app, hub, { lastConnectCandidates = it }, { _scanningPorts.value = it })
+        AndroidPlatform(app, hub, { lastConnectCandidates = it }, { _scanningPorts.value = it }, rootLauncher)
     }
 
     /** 最近一次找连接端口时各来源给了几个候选(诊断信息用);这次进程里还没连过为 null。 */
@@ -140,6 +145,7 @@ class BuiltinShellManager(context: Context, private val hub: HelperHub, private 
         private val hub: HelperHub,
         private val candidates: (ConnectCandidates) -> Unit,
         private val scanning: (Boolean) -> Unit,
+        private val rootLauncher: ((command: String, stdinLine: ByteArray) -> Result<Unit>)? = null,
     ) : BuiltinShellPlatform {
         /** 用户填的端口,下一次连接取走。 */
         val manualPort = AtomicReference<Int?>(null)
@@ -180,12 +186,28 @@ class BuiltinShellManager(context: Context, private val hub: HelperHub, private 
         }
 
         override suspend fun launchHelper() {
-            val tls = AndroidAdb.tls(AndroidAdb.identity(app))
+            val before = hub.shell.value
             // 助手每次交接前都核对 Hana 的签名
             val command = HelperHandoff.command(app.applicationInfo.sourceDir, app.packageName, Process.myUid(), ownCertPin(app))
+
+            // 分级 Root 模式优先快速拉起：经装配层注入的 Root 回调在显式开启且探测到 su 时尝试
+            val launchViaRoot = rootLauncher
+            if (launchViaRoot != null) {
+                val nonce = hub.issueLaunchNonce()
+                val stdinData = HelperHandoff.stdinLine(nonce)
+                val rootStarted = launchViaRoot(command, stdinData)
+                if (rootStarted.isSuccess) {
+                    val handoff = withTimeoutOrNull(HANDOFF_WAIT_MS) { hub.shell.first { s -> s != null && s !== before } }
+                    if (handoff != null) {
+                        return
+                    }
+                }
+            }
+
+            // 无 Root、开关关闭或 Root 启动未交接成功时，无缝回退到原有 ADB TLS 启动通道
+            val tls = AndroidAdb.tls(AndroidAdb.identity(app))
             val connection = connect(tls)
             // 流开着 sh 就一直等;交接到了(或超时)再关,交接结果仍由引擎从 HelperHub 判断
-            val before = hub.shell.value
             connection.use {
                 val stream = it.exec(command)
                 stream.write(HelperHandoff.stdinLine(hub.issueLaunchNonce()))

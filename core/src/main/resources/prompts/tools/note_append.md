@@ -1,0 +1,1 @@
+Append a structured note item into the task scratchpad (e.g. price, contact, summary, todo) to avoid losing key facts during multi-step navigation.

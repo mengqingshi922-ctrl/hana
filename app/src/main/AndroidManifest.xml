@@ -296,6 +296,16 @@
                 <action android:name="com.hana.agent.ACTION_CREATE_TASK" />
             </intent-filter>
         </receiver>
+        <!-- 主动感知通知监听服务：仅在用户显式开启特性开关且在允许白名单中时处理，纯规则分流与胶囊角标展示 -->
+        <service
+            android:name=".proactive.HanaNoticeListenerService"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

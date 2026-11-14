@@ -107,6 +107,13 @@ class TaskCenterState {
     val summarizing: StateFlow<Set<String>> = _summarizing.asStateFlow()
     val _frames = MutableStateFlow<Bitmap?>(null)
     val frames: StateFlow<Bitmap?> = _frames.asStateFlow()
+    /** 当前展示任务在虚拟屏上运行的目标 App 是否已静音。 */
+    val _targetMuted = MutableStateFlow(false)
+    val targetMuted: StateFlow<Boolean> = _targetMuted.asStateFlow()
+    /** 切换当前展示任务的虚拟屏 App 静音状态。 */
+    fun toggleTargetMute() {
+        shownRun?.toggleTargetAudioMute()
+    }
     /** 当前展示任务的虚拟屏小窗手势反向注入接口。 */
     val pipInput: com.hana.agent.cap.phone.display.PipInput?
         get() = shownRun?.pipInput

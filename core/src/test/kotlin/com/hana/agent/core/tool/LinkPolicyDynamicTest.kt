@@ -3,6 +3,7 @@ package com.hana.agent.core.tool
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -90,5 +91,72 @@ class LinkPolicyDynamicTest {
         // 静态依然正常
         assertTrue(LinkPolicy.isTrustedAppUri("weixin://dl/scan"))
         assertEquals("weixin://dl/scan", LinkPolicy.resolveShortcut("微信扫一扫"))
+    }
+
+    @Test
+    fun testShortcutsHintForPackageStaticAndDynamic() {
+        // 静态包提示：微信
+        val wxHints = LinkPolicy.shortcutsHintForPackage("com.tencent.mm")
+        assertTrue(wxHints.contains("weixin://dl/scan"))
+        assertTrue(wxHints.contains("weixin://dl/offlinePay"))
+        assertTrue(wxHints.contains("weixin://"))
+
+        // 静态包提示：小红书
+        val xhsHints = LinkPolicy.shortcutsHintForPackage("com.xingin.xhs")
+        assertTrue(xhsHints.contains("xhsdiscover://search/result"))
+        assertTrue(xhsHints.contains("xhsdiscover://search/result?keyword={keyword}"))
+
+        // 动态注册包提示
+        LinkPolicy.registerDynamicRoutes(
+            schemes = setOf("dynamicshop"),
+            packageToSchemes = mapOf("com.dynamic.shop" to listOf("dynamicshop")),
+        )
+        LinkPolicy.registerDynamicRouteTemplate(
+            LinkPolicy.DeepLinkRouteTemplate(
+                routeId = "dyn_search",
+                targetPackage = "com.dynamic.shop",
+                intentPattern = Regex("逛店搜索\\s*(.+)"),
+                uriTemplate = "dynamicshop://search?q={keyword}",
+            )
+        )
+
+        val dynHints = LinkPolicy.shortcutsHintForPackage("com.dynamic.shop")
+        assertTrue(dynHints.contains("dynamicshop://"))
+        assertTrue(dynHints.contains("dynamicshop://search?q={keyword}"))
+    }
+
+    @Test
+    fun testBestShortcutForIntentKeywordAndPackage() {
+        // 1. 无包名时的明确意图与包名关联
+        assertEquals("weixin://dl/scan", LinkPolicy.bestShortcutForIntent("微信扫一扫"))
+        assertEquals("taobao://cart.m.taobao.com/cart.htm", LinkPolicy.bestShortcutForIntent("打开淘宝购物车"))
+        assertEquals("alipays://platformapi/startapp?appId=10000007", LinkPolicy.bestShortcutForIntent("支付宝扫码"))
+
+        // 2. 带包名时的关键词推导
+        assertEquals(
+            "taobao://cart.m.taobao.com/cart.htm",
+            LinkPolicy.bestShortcutForIntent("购物车", "com.taobao.taobao")
+        )
+        assertEquals(
+            "amapuri://route/plan/",
+            LinkPolicy.bestShortcutForIntent("查路线", "com.autonavi.minimap")
+        )
+
+        // 3. 模板意图填槽
+        val xhsSearch = LinkPolicy.bestShortcutForIntent("小红书搜索 拿铁咖啡")
+        assertNotNull(xhsSearch)
+        assertTrue(xhsSearch!!.contains("keyword="))
+
+        val tbSearch = LinkPolicy.bestShortcutForIntent("搜索 无线蓝牙耳机", "com.taobao.taobao")
+        assertNotNull(tbSearch)
+        assertTrue(tbSearch!!.contains("taobao://search.m.taobao.com"))
+
+        // 4. 动态注册包的兜底推导
+        LinkPolicy.registerDynamicRoutes(
+            schemes = setOf("testapp"),
+            packageToSchemes = mapOf("com.test.testapp" to listOf("testapp")),
+        )
+        val dynResult = LinkPolicy.bestShortcutForIntent("未定义意图", "com.test.testapp")
+        assertEquals("testapp://", dynResult)
     }
 }

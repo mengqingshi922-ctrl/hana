@@ -1,0 +1,1 @@
+Proactively clarify ambiguous user intent or missing constraints with structured options for quick user selection.

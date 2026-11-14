@@ -70,6 +70,10 @@ fun DeveloperOptionsScreen(
     grounding: GroundingSetting? = null,
     onGrounding: (Boolean) -> Unit = {},
     onOpenRunStats: (() -> Unit)? = null,
+    edgeIconSom: Boolean = true,
+    onEdgeIconSom: (Boolean) -> Unit = {},
+    compactDsl: Boolean = true,
+    onCompactDsl: (Boolean) -> Unit = {},
 ) {
     PageScaffold(tr(R.string.settings_developer), onBack) {
         GroupLabel(AutonomyCopy.GROUP)
@@ -82,6 +86,26 @@ fun DeveloperOptionsScreen(
         SwitchGroup(DeveloperSwitches.speed(speed), onSpeed)
         GroupLabel(tr(R.string.dev_experiments))
         SwitchGroup(DeveloperSwitches.experimental(speed), onSpeed)
+        GroupCard {
+            ListRow(
+                null,
+                "端侧无字图标检测 (Icon SoM)",
+                "在屏幕纯图标无文本时启动轻量启发式检测，提升纯图标可点击识别率",
+                first = true,
+                onClick = { onEdgeIconSom(!edgeIconSom) },
+            ) {
+                HanaSwitch(edgeIconSom, onEdgeIconSom, Modifier.testTag("dev-edge-icon-som"))
+            }
+            ListRow(
+                null,
+                "紧凑动作链 DSL (Compact DSL)",
+                "采用简洁动作表达式压缩规划轨迹，大幅减少 Token 延迟与开销",
+                first = false,
+                onClick = { onCompactDsl(!compactDsl) },
+            ) {
+                HanaSwitch(compactDsl, onCompactDsl, Modifier.testTag("dev-compact-dsl"))
+            }
+        }
         if (grounding != null) {
             GroupLabel(GroundingCopy.GROUP)
             GroupCard {

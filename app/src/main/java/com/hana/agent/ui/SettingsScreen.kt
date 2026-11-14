@@ -137,6 +137,15 @@ fun SettingsScreen(
     var operatingPace by remember { mutableStateOf(flags.operatingPace()) }
     var selfConfig by remember { mutableStateOf(flags.selfConfig()) }
     var capsuleMode by remember { mutableStateOf(flags.capsuleMode()) }
+    var edgeIconSom by remember { mutableStateOf(flags.edgeIconSomEnabled()) }
+    var compactDsl by remember { mutableStateOf(flags.compactDslEnabled()) }
+    var proactiveEnabled by remember { mutableStateOf(flags.proactiveEnabled()) }
+    var rootHelperEnabled by remember { mutableStateOf(flags.rootHelperEnabled()) }
+    var rootCommandEnabled by remember { mutableStateOf(flags.rootCommandEnabled()) }
+    val deviceRooted = remember { com.hana.agent.cap.root.RootHelperStarter.isDeviceRooted() }
+    val teachRuntime = remember { com.hana.agent.teach.TeachRuntime.instance }
+    val teachState by teachRuntime.state.collectAsState()
+    val teachStepCount by teachRuntime.currentStepCount.collectAsState()
     // 换语言时界面会重建,这里每次进来读一次即可
     val language = remember { AppLanguage.current(context) }
     val runtimeLimit by (context.applicationContext as com.hana.agent.HanaApp).taskState.parallelLimit.collectAsState()
@@ -223,8 +232,21 @@ fun SettingsScreen(
             status, androidRelease, onProblem,
             onOpenNotifications = { notificationsFrom = SettingsPage.PhoneOps; page = SettingsPage.Notifications },
             onRepair = { onFix(Fix.RepairPhoneHelper) }, onUnpair = { onFix(Fix.UnpairPhoneHelper) }, onBack = toHome,
+            deviceRooted = deviceRooted,
+            rootHelperEnabled = rootHelperEnabled,
+            onRootHelperEnabled = { flags.setRootHelperEnabled(it); rootHelperEnabled = it },
+            rootCommandEnabled = rootCommandEnabled,
+            onRootCommandEnabled = { flags.setRootCommandEnabled(it); rootCommandEnabled = it },
         )
-        SettingsPage.Notifications -> NotificationsScreen(status, onFix = ::fix, onBack = back)
+        SettingsPage.Notifications -> NotificationsScreen(
+            status, onFix = ::fix, onBack = back,
+            proactiveEnabled = proactiveEnabled,
+            onProactiveEnabled = { enabled ->
+                flags.setProactiveEnabled(enabled)
+                com.hana.agent.proactive.ProactivePrefs.get(context).setProactiveEnabled(enabled)
+                proactiveEnabled = enabled
+            },
+        )
         SettingsPage.DuringWork -> DuringWorkScreen(
             keepScreenOn, onKeepScreenOn = { flags.setKeepScreenOn(it); keepScreenOn = it },
             muteTarget, onMuteTarget = { flags.setMuteTarget(it); muteTarget = it },
@@ -235,7 +257,45 @@ fun SettingsScreen(
             pipTouchEnabled = pipTouchEnabled, onPipTouchEnabled = { flags.setPipTouchEnabled(it); pipTouchEnabled = it },
         )
         SettingsPage.Language -> LanguageScreen(language, onLanguage = { AppLanguage.set(context, it) }, onBack = toHome)
-        SettingsPage.Capsule -> CapsuleScreen(capsuleMode, onMode = { flags.setCapsuleMode(it); capsuleMode = it }, onBack = toHome)
+        SettingsPage.Capsule -> CapsuleScreen(
+            capsuleMode,
+            onMode = { flags.setCapsuleMode(it); capsuleMode = it },
+            onBack = toHome,
+            teachState = teachState,
+            teachStepCount = teachStepCount,
+            onStartTeach = { teachRuntime.startRecording() },
+            onStopTeachSave = {
+                val draft = if (teachState == com.hana.agent.teach.TeachState.RECORDING) {
+                    teachRuntime.stopRecording()
+                } else {
+                    teachRuntime.getReviewingDraft()
+                }
+                if (draft != null && draft.stepCount > 0) {
+                    scope.launch(Dispatchers.IO) {
+                        runCatching {
+                            val memoryRuntime = (context.applicationContext as com.hana.agent.HanaApp).memory
+                            val draftId = java.util.UUID.randomUUID().toString()
+                            val safeName = draft.suggestedName.lowercase().replace(Regex("[^a-z0-9-]+"), "-").trim('-').ifBlank { "custom-teach-skill" }
+                            val personalSkill = com.hana.agent.core.skills.PersonalSkill(
+                                name = safeName,
+                                markdown = draft.markdownBody,
+                                status = com.hana.agent.core.skills.SkillStatus.pending,
+                                learnedFrom = "teach_demo",
+                                replacesDraftOf = null,
+                                createdAt = System.currentTimeMillis(),
+                                outcomes = emptyList(),
+                                source = com.hana.agent.core.skills.PersonalSkill.SOURCE_USER,
+                            )
+                            memoryRuntime.skills().putPending(draftId, personalSkill)
+                        }
+                        teachRuntime.completeReview()
+                    }
+                } else {
+                    teachRuntime.discard()
+                }
+            },
+            onDiscardTeach = { teachRuntime.discard() },
+        )
         // 没有数据时首页不显示入口,走不到这一页
         SettingsPage.WebSites -> webSites?.let { WebSitesScreen(it, onBack = toHome) }
         SettingsPage.Sandbox -> SandboxScreen(onBack = toHome)
@@ -253,6 +313,10 @@ fun SettingsScreen(
             grounding = visionConfig?.let { GroundingSetting(it.model, it.capabilities.groundingVerified) },
             onGrounding = { verified -> scope.launch { withContext(Dispatchers.IO) { store.setVisionGroundingVerified(verified) } } },
             onOpenRunStats = { page = SettingsPage.RunStats },
+            edgeIconSom = edgeIconSom,
+            onEdgeIconSom = { flags.setEdgeIconSomEnabled(it); edgeIconSom = it },
+            compactDsl = compactDsl,
+            onCompactDsl = { flags.setCompactDslEnabled(it); compactDsl = it },
         )
         SettingsPage.RunStats -> RunStatsScreen(remember { RunStore(context).metrics }, onBack = back)
     }

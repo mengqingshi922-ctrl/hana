@@ -88,6 +88,41 @@ data class StepContext(
 )
 
 /**
+ * 置信度门控信号输入。
+ * @property stepConfidence 单步动作置信度（0.0 ~ 1.0）
+ * @property treeQualityPoor 无障碍控件树质量是否低下（盲区大）
+ * @property consecutiveLowConfidence 连续低置信度步数
+ * @property ambiguityDetected 是否检测到意图/操作歧义
+ */
+data class ConfidenceSignal(
+    val stepConfidence: Float,
+    val treeQualityPoor: Boolean = false,
+    val consecutiveLowConfidence: Int = 0,
+    val ambiguityDetected: Boolean = false,
+)
+
+/**
+ * 路由决策分级阶梯：
+ * - [EDGE_REFLEX]：端侧即时反射轻量模型槽位
+ * - [LIGHTWEIGHT]：轻量辅助模型槽位（如 MemorySummary / EdgeReflex）
+ * - [CLOUD_MAIN]：云端主力高认知大模型
+ */
+enum class RouteTier {
+    EDGE_REFLEX,
+    LIGHTWEIGHT,
+    CLOUD_MAIN,
+}
+
+/**
+ * 路由门控决策结果。
+ */
+data class TierDecision(
+    val tier: RouteTier,
+    val model: ChatModel,
+    val reason: String,
+)
+
+/**
  * 热感知多维度异构模型路由器：
  * 1. 支持按连续步数与纠错状态在主模型与轻量模型之间动态切换；
  * 2. 支持按场景槽位（Chat / VisionAction / MemorySummary / EdgeReflex）精确分配模型；
@@ -245,6 +280,83 @@ class ModelRouter(
                 consecutiveLightSteps = 0
                 mainAction
             }
+        }
+    }
+
+    /**
+     * MAI-UI 端云协同置信度路由门控：
+     * 根据单步置信度、UI 树质量、歧义检测及历史纠错状态决定模型调度分级阶梯。
+     * 低置信度、树盲、歧义或恢复态强制上云端主模型；高置信度且无图时下放端侧轻量/反射槽位。
+     */
+    fun routeWithConfidence(
+        ctx: StepContext,
+        signal: ConfidenceSignal,
+        threshold: Float = 0.65f,
+    ): TierDecision {
+        synchronized(lock) {
+            val mainModel = slots.visionAction
+            // 1. 强制上云主模型（CLOUD_MAIN）的各种边界与阻断条件
+            if (disabled) {
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "router_disabled")
+            }
+            if (ctx.lastWasRecovery) {
+                noteTroubleLocked()
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "recovery_state")
+            }
+            if (!ctx.lastOk || ctx.lastHadGuard || ctx.lastChanged == false) {
+                noteTroubleLocked()
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "trouble_state")
+            }
+            if (forcedMain > 0) {
+                forcedMain--
+                consecutiveLightSteps = 0
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "forced_main")
+            }
+            if (signal.ambiguityDetected) {
+                noteTroubleLocked()
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "ambiguity_detected")
+            }
+            if (signal.treeQualityPoor) {
+                noteTroubleLocked()
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "tree_quality_poor")
+            }
+            if (signal.consecutiveLowConfidence > 0) {
+                noteTroubleLocked()
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "consecutive_low_confidence")
+            }
+            if (signal.stepConfidence < threshold) {
+                noteTroubleLocked()
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "low_confidence_${signal.stepConfidence}")
+            }
+
+            // 2. 检查是否有可用的轻量模型
+            val reflexModel = slots.edgeReflex?.takeIf { it.capabilities.toolCalls }
+            val lightModel = (slots.edgeReflex ?: slots.memorySummary)?.takeIf { it.capabilities.toolCalls }
+            if (lightModel == null) {
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "no_lightweight_available")
+            }
+
+            // 3. 上下文带图时，若轻量模型不支持视觉则必须上云
+            if (ctx.hasImages && !lightModel.capabilities.vision) {
+                return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "has_images_unsupported_by_lightweight")
+            }
+
+            // 4. 高置信度且无图（或轻量模型支持看图）：下放轻量/反射槽位
+            if (reflexModel != null && (ctx.scene == ModelScene.EdgeReflex || (!ctx.hasImages && ctx.sameAppAsLast && ctx.step > 1))) {
+                if (consecutiveLightSteps < policy.maxConsecutiveLightSteps) {
+                    consecutiveLightSteps++
+                    return TierDecision(RouteTier.EDGE_REFLEX, reflexModel, "high_confidence_edge_reflex")
+                }
+            }
+
+            if (consecutiveLightSteps < policy.maxConsecutiveLightSteps) {
+                consecutiveLightSteps++
+                return TierDecision(RouteTier.LIGHTWEIGHT, lightModel, "high_confidence_lightweight")
+            }
+
+            // 达到连续轻量步数上限，主动回退云端主模型复核
+            consecutiveLightSteps = 0
+            return TierDecision(RouteTier.CLOUD_MAIN, mainModel, "max_consecutive_light_steps_reached")
         }
     }
 

@@ -71,5 +71,32 @@ class AppMuter(
         return true
     }
 
+    /** 检查指定 App 当前是否处于静音状态。 */
+    @Synchronized
+    fun isMuted(packageName: String, user: Int?): Boolean {
+        val key = AppAudioKey.of(packageName, user)
+        return key in muted
+    }
+
+    /**
+     * 动态切换指定 App 的静音状态:
+     * 当前已静音则调用 [audio.restore] 并从 [muted] 移除返回 false;
+     * 否则调用 [audio.mute] 并加入 [muted] 返回 true。
+     */
+    @Synchronized
+    fun toggleMute(packageName: String, user: Int?): Boolean {
+        val key = AppAudioKey.of(packageName, user)
+        return if (key in muted) {
+            audio.restore(key)
+            muted -= key
+            early -= key
+            false
+        } else {
+            audio.mute(key)
+            muted += key
+            true
+        }
+    }
+
     private fun wanted(packageName: String) = enabled() && mutable(packageName)
 }

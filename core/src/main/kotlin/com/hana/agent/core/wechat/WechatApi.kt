@@ -70,9 +70,18 @@ data class WechatQrStatus(
 data class WechatText(val text: String = "")
 
 @Serializable
+data class WechatImage(
+    val url: String? = null,
+    @SerialName("image_url") val imageUrl: String? = null,
+    @SerialName("media_id") val mediaId: String? = null,
+    val payload: String? = null,
+)
+
+@Serializable
 data class WechatItem(
     val type: Int = 0,
     @SerialName("text_item") val textItem: WechatText? = null,
+    @SerialName("image_item") val imageItem: WechatImage? = null,
 )
 
 @Serializable
@@ -88,10 +97,18 @@ data class WechatMessage(
     @SerialName("item_list") val items: List<WechatItem> = emptyList(),
     @SerialName("context_token") val contextToken: String? = null,
 ) {
-    /** 第一版只收用户私聊文本；其他消息不进入任务系统。 */
+    /** 获取用户私聊纯文本；其他消息不进入纯文本。 */
     fun userText(): String? {
         if (messageType != 1 || messageId.isNullOrBlank() || fromUserId.isNullOrBlank()) return null
         return items.firstOrNull { it.type == 1 }?.textItem?.text?.takeIf { it.isNotBlank() }
+    }
+
+    /** 获取用户发送的图片 URL 或 Base64 列表。 */
+    fun userImageUrls(): List<String> {
+        if (messageType != 1 || messageId.isNullOrBlank() || fromUserId.isNullOrBlank()) return emptyList()
+        return items.filter { it.type == 2 }
+            .mapNotNull { it.imageItem?.url ?: it.imageItem?.imageUrl ?: it.imageItem?.payload }
+            .filter { it.isNotBlank() }
     }
 }
 
@@ -146,6 +163,22 @@ class WechatApi(
         val message = WechatMessage(fromUserId = "", toUserId = peerId, clientId = clientId,
             messageType = 2, messageState = 2, items = listOf(WechatItem(type = 1, textItem = WechatText(text))),
             contextToken = contextToken)
+        val body = SendRequest(message, WechatBaseInfo(channelVersion))
+        post(account, "sendmessage", body, SendRequest.serializer(), WechatQrStart.serializer())
+    }
+
+    fun sendImage(account: WechatAccount, peerId: String, clientId: String, imageBase64OrUrl: String, contextToken: String?) {
+        val image = if (imageBase64OrUrl.startsWith("http://") || imageBase64OrUrl.startsWith("https://")) {
+            WechatImage(url = imageBase64OrUrl)
+        } else {
+            WechatImage(payload = imageBase64OrUrl, url = imageBase64OrUrl)
+        }
+        val message = WechatMessage(
+            fromUserId = "", toUserId = peerId, clientId = clientId,
+            messageType = 2, messageState = 2,
+            items = listOf(WechatItem(type = 2, imageItem = image)),
+            contextToken = contextToken,
+        )
         val body = SendRequest(message, WechatBaseInfo(channelVersion))
         post(account, "sendmessage", body, SendRequest.serializer(), WechatQrStart.serializer())
     }

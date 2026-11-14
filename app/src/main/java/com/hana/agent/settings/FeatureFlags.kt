@@ -180,6 +180,41 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         prefs.edit().putFloat(CAPSULE_CARD_HEIGHT, fraction.coerceIn(0f, 1f)).apply()
     }
 
+    /** 实验性主动能力总开关：默认关闭（纯规则+预算+摘要模型）。 */
+    fun proactiveEnabled(): Boolean = prefs.getBoolean(PROACTIVE_ENABLED, false)
+
+    fun setProactiveEnabled(on: Boolean) {
+        prefs.edit().putBoolean(PROACTIVE_ENABLED, on).apply()
+    }
+
+    /** 分级 Root 模式 - 辅助进程通过 su 启动开关：默认关闭。 */
+    fun rootHelperEnabled(): Boolean = prefs.getBoolean(ROOT_HELPER_ENABLED, false)
+
+    fun setRootHelperEnabled(on: Boolean) {
+        prefs.edit().putBoolean(ROOT_HELPER_ENABLED, on).apply()
+    }
+
+    /** 分级 Root 模式 - Root Shell 命令执行开关：默认关闭。 */
+    fun rootCommandEnabled(): Boolean = prefs.getBoolean(ROOT_COMMAND_ENABLED, false)
+
+    fun setRootCommandEnabled(on: Boolean) {
+        prefs.edit().putBoolean(ROOT_COMMAND_ENABLED, on).apply()
+    }
+
+    /** 端侧图标与屏幕语义切分 (Icon SoM) 开关：默认开启。 */
+    fun edgeIconSomEnabled(): Boolean = prefs.getBoolean(EDGE_ICON_SOM_ENABLED, true)
+
+    fun setEdgeIconSomEnabled(on: Boolean) {
+        prefs.edit().putBoolean(EDGE_ICON_SOM_ENABLED, on).apply()
+    }
+
+    /** 紧凑动作 DSL 序列化开关：默认开启。 */
+    fun compactDslEnabled(): Boolean = prefs.getBoolean(COMPACT_DSL_ENABLED, true)
+
+    fun setCompactDslEnabled(on: Boolean) {
+        prefs.edit().putBoolean(COMPACT_DSL_ENABLED, on).apply()
+    }
+
     companion object {
         const val PREFS = "feature_flags"
         private const val SPEED_FLAGS = "speed_flags"
@@ -211,6 +246,11 @@ class FeatureFlags(private val prefs: SharedPreferences) {
         private const val CAPSULE_SIDE = "capsule_side"
         private const val CAPSULE_HEIGHT = "capsule_height"
         private const val CAPSULE_CARD_HEIGHT = "capsule_card_height"
+        const val PROACTIVE_ENABLED = "proactive_enabled"
+        const val ROOT_HELPER_ENABLED = "root_helper_enabled"
+        const val ROOT_COMMAND_ENABLED = "root_command_enabled"
+        const val EDGE_ICON_SOM_ENABLED = "edge_icon_som_enabled"
+        const val COMPACT_DSL_ENABLED = "compact_dsl_enabled"
 
         fun get(context: Context) = FeatureFlags(context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
     }

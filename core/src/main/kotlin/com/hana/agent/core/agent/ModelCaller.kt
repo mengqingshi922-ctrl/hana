@@ -100,6 +100,21 @@ internal class ModelCaller(
     /** 本任务里分工是否在起作用:开关打开、轻量模型能接手机步、没因不可恢复的错误停用。 */
     private val routing: Boolean get() = flags.lightSteps && router?.active == true
 
+    /**
+     * 检查最新一条工具回包是否包含空的控件树节点（无障碍盲区/树质量低下）。
+     */
+    private fun isLatestTreePoor(history: List<Message>): Boolean {
+        val toolMsg = history.lastOrNull { it.role == Role.Tool } ?: return false
+        val text = toolMsg.parts.joinToString("") { part ->
+            when (part) {
+                is Part.Text -> part.text
+                is Part.ToolResult -> part.content
+                else -> ""
+            }
+        }
+        return text.contains("\"nodes\":[]") || text.contains("nodes\": []")
+    }
+
     /** 开了分工就在运行记录里记每次调用的模型和角色(停用之后也记,便于对比)。 */
     val recordRoles: Boolean get() = flags.lightSteps && router != null
 
@@ -133,9 +148,41 @@ internal class ModelCaller(
         val latestHasImage = history.takeLast(2).any { m -> m.parts.any { it is Part.Image } }
         val ctx = track.context(step, latestHasImage)
         val picked = if (budgetDowngrade) {
-            r.pickForScene(ModelScene.EdgeReflex, ctx).takeIf { r.isLight(it) } ?: r.pick(ctx)
+            val bp = r.pickForScene(ModelScene.EdgeReflex, ctx).takeIf { r.isLight(it) } ?: r.pick(ctx)
+            if (!r.isLight(bp)) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
+            bp
         } else {
-            r.pick(ctx)
+            val signal = ConfidenceSignal(
+                stepConfidence = if (!ctx.lastOk || ctx.lastChanged == false || ctx.lastHadGuard) 0.40f else 0.85f,
+                treeQualityPoor = isLatestTreePoor(history),
+                ambiguityDetected = false,
+                consecutiveLowConfidence = if (!ctx.lastOk || ctx.lastChanged == false) 1 else 0,
+            )
+            // 先执行基础路由启发式（首步主模型 / 切应用主模型 / 看图兼容 / forcedMain 计数递减），避免与 routeWithConfidence 重复叠加 forcedMain
+            val policyPick = r.pick(ctx)
+            if (!r.isLight(policyPick)) {
+                val confidenceReason = when {
+                    signal.treeQualityPoor -> "tree_quality_poor"
+                    signal.ambiguityDetected -> "ambiguity_detected"
+                    !ctx.lastOk || ctx.lastChanged == false -> "trouble_state"
+                    else -> null
+                }
+                if (confidenceReason != null) {
+                    emit(RunEvent.State(now(), "confidence_route_main", confidenceReason))
+                }
+                return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
+            }
+            // 启发式允许下放时，再经 MAI-UI 置信度与树质量门控二次核验
+            if (signal.treeQualityPoor || signal.ambiguityDetected || signal.stepConfidence < 0.65f || signal.consecutiveLowConfidence > 0) {
+                val decision = r.routeWithConfidence(ctx, signal)
+                if (decision.tier == RouteTier.CLOUD_MAIN) {
+                    if (decision.reason != "no_lightweight_available") {
+                        emit(RunEvent.State(now(), "confidence_route_main", decision.reason))
+                    }
+                    return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
+                }
+            }
+            policyPick
         }
         if (!r.isLight(picked)) return RoutedOutcome(ask(history, specs, step, onText = onText), model, startAsked)
 

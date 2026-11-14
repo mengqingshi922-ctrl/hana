@@ -286,6 +286,8 @@ fun AgentPip(
     teleportCoordinator: PipTeleportCoordinator? = null,
     audioAmplitude: Float = 0f,
     mascotEmotionId: String? = null,
+    isMuted: Boolean = false,
+    onToggleMute: (() -> Unit)? = null,
 ) {
     val activeCoordinator = teleportCoordinator ?: remember { PipTeleportCoordinator() }
     val teleportState by activeCoordinator.state.collectAsState()
@@ -338,6 +340,8 @@ fun AgentPip(
                 onTeleportTouch = { activeCoordinator.onUserTouchInjected() },
                 audioAmplitude = audioAmplitude,
                 mascotEmotionId = mascotEmotionId,
+                isMuted = isMuted,
+                onToggleMute = onToggleMute,
             )
         }
     }
@@ -393,6 +397,8 @@ private fun PipWindow(
     onTeleportTouch: () -> Unit = {},
     audioAmplitude: Float = 0f,
     mascotEmotionId: String? = null,
+    isMuted: Boolean = false,
+    onToggleMute: (() -> Unit)? = null,
 ) {
     val density = LocalDensity.current
     val sizeSpec = if (reduceMotion) snap() else tween<androidx.compose.ui.unit.Dp>(350, easing = Ease)
@@ -649,6 +655,22 @@ private fun PipWindow(
                         .testTag("pip-close"),
                     contentAlignment = Alignment.Center,
                 ) { Icon(HanaIcons.EyeOff, stringResource(R.string.pip_close), Modifier.size(13.dp), tint = HanaTheme.colors.ink) }
+                if (onToggleMute != null) {
+                    Box(
+                        Modifier.align(Alignment.TopStart).padding(start = 38.dp, top = 6.dp).size(26.dp)
+                            .floatShadow(HanaTheme.colors, CircleShape).background(HanaTheme.colors.glass, CircleShape).clip(CircleShape)
+                            .clickable(onClickLabel = if (isMuted) "恢复声音" else "静音", onClick = onToggleMute)
+                            .testTag("pip-toggle-mute"),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            HanaIcons.Mute,
+                            contentDescription = if (isMuted) "静音中" else "声音正常",
+                            Modifier.size(13.dp),
+                            tint = if (isMuted) HanaTheme.colors.warnSolid else HanaTheme.colors.ink.copy(alpha = 0.5f),
+                        )
+                    }
+                }
                 Box(
                     Modifier.align(Alignment.TopEnd).padding(6.dp).size(26.dp)
                         .floatShadow(HanaTheme.colors, CircleShape).background(HanaTheme.colors.glass, CircleShape).clip(CircleShape)

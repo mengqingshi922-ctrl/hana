@@ -92,6 +92,8 @@ class GuideCatalog private constructor(
         return tokens.map { t ->
             when {
                 names.any { it == t } -> 100
+                // 修复单个 ASCII 字符命中所有包含该字母英文名的问题(除非精确相等)
+                t.length == 1 && t[0].code < 128 -> 0
                 // 中文目标通常不带空格,整句是一个词:名字出现在句子里也算部分对上
                 names.any { it.contains(t) || (it.length >= 2 && t.contains(it)) } -> 60
                 terms.any { it == t } -> 50
@@ -206,6 +208,26 @@ class GuideCatalog private constructor(
     /** 包名 [packageName] 所属 App 知识写的 pace(包名在它的 packages 里);没有为 null。 */
     fun appPace(packageName: String): String? =
         rows.firstOrNull { it.kind == KnowledgeIndex.APP && packageName in it.packages }?.pace
+
+    /**
+     * 按包名或显示名查找不在开局 top3 中的 App 知识并标记常用流程补注。
+     * 若已在 [alreadyInjected] 中或未找到对应 App 知识，返回 null。
+     */
+    fun supplementForPackage(packageName: String, alreadyInjected: Set<String>): GuideView.Found? {
+        val entry = rows.firstOrNull {
+            it.kind == KnowledgeIndex.APP && (
+                packageName in it.packages ||
+                it.name.equals(packageName, ignoreCase = true) ||
+                it.display.equals(packageName, ignoreCase = true) ||
+                it.aliases.any { a -> a.equals(packageName, ignoreCase = true) }
+            )
+        } ?: return null
+        if (entry.name in alreadyInjected || entry.display in alreadyInjected || "${entry.kind}:${entry.name}" in alreadyInjected) {
+            return null
+        }
+        val note = "(常用流程补注: 检测到正在操作 ${entry.display}，补充该 App 常用流程指导。\n$UNAVAILABLE_TOOLS_NOTE)"
+        return view(entry.name, note = note, among = setOf(KnowledgeIndex.APP)) as? GuideView.Found
+    }
 
     private fun resource(rel: String): ByteArray? = loader.getResourceAsStream(rel)?.use { it.readBytes() }
 

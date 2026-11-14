@@ -64,6 +64,7 @@ fun PlansScreen(context: Context, onBack: () -> Unit, onOpenConversation: (Strin
     var editing by remember { mutableStateOf<TriggerDefinition?>(null) }
     var deleting by remember { mutableStateOf<TriggerDefinition?>(null) }
     var acting by remember { mutableStateOf<TriggerDefinition?>(null) }
+    var viewingHistory by remember { mutableStateOf<TriggerDefinition?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var segment by rememberSaveable { mutableIntStateOf(0) }
     // 从系统设置回来时重读:刚开了权限,提示就该消失
@@ -118,10 +119,44 @@ fun PlansScreen(context: Context, onBack: () -> Unit, onOpenConversation: (Strin
             listOf(
                 SheetAction(tr(R.string.plans_open_chat)) { onOpenConversation(plan.threadId) },
                 SheetAction(tr(R.string.plans_run_now)) { act { TriggerRuntime.runNow(context, plan.id) } },
+                SheetAction("复制计划") { act { TriggerRuntime.duplicate(context, plan.id) } },
+                SheetAction("查看执行记录") { viewingHistory = plan },
                 SheetAction(tr(R.string.plans_edit_time)) { editing = plan },
                 SheetAction(tr(R.string.confirm_delete), destructive = true) { deleting = plan },
             ),
             onDismiss = { acting = null },
+        )
+    }
+
+    viewingHistory?.let { plan ->
+        val history = remember(plan.id) { TriggerRuntime.recentExecutions(context, plan.id, 10) }
+        HanaDialog(
+            onDismissRequest = { viewingHistory = null },
+            title = { Text("执行记录 (最近10次)") },
+            text = {
+                Column {
+                    if (history.isEmpty()) {
+                        Text("暂无执行记录", style = HanaType.Caption, color = HanaTheme.colors.ink3)
+                    } else {
+                        for (w in history) {
+                            val timeStr = formatPlanTime(w.dueAtMs)
+                            val stateLabel = windowLabel(w.state)
+                            val reasonStr = if (w.reason != null) " (${w.reason})" else ""
+                            Text(
+                                "$timeStr · $stateLabel$reasonStr",
+                                style = HanaType.Caption,
+                                modifier = Modifier.padding(vertical = 4.dp),
+                                color = if (w.state == TriggerWindowState.Delivered) HanaTheme.colors.ok else HanaTheme.colors.ink2
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewingHistory = null }) {
+                    Text("确定")
+                }
+            }
         )
     }
 
@@ -159,6 +194,12 @@ private fun PlanRow(plan: TriggerDefinition, last: TriggerWindow?, first: Boolea
         else -> tr(R.string.chat_paused)
     }
     val repeat = when {
+        plan.calendarTimes.isNotEmpty() -> {
+            val days = if (plan.calendarDays.isEmpty()) tr(R.string.plans_every_day) else plan.calendarDays.joinToString(tr(R.string.list_sep)) {
+                if (it in 1..7) java.time.DayOfWeek.of(it).getDisplayName(java.time.format.TextStyle.SHORT, uiLocale()) else "?"
+            }
+            "$days ${plan.calendarTimes.joinToString(", ")} (${plan.calendarZone})"
+        }
         plan.calendarTime != null -> {
             val days = if (plan.calendarDays.isEmpty()) tr(R.string.plans_every_day) else plan.calendarDays.joinToString(tr(R.string.list_sep)) {
                 if (it in 1..7) java.time.DayOfWeek.of(it).getDisplayName(java.time.format.TextStyle.SHORT, uiLocale()) else "?"

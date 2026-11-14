@@ -52,6 +52,12 @@ internal class ToolConfig(
     val shadowMacros: List<com.hana.agent.core.replay.ShadowMacroDef> = emptyList(),
     /** UI 树序列化格式（false = 标准 JSON，true = 脱水紧凑行文本）。 */
     val compactUiTree: Boolean = false,
+    /** 是否启用任务内结构化笔记工具（note_append / note_read）。 */
+    val enableNotetaker: Boolean = false,
+    /** 是否启用主动歧义澄清工具（clarify_intent）。 */
+    val enableClarifyIntent: Boolean = false,
+    /** 是否启用动作链紧凑 DSL 解析（false 时仅允许 JSON steps）。 */
+    val enableCompactDsl: Boolean = true,
 )
 
 /**

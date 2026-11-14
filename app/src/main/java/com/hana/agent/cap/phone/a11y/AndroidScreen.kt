@@ -38,6 +38,7 @@ import com.hana.agent.core.uistate.ScreenFacts
 import com.hana.agent.core.uistate.ScreenPort
 import com.hana.agent.core.uistate.ScreenEvent
 import com.hana.agent.core.uistate.ScreenSnapshot
+import com.hana.agent.core.uistate.UiElement
 import com.hana.agent.core.uistate.VisibleTextLine
 import com.hana.agent.core.uistate.SystemCommandResult
 import com.hana.agent.core.uistate.SystemAction
@@ -87,6 +88,18 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
+ * 文本投递三态状态机：防止读回未知或超时导致在重试循环中盲目重复粘贴造成文字翻倍写入
+ */
+enum class TextDispatchState {
+    /** 尚未投递或已清空 */
+    NOT_SENT,
+    /** 已确认投递成功并生效 */
+    DISPATCHED,
+    /** 处于不确定态（例如已发按键但未确认读回或超时），此时严禁重复追加粘贴 */
+    UNCERTAIN,
+}
+
+/**
  * [ScreenPort] 的安卓实现:读 Agent 虚拟屏的无障碍窗口,在这块屏上操作。
  * 每个动作之后等界面安静下来,用控件树指纹(辅以画面)核实有没有生效,并检查前台是否被别的 App 切走。
  * 虚拟屏用到时才建(第一次 launch_app,或系统命令、事件工具):没建之前读屏是一块空屏,其余动作失败 [NO_APP_OPEN],这些动作自己不会去建屏。
@@ -129,12 +142,17 @@ class AndroidScreen(
         { _, _, _, _ -> AppWait.Unsupported },
     /** 动态获取最新重连的 IHanaShell 实例，防止助手进程重启后持有死 Binder 单点故障。 */
     private val shellProvider: () -> IHanaShell = { shell },
+    /** 是否在节点树稀疏时启用端侧纯 CPU 视觉算法 EdgeIconDetector 提取并补充无字可交互图标 */
+    private val enableEdgeIconDetector: Boolean = true,
 ) : ScreenPort {
     /** 屏还没建时为 -1;只在确认屏已建好之后用。 */
     private val displayId get() = display.current?.displayId ?: -1
     /** 屏已经建好(不等于打开过 App)。 */
     private val hasDisplay get() = display.current != null
     private val ids = NodeIds()
+
+    /** 按快照 ID 缓存的无字图标候选中心坐标映射：snapshotId -> (ref -> (centerX, centerY)) */
+    private val iconMapBySnapshot = java.util.concurrent.ConcurrentHashMap<String, Map<String, Pair<Int, Int>>>()
 
     private val activeShell: IHanaShell
         get() = runCatching { shellProvider() }.getOrDefault(shell)
@@ -272,10 +290,69 @@ class AndroidScreen(
         val changedDuringRead = if (genBefore == genAfter) false else treeHash() != r.hash
         val snap = NodeSnapshot(snapshotId(), r.entries)
         if (register) ids.put(snap)
+
+        // 闭环接入 EdgeIconDetector：当无障碍节点树稀疏且允许截屏补充时，通过视觉算法提取纯图标交互候选框
+        val candidateIcons = mutableListOf<UiElement>()
+        val isProtectedScreen = (r.hasAppWindow && frameBlack() == true) || r.passwordField
+        val isSparse = r.entries.count { it.element.clickable || it.element.editable } <= 2 || r.topPackage == null || r.entries.size <= 4
+
+        if (enableEdgeIconDetector && isSparse && !isProtectedScreen && hasDisplay) {
+            display.current?.latestFrameBitmap()?.let { bmp ->
+                try {
+                    val width = bmp.width.takeIf { it > 0 } ?: display.width
+                    val height = bmp.height.takeIf { it > 0 } ?: display.height
+                    if (width > 0 && height > 0) {
+                        val excludeNormBounds = r.entries.mapNotNull { entry ->
+                            val b = entry.element.bounds
+                            if (b.size == 4) {
+                                intArrayOf(
+                                    (b[0] * 1000 / width).coerceIn(0, 999),
+                                    (b[1] * 1000 / height).coerceIn(0, 999),
+                                    (b[2] * 1000 / width).coerceIn(0, 999),
+                                    (b[3] * 1000 / height).coerceIn(0, 999),
+                                )
+                            } else null
+                        }
+                        val detected = com.hana.agent.vision.EdgeIconDetector.detectBounds(bmp, excludeNormBounds)
+                        val iconBoundsMap = mutableMapOf<String, Pair<Int, Int>>()
+                        detected.forEachIndexed { idx, box ->
+                            val l = (box[0] * width / 1000).coerceIn(0, width)
+                            val t = (box[1] * height / 1000).coerceIn(0, height)
+                            val right = (box[2] * width / 1000).coerceIn(0, width)
+                            val b = (box[3] * height / 1000).coerceIn(0, height)
+                            val cx = (l + right) / 2
+                            val cy = (t + b) / 2
+                            val ref = "ico_$idx"
+                            val elem = UiElement(
+                                ref = ref,
+                                role = "icon_candidate",
+                                name = "icon_candidate",
+                                centerX = cx,
+                                centerY = cy,
+                                bounds = listOf(l, t, right, b),
+                                resourceId = null,
+                                clickable = true,
+                                editable = false,
+                                scrollable = false,
+                            )
+                            candidateIcons.add(elem)
+                            iconBoundsMap[ref] = cx to cy
+                        }
+                        if (iconBoundsMap.isNotEmpty()) {
+                            if (iconMapBySnapshot.size > 8) iconMapBySnapshot.clear()
+                            iconMapBySnapshot[snap.id] = iconBoundsMap
+                        }
+                    }
+                } finally {
+                    bmp.recycle()
+                }
+            }
+        }
+
         ScreenSnapshot(
             snapshotId = snap.id,
             packageName = r.topPackage,
-            elements = r.entries.map { it.element },
+            elements = r.entries.map { it.element } + candidateIcons,
             width = display.width,
             height = display.height,
             changedDuringRead = changedDuringRead,
@@ -597,6 +674,14 @@ class AndroidScreen(
 
     override suspend fun tapRef(ref: String, snapshotId: String): ActionResult = withContext(Dispatchers.IO) {
         if (!hasDisplay) return@withContext NO_APP_OPEN
+
+        // 优先命中视觉图标候选框（ico_*），直接转换为中心坐标下发物理触摸与磁吸点击
+        val iconCenter = iconMapBySnapshot[snapshotId]?.get(ref)
+            ?: if (ref.startsWith("ico_")) iconMapBySnapshot.values.firstOrNull { it.containsKey(ref) }?.get(ref) else null
+        if (iconCenter != null) {
+            return@withContext verified { tapAt(iconCenter.first, iconCenter.second) }
+        }
+
         when (val target = resolve(ref, snapshotId)) {
             null -> ActionResult.Failed("ref_expired")
             else -> {
@@ -627,6 +712,11 @@ class AndroidScreen(
 
     override suspend fun doubleTapRef(ref: String, snapshotId: String): ActionResult = withContext(Dispatchers.IO) {
         if (!hasDisplay) return@withContext NO_APP_OPEN
+        val iconCenter = iconMapBySnapshot[snapshotId]?.get(ref)
+            ?: if (ref.startsWith("ico_")) iconMapBySnapshot.values.firstOrNull { it.containsKey(ref) }?.get(ref) else null
+        if (iconCenter != null) {
+            return@withContext verified { doubleTapAt(iconCenter.first to iconCenter.second) }
+        }
         val target = resolve(ref, snapshotId) ?: return@withContext ActionResult.Failed("ref_expired")
         val rect = android.graphics.Rect().also { target.first.getBoundsInScreen(it) }
         val primary = verified(relocatedTo = target.second) { doubleTapAt(pacing.within(rect.left, rect.top, rect.right, rect.bottom)) }
@@ -784,6 +874,7 @@ class AndroidScreen(
         // 网页编辑区要粘贴才收得到输入;密码框不经剪贴板
         var pasteUnavailable = web && field.isPassword
         val placeholder = ScreenReader.placeholderOf(field)
+        var dispatchState = TextDispatchState.NOT_SENT
         val io = object : TextField {
             override fun read(): String? {
                 if (field.refresh()) return ScreenReader.fieldText(field, placeholder, text)
@@ -794,11 +885,20 @@ class AndroidScreen(
                 return ScreenReader.fieldText(now, placeholder, text)
             }
             override fun write(text: String): Boolean {
-                if (!web || pasteUnavailable) return setText(field, text)
-                return when (val r = inputText(field, text)) {
-                    null -> { pasteUnavailable = true; setText(field, text) }
-                    else -> r
+                if (dispatchState == TextDispatchState.UNCERTAIN && text.isNotEmpty()) {
+                    // 若处于不确定状态且尝试再次写入非空文本，拦截直接盲写，防止在重试循环中文字翻倍重复写入
+                    return false
                 }
+                val success = if (!web || pasteUnavailable) {
+                    setText(field, text)
+                } else {
+                    when (val r = inputText(field, text)) {
+                        null -> { pasteUnavailable = true; setText(field, text) }
+                        else -> r
+                    }
+                }
+                dispatchState = if (success) TextDispatchState.DISPATCHED else TextDispatchState.NOT_SENT
+                return success
             }
         }
         val textsBefore = read().texts.toSet()
@@ -823,13 +923,20 @@ class AndroidScreen(
         // 支持通过系统剪贴板原生粘贴（Paste）操作回退，并在写入后及时清空剪贴板隐私数据
         var fallbackPasted = false
         if (verification == Verification.MISMATCH && !field.isPassword) {
-            fallbackPasted = pasteNative(field, text)
-            if (fallbackPasted) {
+            val readBackText = runCatching { io.read() }.getOrNull()?.filterNot { it.isWhitespace() }
+            val targetText = text.filterNot { it.isWhitespace() }
+            val alreadyContains = readBackText != null && targetText.isNotEmpty() && readBackText.contains(targetText)
+
+            if (dispatchState != TextDispatchState.UNCERTAIN && !alreadyContains) {
+                fallbackPasted = pasteNative(field, text)
+                dispatchState = if (fallbackPasted) TextDispatchState.DISPATCHED else TextDispatchState.UNCERTAIN
+            }
+            if (fallbackPasted || alreadyContains) {
                 field.refresh()
                 val readBack = io.read()
                 val normRead = readBack?.filterNot { it.isWhitespace() }
                 val normWant = text.filterNot { it.isWhitespace() }
-                if (normRead != null && normRead == normWant) {
+                if (normRead != null && (normRead == normWant || normRead.contains(normWant))) {
                     verification = Verification.MATCH
                 } else {
                     invalidateReadCache()
@@ -837,8 +944,6 @@ class AndroidScreen(
                     if ((read().texts.toSet() - textsBefore).any { typed in it.filterNot { c -> c.isWhitespace() } }) {
                         verification = Verification.MATCH
                         frozen = true
-                    } else if (normRead != null && normRead.contains(normWant)) {
-                        verification = Verification.MATCH
                     }
                 }
             }
@@ -866,7 +971,26 @@ class AndroidScreen(
             }
         }
         val field = found.node
-        verified(relocatedTo = found.relocatedTo) { if (inWebView(field)) inputText(field, "") == true else setText(field, "") }
+        val inputType = runCatching { field.inputType }.getOrDefault(0)
+        val isNumberDecimal = (inputType and android.text.InputType.TYPE_CLASS_NUMBER) != 0 &&
+            (inputType and (android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED)) != 0
+
+        verified(relocatedTo = found.relocatedTo) {
+            if (inWebView(field)) {
+                inputText(field, "") == true
+            } else {
+                val cleared = setText(field, "")
+                if (!cleared && isNumberDecimal) {
+                    val range = Bundle().apply {
+                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+                        putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, 100)
+                    }
+                    field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, range)
+                    field.performAction(AccessibilityNodeInfo.ACTION_CUT)
+                }
+                cleared
+            }
+        }
     }
 
     // ---------- 树里看不到的输入框 ----------
@@ -916,12 +1040,18 @@ class AndroidScreen(
         val beforeTree = treeHash()
         val beforeFrame = frameSignature()
         var pasted: Boolean? = null
+        var dispatchState = TextDispatchState.NOT_SENT
         val changed = withEventClock { clock ->
             clock.mark()
             invalidateReadCache()
             pasted = pasteUnseen(text, beforeFrame)
+            dispatchState = if (pasted == true) TextDispatchState.DISPATCHED else TextDispatchState.NOT_SENT
             invalidateReadCache()
-            pasted == true && awaitChange(clock, beforeTree, beforeFrame)
+            val settled = pasted == true && awaitChange(clock, beforeTree, beforeFrame)
+            if (pasted == true && !settled) {
+                dispatchState = TextDispatchState.UNCERTAIN
+            }
+            settled
         }
         when (pasted) {
             null -> return ActionResult.Failed("paste_unavailable", HINT_PASTE_BLOCKED)

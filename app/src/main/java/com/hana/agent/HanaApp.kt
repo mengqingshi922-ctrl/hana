@@ -77,7 +77,17 @@ class HanaApp : Application(), WebOwner, SandboxOwner, TaskEnvironment.Owner, Ph
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /** 手机能力的服务:内置助手、共用的 shell 连接、配对、「去设置」提示。 */
-    override val phone: PhoneServices by lazy { PhoneServices(this) }
+    override val phone: PhoneServices by lazy {
+        PhoneServices(this) { command, stdinLine ->
+            if (FeatureFlags.get(this).rootHelperEnabled() &&
+                com.hana.agent.cap.root.RootHelperStarter.isDeviceRooted()
+            ) {
+                com.hana.agent.cap.root.RootHelperStarter.startHelperViaRoot(this, command, stdinLine = stdinLine)
+            } else {
+                Result.failure(IllegalStateException("Root 辅助进程启动未开启或设备未 Root"))
+            }
+        }
+    }
 
     /** 网页标签的 DevTools 会话入口:整个进程一份;连不上时经内置助手代连。 */
     override val webDevtools: WebDevtools by lazy { WebDevtools(phone.hub::openDevtoolsSocket) }

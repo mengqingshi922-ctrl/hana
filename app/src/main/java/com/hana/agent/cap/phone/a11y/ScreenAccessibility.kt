@@ -74,6 +74,36 @@ open class ScreenAccessibility : AccessibilityService() {
         }
         val access = (application as com.hana.agent.HanaApp).appAccess.current()
         if (access.denial(event.packageName?.toString()) != null) return
+
+        // 「教 Hana」示范录制捕获：当处于录制中时记录外部应用的点击与输入动作
+        runCatching {
+            val teach = com.hana.agent.teach.TeachRuntime.instance
+            if (teach.state.value == com.hana.agent.teach.TeachState.RECORDING) {
+                val actionType = when (event.eventType) {
+                    AccessibilityEvent.TYPE_VIEW_CLICKED -> "tap"
+                    AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> "long_press"
+                    AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "type_text"
+                    else -> null
+                }
+                if (actionType != null) {
+                    val pkg = event.packageName?.toString().orEmpty()
+                    if (pkg.isNotEmpty() && pkg != packageName) {
+                        val label = event.text.joinToString(" ").ifBlank {
+                            event.contentDescription?.toString().orEmpty()
+                        }.trim().take(80)
+                        val inputSample = if (event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED) {
+                            event.text.joinToString(" ").take(80)
+                        } else null
+                        teach.recordStep(
+                            packageName = pkg,
+                            actionType = actionType,
+                            targetLabel = label.ifBlank { "控件" },
+                            inputSample = inputSample,
+                        )
+                    }
+                }
+            }
+        }
         if (event.eventType == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED && notifications.subscriptionCount.value > 0) {
             val notification = event.parcelableData as? Notification
             val title = notification?.extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString()

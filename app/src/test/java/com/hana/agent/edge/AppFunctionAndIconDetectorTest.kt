@@ -2,6 +2,7 @@ package com.hana.agent.edge
 
 import com.hana.agent.vision.EdgeIconDetector
 import com.hana.agent.vision.MnnIconDetectorDelegate
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -182,6 +183,43 @@ class AppFunctionAndIconDetectorTest {
             }
         } finally {
             EdgeIconDetector.delegate = originalDelegate
+        }
+    }
+
+    @Test
+    fun testToToolDescriptorsAndIdsMapping() {
+        val function1 = DiscoveredAppFunction(
+            packageName = "com.tencent.mm",
+            functionId = "send_message",
+            title = "微信发送消息",
+            description = "向指定联系人发送聊天文本",
+            parameterKeys = listOf("contact", "content"),
+        )
+        val (descriptors, map) = AppFunctionBridge.toToolDescriptorsAndIds(listOf(function1))
+        assertEquals(1, descriptors.size)
+        assertEquals("appfn_com_tencent_mm_send_message", descriptors[0].name)
+        assertTrue(map.containsKey("appfn_com_tencent_mm_send_message"))
+        assertEquals("com.tencent.mm", map["appfn_com_tencent_mm_send_message"]?.packageName)
+        assertEquals("send_message", map["appfn_com_tencent_mm_send_message"]?.functionId)
+    }
+
+    @Test
+    fun testExecuteAppFunctionLowSdkGracefulDegradation() = runBlocking {
+        val dummyContext = try {
+            android.app.Application()
+        } catch (_: Throwable) {
+            null
+        }
+
+        if (dummyContext != null) {
+            val result = AppFunctionBridge.executeAppFunction(
+                context = dummyContext,
+                packageName = "com.test.app",
+                functionId = "test_func",
+                argsJson = "{}",
+            )
+            assertFalse(result.ok)
+            assertEquals("unsupported_sdk", result.error)
         }
     }
 }

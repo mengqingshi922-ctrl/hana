@@ -38,6 +38,14 @@ import com.hana.agent.cap.phone.PhoneServices
 import com.hana.agent.cap.phone.a11y.launchableApps
 import com.hana.agent.confirm.ConfirmationNotifier
 import com.hana.agent.HanaApp
+import com.hana.agent.core.cap.mcp.McpConnection
+import com.hana.agent.core.cap.mcp.McpEndpoint
+import com.hana.agent.core.cap.mcp.McpResult
+import com.hana.agent.core.cap.mcp.McpToolDescriptor
+import com.hana.agent.core.cap.mcp.McpTrust
+import com.hana.agent.edge.AppFunctionBridge
+import com.hana.agent.core.tool.LinkPolicy
+import kotlinx.serialization.json.JsonObject
 import com.hana.agent.core.action.ConfirmChoice
 import com.hana.agent.core.agent.AgentLoop
 import com.hana.agent.core.agent.SystemPrompt
@@ -202,6 +210,7 @@ class TaskRun(
     private val _tagged = Mirrored<Pair<String, TaskState>?>(conversationId to _state.value, service.taskState._shownTask)
     private val _takeoverStage = Mirrored(Takeover.Stage.None, service.taskState._takeoverStage)
     private val _frames = Mirrored<Bitmap?>(null, service.taskState._frames)
+    private val _targetMuted = Mirrored(false, service.taskState._targetMuted)
     private val _activities = Mirrored<List<RunEvent.Activity>>(emptyList(), service.taskState._activities)
     /** 活动只追加;发布的是前 n 条的只读视图,每来一条不复制已有的。 */
     private val activityLog = ArrayList<RunEvent.Activity>()
@@ -229,13 +238,14 @@ class TaskRun(
     /** 此刻在用内置浏览器(工具的界面是网页);没用、任务结束后为 false。 */
     val webOpen: StateFlow<Boolean> = _webOpen.flow
     @Volatile private var activePipInput: com.hana.agent.cap.phone.display.PipInput? = null
+    @Volatile private var activePhoneSide: PhoneSide? = null
     /** 虚拟屏小窗手势反向注入接口。 */
     val pipInput: com.hana.agent.cap.phone.display.PipInput?
         get() = activePipInput
     /** 本任务进行中插的话和它们的去向;悬浮胶囊的对话卡片按任务取。 */
     val steers: StateFlow<List<SteerNote>> = _steers.flow
     // 带对话编号的那份先写:收不带编号的状态时读到的编号就已经是这个任务的(界面据此不把别的对话的状态接到屏上)
-    private val mirrored = listOf(_runId, _sharedFiles, _tagged, _state, _takeoverStage, _frames, _displayId, _appShown, _webOpen, _activities, _steers)
+    private val mirrored = listOf(_runId, _sharedFiles, _tagged, _state, _takeoverStage, _frames, _targetMuted, _displayId, _appShown, _webOpen, _activities, _steers)
 
     private fun setState(s: TaskState) = synchronized(service.taskState.shownLock) {
         _tagged.value = conversationId to s
@@ -605,9 +615,11 @@ class TaskRun(
                     notOpened = muter::notOpened,
                     appAccess = appAccess,
                     shellProvider = { phoneServices.hub.shell.value ?: shell },
+                    enableEdgeIconDetector = FeatureFlags.get(service).edgeIconSomEnabled(),
                 )
                 val side0 = PhoneSide(shell, a11y, screen, agentDisplay, muter)
                 phone = side0
+                activePhoneSide = side0
                 watchTarget(side0, states)
                 return screen
             }
@@ -732,6 +744,15 @@ class TaskRun(
                 priorTurns,
                 provenance, if (conditionCheck) setOf("web", "sandbox") else null, readOnly = conditionCheck)
             val runApproval = approvalControl.start(remote = provenance.origin == RunOrigin.Mcp).also { approval = it }
+            val directShortcut = LinkPolicy.bestShortcutForIntent(goal)
+            if (directShortcut != null) {
+                Log.d("TaskRun", "Shortcuts-First matched direct URI: $directShortcut")
+            }
+
+            val externalMcp = (service.application as? HanaApp)?.externalMcpConnections.orEmpty()
+            val localAppFunctionConn = createAppFunctionMcpConnection(service)
+            val taskMcpServers = if (localAppFunctionConn != null) externalMcp + localAppFunctionConn else externalMcp
+
             val childRunner = if (provenance.origin == RunOrigin.Ui && web != null) ChildAgentRunner(
                 create = { childSpec ->
                     val childTools = toolDispatcher(accessedPhone, model.capabilities.vision,
@@ -740,7 +761,8 @@ class TaskRun(
                         appPacing = { pace.appPacing() }, appPace = { PlacePace.of(catalog.appPace(it), it) }, appIdleScroll = { IdleScroll(Random.Default) },
                         sandbox = sandbox, workspace = { conversationId }, runSpec = childSpec,
                         conversationId = conversationId, inlineScreen = speed.inlineScreen,
-                        adaptiveVision = speed.adaptiveVision)
+                        adaptiveVision = speed.adaptiveVision, mcpServers = taskMcpServers,
+                        enableCompactDsl = FeatureFlags.get(service).compactDslEnabled())
                     AgentLoop(model, childTools, PRODUCTION_BASE_PROMPT, maxSteps = childSpec.stepBudget ?: AgentLoop.UNLIMITED_STEPS,
                         // 子任务跟着询问 / 自主;询问时它也过关卡,子任务里花钱的一步一律不做
                         confirmations = runApproval.gate(), approvals = runApproval, autonomous = runApproval.startedAutonomous,
@@ -784,13 +806,17 @@ class TaskRun(
                 personalSkills = memoryRuntime.skills(),
                 // 这个对话之前几轮的运行记录(只读;history_read 只认 runSpec 里这个对话的轮次)
                 runRecords = RunStore(service).reader(),
-                mcpServers = (service.application as? HanaApp)?.externalMcpConnections.orEmpty(),
+                mcpServers = taskMcpServers,
                 taskMemories = memoryRuntime.taskMemoryStore(),
                 factGraph = memoryRuntime.factGraph(),
                 shadowMacros = listOf(
                     com.hana.agent.core.replay.ShadowMacroLibrary.scrollUntilText(),
                     com.hana.agent.core.replay.ShadowMacroLibrary.dismissPopupStack(),
-                ))
+                ),
+                enableNotetaker = true,
+                enableClarifyIntent = true,
+                enableCompactDsl = FeatureFlags.get(service).compactDslEnabled(),
+            )
             dispatcher = tools
             val hanaApp = service.application as? HanaApp
             val modelRouter = light?.let { ModelRouter(model, it) }
@@ -844,6 +870,14 @@ class TaskRun(
                 taintGuard = hanaApp?.taintGuard,
                 semanticRouteCache = hanaApp?.semanticRouteCache,
                 factGraph = memoryRuntime.factGraph(),
+                onFailureTrajectory = { evalTask, jsonStr ->
+                    runCatching {
+                        val dir = java.io.File(service.filesDir, "eval_failures")
+                        if (!dir.exists()) dir.mkdirs()
+                        val safeId = evalTask.id.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                        java.io.File(dir, "${safeId}.json").writeText(jsonStr)
+                    }
+                },
             )
             loop = agent
             liveFeed = agent.events.subscribe(liveEvents)
@@ -969,6 +1003,7 @@ class TaskRun(
             gate = null
             takeover = null
             handoverRef = null
+            activePhoneSide = null
             sideScope = null
             // 借来的页面还回浏览器页(在关掉网页这一套之前)
             withContext(Dispatchers.Main + NonCancellable) { runCatching { UserBrowser.existing()?.loans?.end(key) } }
@@ -1070,7 +1105,9 @@ class TaskRun(
         side.launch(Dispatchers.IO) {
             p.screen.target.filterNotNull().collectLatest { t ->
                 _appShown.value = true
-                if (handoverRef?.handedOver != true) p.audio.opened(t.packageName, copyUser(t.userId))
+                val targetUser = copyUser(t.userId)
+                if (handoverRef?.handedOver != true) p.audio.opened(t.packageName, targetUser)
+                _targetMuted.value = p.audio.isMuted(t.packageName, targetUser)
                 // 有目标 App 就说明 launch_app 已经建好了屏
                 val displayId = p.display.current?.displayId
                 if (t.taskId >= 0 && displayId != null) {
@@ -1264,6 +1301,70 @@ class TaskRun(
             w.amount?.let { tr(R.string.payment_amount, it) },
             w.address?.let { tr(R.string.payment_address, it) },
         ).joinToString("\n").ifEmpty { null }
+    }
+
+    /**
+     * 将当前设备上发现的 Android 16 AppFunctions 适配为本地 MCP 虚拟服务连接。
+     * 低于 Android 16 或无可用 AppFunction 时返回 null，实现零开销降级。
+     */
+    private fun createAppFunctionMcpConnection(context: android.content.Context): McpConnection? {
+        if (android.os.Build.VERSION.SDK_INT < AppFunctionBridge.MIN_APP_FUNCTIONS_SDK_INT) {
+            return null
+        }
+        val (descriptors, functionMap) = runCatching {
+            AppFunctionBridge.toToolDescriptorsAndIds(context)
+        }.getOrElse { emptyList<McpToolDescriptor>() to emptyMap() }
+
+        if (descriptors.isEmpty()) return null
+
+        val endpoint = object : McpEndpoint {
+            override val serverId: String = "app_functions_local"
+            override fun tools(): List<McpToolDescriptor> = descriptors
+            override suspend fun call(name: String, arguments: JsonObject): McpResult {
+                val fn = functionMap[name]
+                    ?: return McpResult(text = "AppFunction '$name' not found", isError = true)
+                val result = AppFunctionBridge.executeAppFunction(
+                    context = context,
+                    packageName = fn.packageName,
+                    functionId = fn.functionId,
+                    argsJson = arguments.toString(),
+                )
+                return if (result.ok) {
+                    McpResult(text = result.output.ifBlank { "Executed successfully" }, isError = false)
+                } else {
+                    McpResult(text = "Error: ${result.error ?: "execution_failed"}", isError = true)
+                }
+            }
+        }
+        return McpConnection(endpoint = endpoint, trust = McpTrust.TrustAnnotations)
+    }
+
+    /**
+     * 线程安全地切换或恢复当前运行任务的目标应用静音状态（用于小窗/画中画或用户接管时的音量切换）
+     */
+    fun setTargetAudioMuted(muted: Boolean, packageName: String? = null, user: Int? = null): Boolean {
+        val side = activePhoneSide ?: return false
+        val currentTarget = side.screen.target.value
+        val pkg = packageName ?: currentTarget?.packageName ?: return false
+        val targetUser = user ?: currentTarget?.let { copyUser(it.userId) }
+        val result = if (muted) {
+            side.audio.opened(pkg, targetUser)
+            true
+        } else {
+            side.audio.release(pkg, targetUser)
+        }
+        _targetMuted.value = side.audio.isMuted(pkg, targetUser)
+        return result
+    }
+
+    /** 切换当前展示任务虚拟屏前台 App 的静音状态，返回切换后的静音状态。 */
+    fun toggleTargetAudioMute(): Boolean {
+        val side = activePhoneSide ?: return false
+        val currentTarget = side.screen.target.value ?: return false
+        val targetUser = copyUser(currentTarget.userId)
+        val muted = side.audio.toggleMute(currentTarget.packageName, targetUser)
+        _targetMuted.value = muted
+        return muted
     }
 
     private companion object {

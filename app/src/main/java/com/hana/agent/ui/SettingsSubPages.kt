@@ -78,6 +78,11 @@ fun PhoneOpsScreen(
     onRepair: () -> Unit,
     onUnpair: () -> Unit,
     onBack: () -> Unit,
+    deviceRooted: Boolean = false,
+    rootHelperEnabled: Boolean = false,
+    onRootHelperEnabled: (Boolean) -> Unit = {},
+    rootCommandEnabled: Boolean = false,
+    onRootCommandEnabled: (Boolean) -> Unit = {},
 ) {
     val check = Prerequisites.check(status, hasMainModel = true)
     var confirmUnpair by remember { mutableStateOf(false) }
@@ -139,6 +144,40 @@ fun PhoneOpsScreen(
             }
             FooterNote(PhoneSetupCopy.usageNote(status.helperRestart))
         }
+
+        GroupLabel("分级 Root 模式（高级）")
+        GroupCard {
+            ListRow(
+                HanaIcons.Phone,
+                "Root 环境探测",
+                if (deviceRooted) "检测到静态 su 特权程序，支持免 ADB 本地极速唤醒" else "未检测到 su 文件，当前处于标准未 Root 沙盒环境",
+                first = true,
+            ) {
+                RowValue(
+                    if (deviceRooted) "已检测到 su" else "未检测到 su",
+                    if (deviceRooted) ValueTone.Ok else ValueTone.Plain
+                )
+            }
+            ListRow(
+                HanaIcons.Link,
+                "使用 Root 启动辅助进程",
+                "免配对无感拉起助手进程，无需连接电脑或依赖无线调试配对",
+                first = false,
+                onClick = { onRootHelperEnabled(!rootHelperEnabled) },
+            ) {
+                HanaSwitch(rootHelperEnabled, onRootHelperEnabled, Modifier.testTag("phone-root-helper"))
+            }
+            ListRow(
+                HanaIcons.Gear,
+                "启用底层 Root 提权执行 (su)",
+                "允许 Agent 任务通过严格校验的白名单通道直接执行特定底层指令",
+                first = false,
+                onClick = { onRootCommandEnabled(!rootCommandEnabled) },
+            ) {
+                HanaSwitch(rootCommandEnabled, onRootCommandEnabled, Modifier.testTag("phone-root-command"))
+            }
+        }
+        FooterNote("分级 Root 遵循隔离沙盒安全规范：Hana 主应用永远维持普通应用权限运行，仅在授权时以受限方式拉起独立进程。")
     }
     if (confirmUnpair) {
         HanaDialog(
@@ -160,7 +199,13 @@ fun PhoneOpsScreen(
  * 点哪一行都由 [onFix] 打开对应的系统设置页(总开关没开时先请求权限或打开应用通知页)。
  */
 @Composable
-fun NotificationsScreen(status: SystemStatus, onFix: (Fix) -> Unit, onBack: () -> Unit) {
+fun NotificationsScreen(
+    status: SystemStatus,
+    onFix: (Fix) -> Unit,
+    onBack: () -> Unit,
+    proactiveEnabled: Boolean = false,
+    onProactiveEnabled: (Boolean) -> Unit = {},
+) {
     val o = status.notificationOverview()
     PageScaffold(StatusCopy.NOTIFICATIONS, onBack) {
         GroupCard {
@@ -171,6 +216,18 @@ fun NotificationsScreen(status: SystemStatus, onFix: (Fix) -> Unit, onBack: () -
                 onClick = if (o.appAllowed) null else ({ onFix(Fix.AllowNotifications) }),
             ) {
                 if (o.appAllowed) RowValue(stringResource(R.string.settings_allowed), ValueTone.Ok) else RowValue(StatusCopy.HEADS_UP_ACTION, ValueTone.Link)
+            }
+        }
+        GroupLabel("智能通知分诊")
+        GroupCard {
+            ListRow(
+                HanaIcons.Spark,
+                "智能通知分诊 (Proactive)",
+                "在授权通知监听与白名单后，仅以克制的胶囊角标和每日摘要整理重要信息，不弹窗不抢话",
+                first = true,
+                onClick = { onProactiveEnabled(!proactiveEnabled) },
+            ) {
+                HanaSwitch(proactiveEnabled, onProactiveEnabled, Modifier.testTag("notif-proactive-enabled"))
             }
         }
         GroupLabel(stringResource(R.string.settings_task_notifs))
@@ -381,10 +438,85 @@ object CapsuleSettingsCopy {
 
 /** 设置 › 悬浮胶囊:关闭 / 有任务时显示(默认) / 一直显示,选了当场生效。 */
 @Composable
-fun CapsuleScreen(mode: CapsuleMode, onMode: (CapsuleMode) -> Unit, onBack: () -> Unit) {
+fun CapsuleScreen(
+    mode: CapsuleMode,
+    onMode: (CapsuleMode) -> Unit,
+    onBack: () -> Unit,
+    teachState: com.hana.agent.teach.TeachState = com.hana.agent.teach.TeachState.IDLE,
+    teachStepCount: Int = 0,
+    onStartTeach: () -> Unit = {},
+    onStopTeachSave: () -> Unit = {},
+    onDiscardTeach: () -> Unit = {},
+) {
     PageScaffold(CapsuleSettingsCopy.TITLE, onBack) {
         GroupLabel("显示时机")
         CapsuleModeCards(mode, onMode)
+        Spacer(Modifier.height(8.dp))
+        GroupLabel("教 Hana 录制模式")
+        GroupCard(Modifier.testTag("capsule-teach-card")) {
+            when (teachState) {
+                com.hana.agent.teach.TeachState.IDLE -> {
+                    ListRow(
+                        HanaIcons.Spark,
+                        "录制操作示范",
+                        "手动演示一次操作流程，Hana 会自动记录关键步骤并生成脱敏技能草稿",
+                        first = true,
+                        onClick = onStartTeach,
+                    ) {
+                        RowValue("开始录制示范", ValueTone.Link)
+                        RowChevron()
+                    }
+                }
+                com.hana.agent.teach.TeachState.RECORDING -> {
+                    ListRow(
+                        HanaIcons.Spark,
+                        "正在录制示范中",
+                        "已捕获 $teachStepCount 个示范动作。演示完毕后点击停止并保存草稿",
+                        first = true,
+                    ) {
+                        RowValue("${teachStepCount}步", ValueTone.Ok)
+                    }
+                    ListRow(
+                        HanaIcons.Check,
+                        "停止并生成脱敏技能草稿",
+                        "结束示范动作录制，自动生成隐私脱敏的操作步骤与技能定义",
+                        first = false,
+                        onClick = onStopTeachSave,
+                    ) {
+                        RowValue("完成并保存", ValueTone.Link)
+                    }
+                    ListRow(
+                        HanaIcons.Close,
+                        "取消录制",
+                        "放弃本次已录制的示范动作，不保留任何数据",
+                        first = false,
+                        onClick = onDiscardTeach,
+                    ) {
+                        RowValue("取消", ValueTone.Bad)
+                    }
+                }
+                com.hana.agent.teach.TeachState.REVIEWING -> {
+                    ListRow(
+                        HanaIcons.Check,
+                        "技能草稿待评审",
+                        "已生成示范技能草稿，可点击收下或重置",
+                        first = true,
+                        onClick = onStopTeachSave,
+                    ) {
+                        RowValue("沉淀草稿", ValueTone.Link)
+                    }
+                    ListRow(
+                        HanaIcons.Close,
+                        "放弃草稿",
+                        "放弃当前未收下的技能草稿",
+                        first = false,
+                        onClick = onDiscardTeach,
+                    ) {
+                        RowValue("放弃", ValueTone.Bad)
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         FooterNote(CapsuleSettingsCopy.FOOTNOTE)
         FooterNote(CapsuleSettingsCopy.BACKGROUND)

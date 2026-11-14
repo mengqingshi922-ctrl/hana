@@ -123,10 +123,16 @@ fun toolDispatcher(
     shadowMacros: List<com.hana.agent.core.replay.ShadowMacroDef> = emptyList(),
     /** UI 树序列化格式（false = 标准 JSON，true = 脱水紧凑行文本）。 */
     compactUiTree: Boolean = false,
+    /** 是否启用任务内结构化笔记工具（note_append / note_read）。 */
+    enableNotetaker: Boolean = false,
+    /** 是否启用主动歧义澄清工具（clarify_intent）。 */
+    enableClarifyIntent: Boolean = false,
+    /** 是否启用动作链紧凑 DSL 解析（false 时仅允许 JSON steps）。 */
+    enableCompactDsl: Boolean = true,
 ): ToolDispatcher {
     val config = ToolConfig(visionEnabled, skills, recordFrames, vision, inlineScreen, adaptiveVision, memory, profile, utterances, conversationId,
         imageOps, scheduleTrigger, scheduleAdmin, runSpec, childHost, userScreens, personalSkills, selfConfig, runRecords, taskMemories,
-        factGraph, shadowMacros, compactUiTree)
+        factGraph, shadowMacros, compactUiTree, enableNotetaker, enableClarifyIntent, enableCompactDsl)
     val providers: List<CapabilityProvider> = listOf(
         object : CapabilityProvider {
             override val id = PHONE

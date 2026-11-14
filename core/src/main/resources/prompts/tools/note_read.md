@@ -1,0 +1,1 @@
+Read structured notes previously taken during this task, optionally filtered by category.

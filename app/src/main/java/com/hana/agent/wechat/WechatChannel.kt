@@ -61,6 +61,26 @@ class WechatChannel(
         }
     }
 
+    suspend fun sendImage(peer: ChannelPeer, deliveryId: String, imagePayload: String): SendOutcome {
+        if (peer.channelId != id || !isAlive(peer)) return SendOutcome.Failed
+        val account = store.account() ?: return SendOutcome.Failed
+        return withContext(Dispatchers.IO) {
+            val started = System.nanoTime()
+            val outcome = try {
+                api.sendImage(account, peer.peerId, deliveryId, imagePayload, store.contextToken(peer.peerId))
+                SendOutcome.Delivered
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: WechatApiException) {
+                SendOutcome.Failed
+            } catch (_: IOException) {
+                SendOutcome.Uncertain
+            }
+            log("Image send $outcome in ${(System.nanoTime() - started) / 1_000_000} ms")
+            outcome
+        }
+    }
+
     /** 先补交上次未登记的消息，再取新消息；任务登记处做最终幂等。 */
     suspend fun pollOnce(): WechatUpdates? {
         val input = sink ?: return null
@@ -73,11 +93,18 @@ class WechatChannel(
             val owner = account.ownerId
             if (message.fromUserId != owner) return@forEach
             store.rememberContext(owner, message.contextToken)
-            val text = message.userText() ?: return@forEach
+            val text = message.userText()
+            val imageUrls = message.userImageUrls()
+            if (text == null && imageUrls.isEmpty()) return@forEach
             val messageId = message.messageId ?: return@forEach
             val peer = store.peer(owner)
-            if (store.journal(messageId, peer, text)) {
-                input.receive(ChannelInput.Text(peer, messageId, text))
+            val combinedText = when {
+                imageUrls.isNotEmpty() && !text.isNullOrBlank() -> "$text\n[图片: ${imageUrls.joinToString(", ")}]"
+                imageUrls.isNotEmpty() -> "[收到图片: ${imageUrls.joinToString(", ")}]"
+                else -> text ?: ""
+            }
+            if (combinedText.isNotBlank() && store.journal(messageId, peer, combinedText)) {
+                input.receive(ChannelInput.Text(peer, messageId, combinedText))
             }
         }
         if (updates.cursor.isNotEmpty()) store.saveCursor(updates.cursor)

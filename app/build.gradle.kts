@@ -18,10 +18,10 @@ android {
 
     defaultConfig {
         applicationId = "com.hana.agent"
-        minSdk = 30
+        minSdk = 29
         targetSdk = 35
-        versionCode = 39
-        versionName = "0.2.1"
+        versionCode = 40
+        versionName = "0.2.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
         // 关于页版本号后的 Beta 标记;出正式版时改成 false
