@@ -12,7 +12,10 @@ internal class ToolRegistry(private val ctx: ToolContext, all: List<AgentTool>, 
     private val tools: Map<String, AgentTool> = all.filter { it.available(ctx) }.associateBy { it.name }
 
     init {
-        check(declared.size == all.size) { "duplicate tool names" }
+        if (declared.size != all.size) {
+            val duplicates = all.groupingBy { it.name }.eachCount().filterValues { it > 1 }.keys
+            error("duplicate tool names: ${duplicates.joinToString()}")
+        }
     }
 
     operator fun get(name: String): AgentTool? = tools[name]

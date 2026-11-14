@@ -80,4 +80,17 @@ class McpClientTest {
         assertEquals(Decision.Clear, decision)
         assertEquals(0, endpoint.calls)
     }
+
+    @Test fun duplicateOrSanitizedCollisionMcpToolNamesDoNotCrashDispatcher() {
+        val endpoint = FakeEndpoint().apply {
+            offered = listOf(
+                McpToolDescriptor("appfn.same.prefix", "First", buildJsonObject { put("type", "object") }),
+                McpToolDescriptor("appfn_same_prefix", "Collision", buildJsonObject { put("type", "object") }),
+                McpToolDescriptor("appfn.same.prefix", "ExactDup", buildJsonObject { put("type", "object") }),
+            )
+        }
+        val tools = toolDispatcher(FakeScreen(), mcpServers = listOf(McpConnection(endpoint)))
+        val mcpNames = tools.definitions().map { it.name }.filter { it.startsWith("mcp_demo__") }
+        assertEquals(listOf("mcp_demo__appfn_same_prefix"), mcpNames)
+    }
 }

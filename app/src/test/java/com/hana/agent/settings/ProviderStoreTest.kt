@@ -914,6 +914,40 @@ class ProviderStoreTest {
         assertEquals("DeepSeek-V4.1-Flash", backupCfg?.model)
     }
 
+    @Test
+    fun ensureChinaAgnesAutoHealsUndecryptableKey() = runTest {
+        var rejectLegacyCiphertext = false
+        var recordAsLegacy = true
+        val legacyCiphertexts = mutableSetOf<String>()
+        val rotatingKeyCipher = object : KeyCipher {
+            private val delegate = AesGcmKeyCipher { key }
+            override fun encrypt(plain: ByteArray): ByteArray {
+                val out = delegate.encrypt(plain)
+                if (recordAsLegacy) legacyCiphertexts += out.contentToString()
+                return out
+            }
+            override fun decrypt(data: ByteArray): ByteArray {
+                if (rejectLegacyCiphertext && data.contentToString() in legacyCiphertexts) {
+                    throw javax.crypto.AEADBadTagException("Keystore VERIFICATION_FAILED")
+                }
+                return delegate.decrypt(data)
+            }
+        }
+        val store = ProviderStore(tmp.root, rotatingKeyCipher) { cfg, _, _, _ -> FakeModel(cfg.capabilities) }
+        store.ensureChinaAgnes("initial-cn-key")
+        val agnes = store.providers.value.first { it.baseUrl == "https://api.agnes-ai.cn/v1" }
+        assertEquals("initial-cn-key", store.providerKey(agnes.id))
+
+        // 模拟旧密文因设备 Keystore 校验失败而无法解密
+        rejectLegacyCiphertext = true
+        recordAsLegacy = false
+        assertEquals(null, store.providerKey(agnes.id))
+
+        // 再次确保中国站配置时检测到解不出，应自动重写自愈，恢复非空密钥
+        store.ensureChinaAgnes("healed-cn-key")
+        assertEquals("healed-cn-key", store.providerKey(agnes.id))
+    }
+
     private class FakeModel(override val capabilities: Capabilities) : ChatModel {
         override suspend fun complete(system: String, messages: List<Message>, tools: List<ToolSpec>): ModelReply =
             ModelReply(emptyList(), StopReason.EndTurn, Usage(3, 2))

@@ -23,6 +23,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.io.Closeable
 import java.lang.reflect.Proxy
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -107,6 +108,7 @@ object AppFunctionBridge {
             }
 
             val discoveredList = mutableListOf<DiscoveredAppFunction>()
+            val existingKeys = HashSet<String>()
             for (ri in resolveInfos) {
                 val serviceInfo = ri.serviceInfo ?: continue
                 val pkg = serviceInfo.packageName
@@ -121,32 +123,35 @@ object AppFunctionBridge {
                         .map { it.trim() }
                         .filter { it.isNotEmpty() }
                         .forEach { fnId ->
-                            discoveredList.add(
-                                DiscoveredAppFunction(
-                                    packageName = pkg,
-                                    functionId = fnId,
-                                    title = "$label - $fnId",
-                                    description = "Discovered Android 16 AppFunction from $pkg",
-                                    parameterKeys = emptyList(),
+                            if (existingKeys.add("$pkg:$fnId")) {
+                                discoveredList.add(
+                                    DiscoveredAppFunction(
+                                        packageName = pkg,
+                                        functionId = fnId,
+                                        title = "$label - $fnId",
+                                        description = "Discovered Android 16 AppFunction from $pkg",
+                                        parameterKeys = emptyList(),
+                                    )
                                 )
-                            )
+                            }
                         }
                 } else {
                     val fallbackId = serviceInfo.name.substringAfterLast('.')
-                    discoveredList.add(
-                        DiscoveredAppFunction(
-                            packageName = pkg,
-                            functionId = fallbackId,
-                            title = label,
-                            description = "Discovered AppFunction service from $pkg",
-                            parameterKeys = emptyList(),
+                    if (existingKeys.add("$pkg:$fallbackId")) {
+                        discoveredList.add(
+                            DiscoveredAppFunction(
+                                packageName = pkg,
+                                functionId = fallbackId,
+                                title = label,
+                                description = "Discovered AppFunction service from $pkg",
+                                parameterKeys = emptyList(),
+                            )
                         )
-                    )
+                    }
                 }
             }
 
             // 通过 Android 16 AppSearchManager 全局索引查询 AppFunctionStaticMetadata 元数据
-            val existingKeys = discoveredList.mapTo(HashSet()) { "${it.packageName}:${it.functionId}" }
             queryAppSearchMetadata(context).forEach { fn ->
                 if (existingKeys.add("${fn.packageName}:${fn.functionId}")) {
                     discoveredList.add(fn)
@@ -276,22 +281,58 @@ object AppFunctionBridge {
     }.getOrDefault(emptyList())
 
     /**
-     * 生成合法消毒的 tool name
+     * 生成合法消毒的 tool name；超长（>64）时保留前缀并附加稳定短哈希，避免同包多函数截断撞名。
      */
     internal fun buildToolName(fn: DiscoveredAppFunction): String {
         val cleanPkg = fn.packageName.replace(Regex("[^a-zA-Z0-9_]"), "_")
         val cleanId = fn.functionId.replace(Regex("[^a-zA-Z0-9_]"), "_")
         val rawName = "appfn_${cleanPkg}_$cleanId"
-        return if (rawName.length > 64) rawName.substring(0, 64) else rawName
+        if (rawName.length <= 64) return rawName
+        val hash = stableShortHash("${fn.packageName}:${fn.functionId}")
+        return "${rawName.substring(0, 64 - 1 - hash.length)}_$hash"
+    }
+
+    private fun stableShortHash(input: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray(Charsets.UTF_8))
+        return buildString(8) {
+            for (i in 0 until 4) {
+                val b = bytes[i].toInt() and 0xFF
+                append(((b ushr 4) and 0xF).toString(16))
+                append((b and 0xF).toString(16))
+            }
+        }
     }
 
     /**
      * 将已探测的 [DiscoveredAppFunction] 转换为标准的 MCP 工具描述符 [McpToolDescriptor]。
-     * 生成合法消毒的 tool name 及 JSON Schema，支持作为本地工具直接注册到 Agent 规划执行体系中。
+     * 生成合法消毒且唯一不碰撞的 tool name 及 JSON Schema，支持作为本地工具直接注册到 Agent 规划执行体系中。
      */
     fun toMcpToolDefs(functions: List<DiscoveredAppFunction>): List<McpToolDescriptor> {
-        return functions.map { fn ->
-            val toolName = buildToolName(fn)
+        return toToolDescriptorsAndIds(functions).first
+    }
+
+    /**
+     * 将 [DiscoveredAppFunction] 列表映射为去重且名称唯一的 MCP 工具描述符列表以及由工具名到原始 AppFunction 契约对象的查找字典。
+     */
+    fun toToolDescriptorsAndIds(functions: List<DiscoveredAppFunction>): Pair<List<McpToolDescriptor>, Map<String, DiscoveredAppFunction>> {
+        val seenFnKeys = HashSet<String>()
+        val usedToolNames = HashSet<String>()
+        val descriptors = ArrayList<McpToolDescriptor>(functions.size)
+        val idMap = LinkedHashMap<String, DiscoveredAppFunction>(functions.size)
+
+        for (fn in functions) {
+            if (!seenFnKeys.add("${fn.packageName}:${fn.functionId}")) continue
+
+            val baseName = buildToolName(fn)
+            var uniqueName = baseName
+            var seq = 2
+            while (!usedToolNames.add(uniqueName)) {
+                val suffix = "_$seq"
+                val maxBase = (64 - suffix.length).coerceAtLeast(1)
+                val prefix = if (baseName.length > maxBase) baseName.substring(0, maxBase) else baseName
+                uniqueName = "$prefix$suffix"
+                seq++
+            }
 
             val schema = buildJsonObject {
                 put("type", "object")
@@ -319,22 +360,17 @@ object AppFunctionBridge {
                 }
             }
 
-            McpToolDescriptor(
-                name = toolName,
-                description = desc,
-                inputSchema = schema,
-                annotations = McpAnnotations(openWorldHint = true),
-                estimatedCostUnits = 0L,
+            descriptors.add(
+                McpToolDescriptor(
+                    name = uniqueName,
+                    description = desc,
+                    inputSchema = schema,
+                    annotations = McpAnnotations(openWorldHint = true),
+                    estimatedCostUnits = 0L,
+                )
             )
+            idMap[uniqueName] = fn
         }
-    }
-
-    /**
-     * 将 [DiscoveredAppFunction] 列表映射为 MCP 工具描述符列表以及由工具名到原始 AppFunction 契约对象的查找字典。
-     */
-    fun toToolDescriptorsAndIds(functions: List<DiscoveredAppFunction>): Pair<List<McpToolDescriptor>, Map<String, DiscoveredAppFunction>> {
-        val descriptors = toMcpToolDefs(functions)
-        val idMap = functions.associateBy { buildToolName(it) }
         return descriptors to idMap
     }
 

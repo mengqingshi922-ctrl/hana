@@ -159,4 +159,12 @@ class LinkPolicyDynamicTest {
         val dynResult = LinkPolicy.bestShortcutForIntent("未定义意图", "com.test.testapp")
         assertEquals("testapp://", dynResult)
     }
+
+    @Test
+    fun testBestShortcutCleansCommaBeforeSearchKeyword() {
+        val uri = LinkPolicy.bestShortcutForIntent("打开小红书，搜索减脂期高蛋白快手晚餐食谱")
+        assertNotNull(uri)
+        val decoded = java.net.URLDecoder.decode(uri!!, "UTF-8")
+        assertEquals("xhsdiscover://search/result?keyword=减脂期高蛋白快手晚餐食谱", decoded)
+    }
 }

@@ -323,7 +323,7 @@ object LinkPolicy {
 
             if (trimmed.contains("搜索") || trimmed.contains("搜")) {
                 val query = trimmed
-                    .replace(Regex("^(?:请帮我|帮我|在|去|打开)?(?:微信|支付宝|淘宝|京东|小红书|高德地图|B站|哔哩哔哩|知乎)?(?:搜索|搜一下|搜一搜|搜)"), "")
+                    .replace(Regex("^(?:请帮我|帮我|在|去|打开)?(?:微信|支付宝|淘宝|京东|小红书|高德地图|B站|哔哩哔哩|知乎)?[，,、。\\s]*(?:并|然后|去)?[，,、。\\s]*(?:搜索|搜一下|搜一搜|搜)"), "")
                     .trim()
                     .removePrefix(":")
                     .removePrefix("：")

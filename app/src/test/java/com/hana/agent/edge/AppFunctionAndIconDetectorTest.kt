@@ -204,6 +204,31 @@ class AppFunctionAndIconDetectorTest {
     }
 
     @Test
+    fun testAppFunctionLongIdsAndDuplicatesStayUniqueWithin64Chars() {
+        val fn1 = DiscoveredAppFunction(
+            packageName = "com.android.camera",
+            functionId = "androidx.appfunctions.service.PlatformAppFunctionService#capturePhotoWithPresetMode",
+            title = "拍照",
+            description = "使用预设模式拍照",
+        )
+        val fn2 = DiscoveredAppFunction(
+            packageName = "com.android.camera",
+            functionId = "androidx.appfunctions.service.PlatformAppFunctionService#recordVideoWithStabilization",
+            title = "录像",
+            description = "使用防抖模式录像",
+        )
+        val fn2Dup = fn2.copy()
+
+        val (descriptors, idMap) = AppFunctionBridge.toToolDescriptorsAndIds(listOf(fn1, fn2, fn2Dup))
+        assertEquals(2, descriptors.size)
+        assertEquals(2, descriptors.map { it.name }.distinct().size)
+        assertTrue(descriptors.all { it.name.length <= 64 })
+        assertEquals(descriptors.map { it.name }.toSet(), idMap.keys)
+        assertEquals(fn1.functionId, idMap[descriptors[0].name]?.functionId)
+        assertEquals(fn2.functionId, idMap[descriptors[1].name]?.functionId)
+    }
+
+    @Test
     fun testExecuteAppFunctionLowSdkGracefulDegradation() = runBlocking {
         val dummyContext = try {
             android.app.Application()

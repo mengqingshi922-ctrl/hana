@@ -74,7 +74,9 @@ fun mcpApprovalRisk(a: McpAnnotations, trust: McpTrust = McpTrust.TrustAnnotatio
 internal class McpCapability(connection: McpConnection, override val id: String) : Capability {
     private val endpoint = connection.endpoint
     private val budget = McpBudget(connection.maxCostUnits)
-    private val tools = endpoint.tools().toList().map { McpClientTool(id, endpoint, it, budget, connection.resultStore, connection.previewChars, connection.trust) }
+    private val tools = endpoint.tools()
+        .map { McpClientTool(id, endpoint, it, budget, connection.resultStore, connection.previewChars, connection.trust) }
+        .distinctBy { it.name }
     override fun status(): CapabilityStatus = CapabilityStatus.Available
     override fun tools(): List<AgentTool> = tools
     override fun sections(env: PromptEnv): List<String> = emptyList()

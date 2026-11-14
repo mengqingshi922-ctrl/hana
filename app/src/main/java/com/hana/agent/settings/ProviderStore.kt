@@ -964,9 +964,9 @@ class ProviderStore(
         runCatching { android.util.Log.i("HanaPool", event) }
     }
 
-    internal fun ensureChinaAgnes() {
+    internal fun ensureChinaAgnes(overrideKey: String? = null) {
         val chinaBase = "https://api.agnes-ai.cn/v1"
-        val chinaKey = BuildConfig.AGNES_CN_KEY
+        val chinaKey = overrideKey ?: BuildConfig.AGNES_CN_KEY
         if (chinaKey.isEmpty()) return
         val intl = _providers.value.firstOrNull { it.baseUrl.contains("apihub.agnes-ai.com") }
         if (intl != null && intl.name == "Agnes AI") {
@@ -980,21 +980,27 @@ class ProviderStore(
             ListedModel("agnes-2.5-flash", toolCalls = true, vision = true, contextTokens = 128_000),
             ListedModel("agnes-2.5-pro", toolCalls = true, vision = true, contextTokens = 128_000),
         )
-        val p = existing ?: connect("Agnes AI (中国站)", ProviderConfig.Kind.OpenAiCompat, chinaBase, chinaKey, chinaModels, verified = setOf("agnes-3.0-flash"))
-
-        if (p != null) {
-            val currentMain = _roles.value.main?.let { id -> _configs.value.firstOrNull { it.id == id } }
-            val caps = Capabilities(toolCalls = true, vision = true, contextTokens = 512_000, reasoning = false, compactionTriggerTokens = 128_000)
-            if (currentMain == null || currentMain.baseUrl.contains("agnes-ai.com")) {
-                use(ModelRole.Main, p.id, "agnes-3.0-flash", caps)
-                choose(ModelRole.Vision, RoleChoice.SameAsMain)
-                choose(ModelRole.Light, RoleChoice.SameAsMain)
-            } else if (currentMain.baseUrl == chinaBase && currentMain.capabilities.compactionTriggerTokens != 128_000) {
-                _configs.value = _configs.value.map { c ->
-                    if (c.id == currentMain.id) c.copy(capabilities = c.capabilities.copy(compactionTriggerTokens = 128_000)) else c
-                }
-                writeConfig()
+        val p = if (existing == null) {
+            connect("Agnes AI (中国站)", ProviderConfig.Kind.OpenAiCompat, chinaBase, chinaKey, chinaModels, verified = setOf("agnes-3.0-flash"))
+        } else {
+            // 若旧 Key 因 Android Keystore 校验失败或丢失而解不出，从内置构建密钥自动自愈重存，防止 401 未提供令牌
+            if (providerKey(existing.id).isNullOrEmpty()) {
+                runCatching { setKey(existing.id, chinaKey) }
             }
+            existing
+        }
+
+        val currentMain = _roles.value.main?.let { id -> _configs.value.firstOrNull { it.id == id } }
+        val caps = Capabilities(toolCalls = true, vision = true, contextTokens = 512_000, reasoning = false, compactionTriggerTokens = 128_000)
+        if (currentMain == null || currentMain.baseUrl.contains("agnes-ai.com")) {
+            use(ModelRole.Main, p.id, "agnes-3.0-flash", caps)
+            choose(ModelRole.Vision, RoleChoice.SameAsMain)
+            choose(ModelRole.Light, RoleChoice.SameAsMain)
+        } else if (currentMain.baseUrl == chinaBase && currentMain.capabilities.compactionTriggerTokens != 128_000) {
+            _configs.value = _configs.value.map { c ->
+                if (c.id == currentMain.id) c.copy(capabilities = c.capabilities.copy(compactionTriggerTokens = 128_000)) else c
+            }
+            writeConfig()
         }
     }
 
